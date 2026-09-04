@@ -19,6 +19,11 @@ class RecordingClient(AcceleratorClient):
         return self.response
 
 
+def test_default_timeout_covers_cold_accelerator_attach() -> None:
+    client = AcceleratorClient((Path.cwd() / "openclaw-accelerator-test.sock").resolve())
+    assert client.timeout_seconds == 60
+
+
 def test_acquire_requires_ready_lease_and_builds_bounded_request() -> None:
     client = RecordingClient(
         {
