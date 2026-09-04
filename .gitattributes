@@ -1,0 +1,3 @@
+*.sh text eol=lf
+*.patch text eol=lf -whitespace
+services/accelerator/systemd/* text eol=lf
