@@ -101,6 +101,22 @@ describe("local media speech provider", () => {
     ).toBe(false);
   });
 
+  it("maps explicit model and public voice ids to provider overrides", () => {
+    const provider = buildLocalMediaSpeechProvider();
+    expect(
+      provider.resolveTalkOverrides?.({
+        talkProviderConfig: {},
+        params: { modelId: "chatterbox", voiceId: "nova" },
+      }),
+    ).toEqual({ model: "chatterbox", voice: "nova" });
+    expect(
+      provider.resolveTalkOverrides?.({
+        talkProviderConfig: {},
+        params: { voiceId: "/private/reference.wav" },
+      }),
+    ).toEqual({});
+  });
+
   it("discovers public voices from the host-leased local service", async () => {
     vi.stubGlobal(
       "fetch",
