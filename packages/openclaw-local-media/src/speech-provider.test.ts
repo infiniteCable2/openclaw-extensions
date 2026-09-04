@@ -101,6 +101,22 @@ describe("local media speech provider", () => {
     ).toBe(false);
   });
 
+  it("lists the configured default and allowlisted voices", async () => {
+    const provider = buildLocalMediaSpeechProvider();
+    await expect(
+      provider.listVoices?.({
+        providerConfig: {
+          voice: "astrid",
+          voices: ["astrid", "nova", "nova", "  fallback  ", ""],
+        },
+      }),
+    ).resolves.toEqual([
+      { id: "astrid", name: "astrid" },
+      { id: "nova", name: "nova" },
+      { id: "fallback", name: "fallback" },
+    ]);
+  });
+
   it("rejects oversized audio before buffering it", async () => {
     vi.stubGlobal(
       "fetch",

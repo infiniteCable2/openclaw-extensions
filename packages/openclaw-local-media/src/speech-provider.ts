@@ -22,6 +22,17 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function readConfiguredVoices(config: SpeechProviderConfig): string[] {
+  const configured = Array.isArray(config.voices)
+    ? config.voices
+        .map((value) => readString(value))
+        .filter((value): value is string => Boolean(value))
+        .slice(0, 64)
+    : [];
+  const selected = readString(config.voice ?? config.voiceId) ?? DEFAULT_TTS_VOICE;
+  return [...new Set([selected, ...configured])];
+}
+
 function resolveProviderConfig(rawConfig: Record<string, unknown>): SpeechProviderConfig {
   const providers = asObject(rawConfig.providers);
   return asObject(providers?.[LOCAL_MEDIA_PROVIDER_ID]) ?? {};
@@ -121,7 +132,8 @@ export function buildLocalMediaSpeechProvider(): SpeechProviderPlugin {
     voices: [DEFAULT_TTS_VOICE],
     resolveConfig: ({ rawConfig }) => resolveProviderConfig(rawConfig),
     isConfigured: ({ providerConfig }) => Boolean(resolveLoopbackBaseUrl(providerConfig.baseUrl)),
-    listVoices: async () => [{ id: DEFAULT_TTS_VOICE, name: "Default" }],
+    listVoices: async ({ providerConfig }) =>
+      readConfiguredVoices(providerConfig ?? {}).map((id) => ({ id, name: id })),
     async synthesize(req) {
       const voiceNote = req.target === "voice-note";
       const responseFormat = voiceNote ? "opus" : "wav";

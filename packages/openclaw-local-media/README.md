@@ -70,7 +70,8 @@ status only after the requested GPU model is ready.
       "local-media": {
         baseUrl: "http://127.0.0.1:8020/v1",
         model: "chatterbox",
-        voice: "default",
+        voice: "astrid",
+        voices: ["astrid", "nova"],
         localService: {
           command: "/absolute/path/to/openclaw-local-tts",
           args: ["serve"],
@@ -83,6 +84,12 @@ status only after the requested GPU model is ready.
   },
 }
 ```
+
+`voice` is the provider default. An OpenClaw TTS persona can override it with
+`personas.<id>.providers.local-media.voice`; an explicit permitted per-request
+override wins over the persona. The service maps these public voice ids to
+operator-configured reference files and never accepts a reference path over the
+provider request.
 
 This preserves the agreed Matrix behavior: inbound text gets a text reply;
 an inbound voice note is transcribed before the agent run and gets the normal
