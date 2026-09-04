@@ -147,7 +147,6 @@ def create_app(
             "model": backend.model_id,
             "requestedBackend": backend.requested_backend,
             "observedBackend": backend.observed_backend,
-            "acceleratorLease": "disabled",
             "activeRequests": active,
             "queueDepth": queued,
         }
