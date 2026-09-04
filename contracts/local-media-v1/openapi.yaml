@@ -1,0 +1,242 @@
+openapi: 3.1.0
+info:
+  title: OpenClaw local media service
+  version: 1.0.0
+  description: >-
+    Content-bearing STT and TTS operations plus content-free lifecycle probes.
+    Implementations must bind to loopback unless an authenticated transport is
+    added by a later contract version.
+servers:
+  - url: http://127.0.0.1:8000
+paths:
+  /live:
+    get:
+      operationId: getLiveness
+      responses:
+        "200":
+          description: The process event loop is responsive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Liveness"
+  /ready:
+    get:
+      operationId: getReadiness
+      responses:
+        "200":
+          description: The requested model and compute backend are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "503":
+          description: The service is live but not ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+  /status:
+    get:
+      operationId: getStatus
+      responses:
+        "200":
+          description: Content-free lifecycle state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceStatus"
+  /v1/audio/transcriptions:
+    post:
+      operationId: transcribeAudio
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, model]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  maxLength: 20971520
+                model:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                language:
+                  type: string
+                  minLength: 1
+                  maxLength: 35
+                prompt:
+                  type: string
+                  maxLength: 4096
+      responses:
+        "200":
+          description: Successful transcription.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transcription"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+        "429":
+          $ref: "#/components/responses/Overloaded"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/audio/speech:
+    post:
+      operationId: synthesizeSpeech
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpeechRequest"
+      responses:
+        "200":
+          description: Encoded speech audio.
+          content:
+            audio/ogg:
+              schema:
+                type: string
+                format: binary
+            audio/wav:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+        "429":
+          $ref: "#/components/responses/Overloaded"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+components:
+  schemas:
+    Liveness:
+      type: object
+      additionalProperties: false
+      required: [live]
+      properties:
+        live:
+          const: true
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [ready, state]
+      properties:
+        ready:
+          type: boolean
+        state:
+          enum: [starting, loading, ready, busy, warm, cooling, standby, fault]
+        model:
+          type: string
+          maxLength: 128
+        requestedBackend:
+          enum: [cuda, cpu]
+        observedBackend:
+          enum: [cuda, cpu, unavailable, unknown]
+        acceleratorLease:
+          enum: [disabled, valid, unavailable, expired]
+    ServiceStatus:
+      allOf:
+        - $ref: "#/components/schemas/Readiness"
+        - type: object
+          properties:
+            activeRequests:
+              type: integer
+              minimum: 0
+            queueDepth:
+              type: integer
+              minimum: 0
+    Transcription:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        text:
+          type: string
+        model:
+          type: string
+          maxLength: 128
+    SpeechRequest:
+      type: object
+      additionalProperties: false
+      required: [input, model, voice, response_format]
+      properties:
+        input:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        model:
+          type: string
+          minLength: 1
+          maxLength: 128
+        voice:
+          type: string
+          minLength: 1
+          maxLength: 128
+        response_format:
+          enum: [opus, wav, pcm]
+        sample_rate:
+          type: integer
+          enum: [8000, 16000, 24000, 48000]
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, retryable]
+          properties:
+            code:
+              enum:
+                - invalid_request
+                - unsupported_media
+                - payload_too_large
+                - overloaded
+                - timeout
+                - cancelled
+                - accelerator_unavailable
+                - model_unavailable
+                - inference_failed
+            message:
+              type: string
+              maxLength: 512
+            retryable:
+              type: boolean
+  responses:
+    BadRequest:
+      description: Invalid or unsupported request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooLarge:
+      description: Bounded input or output limit exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Overloaded:
+      description: The bounded queue is full.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: Model or accelerator is not ready.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
