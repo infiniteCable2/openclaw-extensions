@@ -190,6 +190,14 @@ export function buildLocalMediaSpeechProvider(): SpeechProviderPlugin {
     models: [DEFAULT_TTS_MODEL],
     voices: [DEFAULT_TTS_VOICE],
     resolveConfig: ({ rawConfig }) => resolveProviderConfig(rawConfig),
+    resolveTalkOverrides: ({ params }) => {
+      const model = readString(params.modelId);
+      const voice = readString(params.voiceId);
+      return {
+        ...(model ? { model } : {}),
+        ...(voice && VOICE_ID_PATTERN.test(voice) ? { voice } : {}),
+      };
+    },
     isConfigured: ({ providerConfig }) => Boolean(resolveLoopbackBaseUrl(providerConfig.baseUrl)),
     async listVoices({ providerConfig, timeoutMs }) {
       const config = providerConfig ?? {};
