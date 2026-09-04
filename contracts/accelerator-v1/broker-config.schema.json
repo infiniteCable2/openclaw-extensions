@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/contracts/accelerator-v1/broker-config.schema.json",
+  "title": "Accelerator broker configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "accelerators"],
+  "properties": {
+    "version": { "const": 1 },
+    "accelerators": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 8,
+      "propertyNames": { "$ref": "#/$defs/id" },
+      "additionalProperties": { "$ref": "#/$defs/profile" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+    },
+    "bdf": {
+      "type": "string",
+      "pattern": "^0000:[0-9a-f]{2}:[0-9a-f]{2}\\.[0-7]$"
+    },
+    "hexId": {
+      "type": "string",
+      "pattern": "^0x[0-9a-f]{4}$"
+    },
+    "service": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.@-]+\\.service$"
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "root_port_bdf",
+        "root_port_vendor_id",
+        "root_port_device_id",
+        "branch_bdf",
+        "branch_vendor_id",
+        "branch_device_id",
+        "downstream_bridge_bdf",
+        "downstream_bridge_vendor_id",
+        "downstream_bridge_device_id",
+        "gpu_bdf",
+        "audio_bdf",
+        "gpu_vendor_id",
+        "gpu_device_id",
+        "audio_device_id",
+        "persistence_service",
+        "idle_timeout_sec",
+        "startup_guard_sec",
+        "attach_timeout_sec",
+        "nvidia_readiness_timeout_sec",
+        "default_lease_ttl_sec",
+        "max_lease_ttl_sec",
+        "automatic_power_management"
+      ],
+      "properties": {
+        "backend": { "const": "linux_pci_nvidia" },
+        "root_port_bdf": { "$ref": "#/$defs/bdf" },
+        "root_port_vendor_id": { "$ref": "#/$defs/hexId" },
+        "root_port_device_id": { "$ref": "#/$defs/hexId" },
+        "branch_bdf": { "$ref": "#/$defs/bdf" },
+        "branch_vendor_id": { "$ref": "#/$defs/hexId" },
+        "branch_device_id": { "$ref": "#/$defs/hexId" },
+        "downstream_bridge_bdf": { "$ref": "#/$defs/bdf" },
+        "downstream_bridge_vendor_id": { "$ref": "#/$defs/hexId" },
+        "downstream_bridge_device_id": { "$ref": "#/$defs/hexId" },
+        "gpu_bdf": { "$ref": "#/$defs/bdf" },
+        "audio_bdf": { "$ref": "#/$defs/bdf" },
+        "gpu_vendor_id": { "$ref": "#/$defs/hexId" },
+        "gpu_device_id": { "$ref": "#/$defs/hexId" },
+        "audio_device_id": { "$ref": "#/$defs/hexId" },
+        "persistence_service": { "$ref": "#/$defs/service" },
+        "idle_timeout_sec": { "type": "number", "minimum": 10, "maximum": 86400 },
+        "startup_guard_sec": { "type": "number", "minimum": 10, "maximum": 3600 },
+        "attach_timeout_sec": { "type": "number", "minimum": 5, "maximum": 300 },
+        "nvidia_readiness_timeout_sec": { "type": "number", "minimum": 5, "maximum": 600 },
+        "default_lease_ttl_sec": { "type": "number", "minimum": 5, "maximum": 86400 },
+        "max_lease_ttl_sec": { "type": "number", "minimum": 5, "maximum": 86400 },
+        "automatic_power_management": { "type": "boolean" }
+      }
+    }
+  }
+}

@@ -16,10 +16,10 @@ repository later without changing the OpenClaw provider contract.
   contract (OpenAPI).
 - `services/stt`: local speech-to-text runtime (implemented and contract-tested).
 - `services/tts`: local text-to-speech runtime (implemented and contract-tested).
-- `services/accelerator`: optional fail-closed lease runner (implemented and
-  contract-tested); the privileged hardware broker remains a separate
-  extraction target.
-- `contracts/accelerator-v1`: versioned Unix-socket lease protocol.
+- `services/accelerator`: optional fail-closed lease runner and narrow
+  Linux/PCI/NVIDIA lifecycle broker (implemented and contract-tested).
+- `contracts/accelerator-v1`: versioned Unix-socket lease and broker
+  configuration contracts.
 
 OpenClaw owns channels, agents, sessions, provider selection, request leases,
 and user-visible outcomes. The services own only bounded media processing and
@@ -30,8 +30,7 @@ dependency, protocol name, service name, or deployment path of this repository.
 
 ## Development status
 
-The native provider layer, standalone STT/TTS services, and optional accelerator
-lease runner are implemented. The hardware-specific privileged broker remains
-an extraction target. None of the services is production-deployed from this
-repository yet. Service implementations are added only with contract tests and
-without implicit CPU or cloud fallback.
+The native provider layer, standalone STT/TTS services, accelerator lease
+runner, and hardware-specific broker are implemented. None of the services is
+production-deployed from this repository yet. Service implementations are
+added only with contract tests and without implicit CPU or cloud fallback.

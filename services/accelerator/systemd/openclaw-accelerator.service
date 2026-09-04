@@ -1,0 +1,50 @@
+[Unit]
+Description=OpenClaw bounded accelerator lifecycle broker
+Requires=openclaw-accelerator.socket
+After=openclaw-accelerator.socket
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 /usr/lib/openclaw-accelerator/broker.py --config /etc/openclaw-accelerator/config.json
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=300
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectHostname=true
+ProtectControlGroups=true
+ProtectKernelTunables=false
+ProtectKernelModules=false
+ProtectKernelLogs=true
+ProtectProc=default
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_MODULE CAP_SYS_PTRACE
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=~@clock @cpu-emulation @debug @mount @obsolete @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+KeyringMode=private
+RemoveIPC=true
+LimitCORE=0
+LimitNOFILE=1024
+LimitFSIZE=1048576
+TasksMax=64
+ReadOnlyPaths=/etc/openclaw-accelerator /usr/lib/openclaw-accelerator
+InaccessiblePaths=-/etc/openclaw -/var/lib/openclaw
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

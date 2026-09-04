@@ -1,0 +1,15 @@
+[Unit]
+Description=OpenClaw bounded accelerator lifecycle socket
+
+[Socket]
+ListenStream=/run/openclaw-accelerator/accelerator.sock
+FileDescriptorName=accelerator
+SocketUser=root
+SocketGroup=openclaw-accelerator
+SocketMode=0660
+DirectoryMode=0750
+RemoveOnStop=true
+Accept=no
+
+[Install]
+WantedBy=sockets.target

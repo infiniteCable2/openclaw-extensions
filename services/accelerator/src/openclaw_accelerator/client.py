@@ -13,7 +13,7 @@ PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 16_384
 MAX_RESPONSE_BYTES = 65_536
 _CODE_RE = re.compile(r"[a-z][a-z0-9_]{0,127}")
-_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+_ID_RE = re.compile(r"[a-z][a-z0-9_.-]{0,63}")
 
 
 class BrokerError(RuntimeError):
