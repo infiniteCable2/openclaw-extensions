@@ -72,7 +72,16 @@ def environment_freeze() -> dict[str, str]:
     environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
     environment["PIP_NO_CACHE_DIR"] = "1"
     completed = subprocess.run(
-        [sys.executable, "-m", "pip", "freeze", "--local"],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "list",
+            "--local",
+            "--format=freeze",
+            "--exclude",
+            "pip",
+        ],
         check=False,
         capture_output=True,
         env=environment,
@@ -80,7 +89,7 @@ def environment_freeze() -> dict[str, str]:
     )
     if completed.returncode != 0:
         raise LockValidationError(
-            f"pip freeze failed with exit code {completed.returncode}"
+            f"pip list failed with exit code {completed.returncode}"
         )
     return parse_exact_requirements(
         completed.stdout.splitlines(), source="installed environment"

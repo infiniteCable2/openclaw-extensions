@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -87,3 +88,22 @@ def test_lock_reports_missing_unexpected_and_mismatched_distributions() -> None:
     assert "missing=['beta']" in message
     assert "unexpected=['gamma']" in message
     assert "version_mismatches=['alpha']" in message
+
+
+def test_environment_uses_distribution_versions_for_wheel_installs(monkeypatch) -> None:
+    completed = SimpleNamespace(
+        returncode=0,
+        stdout="Flask==3.1.3\nopenclaw-local-tts==0.1.0\n",
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return completed
+
+    monkeypatch.setattr(LOCK.subprocess, "run", fake_run)
+
+    actual = LOCK.environment_freeze()
+
+    assert actual == {"flask": "3.1.3", "openclaw-local-tts": "0.1.0"}
+    assert calls[0][0][-3:] == ["--format=freeze", "--exclude", "pip"]
