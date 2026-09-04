@@ -31,9 +31,12 @@ dependency, protocol name, service name, or deployment path of this repository.
 ## Development status
 
 The native provider layer, standalone STT/TTS services, accelerator lease
-runner, and hardware-specific broker are implemented. None of the services is
-production-deployed from this repository yet. Service implementations are
-added only with contract tests and without implicit CPU or cloud fallback. The
-STT and TTS service trees also retain their proven pinned CUDA dependency and
-artifact-verification toolchains without committing models, voices, wheels, or
-vendor checkouts.
+runner, and hardware-specific broker are implemented. Service implementations
+are added only with contract tests and without implicit CPU or cloud fallback.
+The STT and TTS service trees also retain their proven pinned CUDA dependency
+and artifact-verification toolchains without committing models, voices,
+wheels, or vendor checkouts.
+
+Start with [docs/INSTALLATION.md](docs/INSTALLATION.md). Each service also has
+an independent `INSTALL.md` that remains usable if the package is later split
+into its own repository.
