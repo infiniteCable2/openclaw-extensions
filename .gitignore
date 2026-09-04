@@ -1,0 +1,34 @@
+# JavaScript / TypeScript
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Local models and generated media
+models/
+artifacts/
+*.wav
+*.ogg
+*.opus
+*.mp3
+
+# Local configuration, credentials, and editor state
+.env
+.env.*
+!.env.example
+.local/
+.vscode/
+.idea/
+
+# Operating systems
+.DS_Store
+Thumbs.db
