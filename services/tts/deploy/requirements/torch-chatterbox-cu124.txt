@@ -1,0 +1,7 @@
+--index-url https://download.pytorch.org/whl/cu124
+
+# Chatterbox 0.1.7 pins torch and torchaudio 2.6.0 for Python < 3.14.
+# torchvision is intentionally absent because the active backend does not
+# declare or import it.
+torch==2.6.0
+torchaudio==2.6.0
