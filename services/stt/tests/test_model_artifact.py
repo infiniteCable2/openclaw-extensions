@@ -36,6 +36,30 @@ def test_manifest_round_trip_verifies_every_file(tmp_path: Path) -> None:
     )
 
 
+def test_cli_adopts_an_existing_verified_file_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_dir = tmp_path / "model"
+    _write_fixture(model_dir)
+    monkeypatch.setattr(
+        model_artifact.sys,
+        "argv",
+        [
+            "model_artifact.py",
+            "--output-dir",
+            str(model_dir),
+            "--write-manifest",
+            "--quiet",
+        ],
+    )
+
+    assert model_artifact.main() == 0
+    assert model_artifact.validate_model_artifact(model_dir)["model_revision"] == (
+        model_artifact.MODEL_REVISION
+    )
+
+
 def test_validation_rejects_modified_model_file(tmp_path: Path) -> None:
     model_dir = tmp_path / "model"
     _write_fixture(model_dir)
