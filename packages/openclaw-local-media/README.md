@@ -40,7 +40,11 @@ status only after the requested GPU model is ready.
         authHeader: false,
         localService: {
           command: "/absolute/path/to/openclaw-local-stt",
-          args: ["serve"],
+          args: [
+            "--model-path", "/absolute/offline/stt-model",
+            "--host", "127.0.0.1",
+            "--port", "8010",
+          ],
           healthUrl: "http://127.0.0.1:8010/ready",
           readyTimeoutMs: 300000,
           idleStopMs: 120000,
@@ -74,7 +78,17 @@ status only after the requested GPU model is ready.
         voices: ["astrid", "nova"],
         localService: {
           command: "/absolute/path/to/openclaw-local-tts",
-          args: ["serve"],
+          args: [
+            "--model-path", "/absolute/offline/tts-model",
+            "--chatterbox-source", "/absolute/offline/chatterbox-source",
+            "--perth-source", "/absolute/offline/perth-source",
+            "--s3tokenizer-source", "/absolute/offline/s3tokenizer-source",
+            "--voice-reference", "astrid=/absolute/private/voices/astrid.wav",
+            "--voice-reference", "nova=/absolute/private/voices/nova.wav",
+            "--default-voice", "astrid",
+            "--host", "127.0.0.1",
+            "--port", "8020",
+          ],
           healthUrl: "http://127.0.0.1:8020/ready",
           readyTimeoutMs: 300000,
           idleStopMs: 120000,
