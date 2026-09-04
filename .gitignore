@@ -3,6 +3,11 @@ node_modules/
 dist/
 coverage/
 *.tsbuildinfo
+*.tgz
+.pnpm-store/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
 
 # Python
 __pycache__/
@@ -12,20 +17,59 @@ __pycache__/
 .mypy_cache/
 .venv/
 venv/
+build/
+wheelhouse/
+*.egg-info/
+.tox/
+.nox/
 
 # Local models and generated media
 models/
 artifacts/
+downloads/
+spool/
+cache/
+tmp/
+logs/
 *.wav
 *.ogg
 *.opus
 *.mp3
+*.flac
+*.m4a
+*.aac
+*.webm
+*.mp4
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.engine
 
 # Local configuration, credentials, and editor state
 .env
 .env.*
 !.env.example
 .local/
+data/
+state/
+secrets/
+credentials/
+*.secret
+*.token
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.jsonl
+core
+core.*
 .vscode/
 .idea/
 
