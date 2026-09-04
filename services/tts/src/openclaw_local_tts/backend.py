@@ -23,6 +23,8 @@ class ChatterboxBackend:
         chatterbox_source: Path,
         perth_source: Path,
         s3tokenizer_source: Path,
+        public_voices: tuple[dict[str, str], ...] | None = None,
+        voice_generation_settings: dict[str, dict[str, float]] | None = None,
         model_id: str = "chatterbox",
         language: str = "de",
     ) -> None:
@@ -93,6 +95,15 @@ class ChatterboxBackend:
         self.model_id = model_id.strip()
         self.default_voice = default_voice
         self.voice_ids = frozenset(self._voice_references)
+        self.public_voices = public_voices or tuple(
+            {"id": voice_id, "name": voice_id} for voice_id in self._voice_references
+        )
+        if {voice["id"] for voice in self.public_voices} != set(self.voice_ids):
+            raise ValueError("public voice metadata must match configured voice references")
+        self._voice_generation_settings = {
+            voice_id: dict((voice_generation_settings or {}).get(voice_id, {}))
+            for voice_id in self.voice_ids
+        }
         self.language = language.strip()
         self.requested_backend = "cuda"
         self.observed_backend = "cuda"
@@ -108,6 +119,7 @@ class ChatterboxBackend:
             text=text,
             language_id=self.language,
             audio_prompt_path=str(self._voice_references[voice_id]),
+            **self._voice_generation_settings[voice_id],
         )
         if waveform is None:
             raise RuntimeError("Chatterbox returned no audio")

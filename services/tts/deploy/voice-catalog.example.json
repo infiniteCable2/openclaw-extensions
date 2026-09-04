@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "default_voice": "astrid",
+  "voices": [
+    {
+      "id": "astrid",
+      "name": "Astrid",
+      "reference_path": "/var/lib/openclaw-local-media/voices/astrid.wav",
+      "locale": "de-DE",
+      "description": "German default voice",
+      "generation": {
+        "exaggeration": 0.5,
+        "temperature": 0.8,
+        "cfg_weight": 0.5
+      }
+    },
+    {
+      "id": "nova",
+      "name": "Nova",
+      "reference_path": "/var/lib/openclaw-local-media/voices/nova.wav",
+      "locale": "de-DE",
+      "description": "German assistant voice"
+    }
+  ]
+}

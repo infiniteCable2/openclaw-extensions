@@ -21,17 +21,17 @@ def test_reference_voice_changes_per_request_without_model_reload(tmp_path, monk
     astrid.write_bytes(b"astrid")
     nova.write_bytes(b"nova")
 
-    generated_references: list[str] = []
+    generated_references: list[tuple[str, dict[str, object]]] = []
     load_calls: list[tuple[str, dict[str, object]]] = []
 
     class FakeClient:
         device = "cuda:0"
         sr = 24_000
 
-        def generate(self, *, text, language_id, audio_prompt_path):
+        def generate(self, *, text, language_id, audio_prompt_path, **generation):
             assert text
             assert language_id == "de"
-            generated_references.append(audio_prompt_path)
+            generated_references.append((audio_prompt_path, generation))
             return np.array([[0.0, 0.5, -0.5]], dtype=np.float32)
 
     class FakeChatterbox:
@@ -58,13 +58,17 @@ def test_reference_voice_changes_per_request_without_model_reload(tmp_path, monk
         chatterbox_source=chatterbox_source,
         perth_source=perth_source,
         s3tokenizer_source=s3tokenizer_source,
+        voice_generation_settings={"nova": {"temperature": 0.7}},
     )
     first = backend.synthesize("Hallo", voice_id="astrid")
     second = backend.synthesize("Guten Tag", voice_id="nova")
 
     assert len(load_calls) == 1
     assert load_calls[0][1] == {"device": "cuda", "t3_model": "v3"}
-    assert generated_references == [str(astrid.resolve()), str(nova.resolve())]
+    assert generated_references == [
+        (str(astrid.resolve()), {}),
+        (str(nova.resolve()), {"temperature": 0.7}),
+    ]
     assert first.sample_rate == second.sample_rate == 24_000
     assert len(first.data) == len(second.data) == 6
 

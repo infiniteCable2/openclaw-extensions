@@ -1,8 +1,8 @@
 # OpenClaw local TTS service
 
 Standalone OpenAI-compatible text-to-speech worker for the native `local-media`
-provider. The production backend is Chatterbox Multilingual v3 on CUDA with one
-explicitly configured reference voice.
+provider. The production backend is Chatterbox Multilingual v3 on CUDA with a
+service-owned catalog of explicitly configured reference voices.
 
 The process loads the model before opening its HTTP listener. It has no CPU,
 cloud, alternate-model, or network-download fallback. A fixed absolute ffmpeg
@@ -14,6 +14,8 @@ binary performs bounded Opus/WAV/PCM encoding; it is not discovered through
 - `GET /live`: process liveness.
 - `GET /ready`: model and requested-backend readiness.
 - `GET /status`: content-free state and bounded queue depth.
+- `GET /v1/voices`: public voice ids and descriptions, never private paths or
+  generation settings.
 - `POST /v1/audio/speech`: OpenAI-compatible synthesis request.
 
 Voice-note output is Ogg Opus. Telephony output is raw mono PCM16 at the
@@ -41,9 +43,11 @@ adopted with `model_artifact.py --write-manifest`; foreign manifests must not
 be copied. The pinned file set and full digests are checked before the neutral
 manifest is accepted.
 
-Each `--voice-reference` is a public voice id mapped to one absolute,
-operator-controlled WAV file. The model is loaded once; the selected reference
-changes per request:
+The production interface is a root/operator-controlled voice catalog following
+`contracts/local-media-v1/voice-catalog.schema.json`. Each entry maps a public
+voice id to a private absolute WAV file and may carry Chatterbox generation
+settings. The model is loaded once; the selected reference and settings change
+per request:
 
 ```bash
 .venv/bin/openclaw-local-tts \
@@ -51,7 +55,9 @@ changes per request:
   --chatterbox-source /absolute/chatterbox/source \
   --perth-source /absolute/perth/source \
   --s3tokenizer-source /absolute/s3tokenizer/source \
-  --voice-reference astrid=/absolute/voices/astrid.wav \
-  --voice-reference nova=/absolute/voices/nova.wav \
-  --default-voice astrid
+  --voice-catalog /etc/openclaw-local-media/tts-voices.json
 ```
+
+Direct `--voice-reference` arguments remain available for development. Use the
+catalog in production so voice knowledge remains in the service and OpenClaw
+can discover it without learning private file locations. See `INSTALL.md`.

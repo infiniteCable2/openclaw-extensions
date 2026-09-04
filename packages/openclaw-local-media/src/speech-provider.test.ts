@@ -101,20 +101,46 @@ describe("local media speech provider", () => {
     ).toBe(false);
   });
 
-  it("lists the configured default and allowlisted voices", async () => {
+  it("discovers public voices from the host-leased local service", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({
+          object: "list",
+          model: "chatterbox",
+          default_voice: "astrid",
+          data: [
+            {
+              id: "astrid",
+              name: "Astrid",
+              locale: "de-DE",
+              description: "Ruhige Stimme",
+              reference_path: "/private/voice.wav",
+            },
+            { id: "nova", name: "Nova" },
+          ],
+        }),
+      ),
+    );
     const provider = buildLocalMediaSpeechProvider();
     await expect(
       provider.listVoices?.({
-        providerConfig: {
-          voice: "astrid",
-          voices: ["astrid", "nova", "nova", "  fallback  ", ""],
-        },
+        providerConfig: { baseUrl: "http://127.0.0.1:8020/v1" },
+        timeoutMs: 1_000,
       }),
     ).resolves.toEqual([
-      { id: "astrid", name: "astrid" },
-      { id: "nova", name: "nova" },
-      { id: "fallback", name: "fallback" },
+      {
+        id: "astrid",
+        name: "Astrid",
+        locale: "de-DE",
+        description: "Ruhige Stimme",
+      },
+      { id: "nova", name: "Nova" },
     ]);
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      "http://127.0.0.1:8020/v1/voices",
+      expect.objectContaining({ method: "GET", redirect: "error" }),
+    );
   });
 
   it("rejects oversized audio before buffering it", async () => {

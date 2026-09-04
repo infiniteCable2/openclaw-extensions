@@ -130,6 +130,15 @@ def create_app(
     def status() -> Response:
         return jsonify(readiness())
 
+    @app.get("/v1/voices")
+    def voices() -> Response:
+        return jsonify(
+            object="list",
+            model=backend.model_id,
+            default_voice=backend.default_voice,
+            data=list(backend.public_voices),
+        )
+
     @app.post("/v1/audio/speech")
     def synthesize() -> tuple[Response, int] | Response:
         try:
