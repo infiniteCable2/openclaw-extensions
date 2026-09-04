@@ -44,11 +44,30 @@ command is `openclaw-accelerator-run`, followed after `--` by:
 --host 127.0.0.1 --port 8010
 ```
 
+The pinned CUDA wheels keep their shared libraries inside the isolated virtual
+environment. Declare those exact, release-specific paths through OpenClaw's
+native `localService.env` field so CTranslate2 can load cuBLAS and cuDNN during
+the first inference:
+
+```json5
+env: {
+  LD_LIBRARY_PATH: "/srv/openclaw/workers/venvs/stt-faster-whisper-py313/lib/python3.13/site-packages/nvidia/cublas/lib:/srv/openclaw/workers/venvs/stt-faster-whisper-py313/lib/python3.13/site-packages/nvidia/cudnn/lib",
+}
+```
+
+Do not use a system CUDA directory or a CPU fallback here. Both directories and
+their expected sonames must be verified as part of the immutable runtime
+artifact before selection.
+
 Use `http://127.0.0.1:8010/ready`, a model-load-aware readiness timeout, and a
 finite idle stop. Before cutover, verify the model manifest and Python package
 lock. Acceptance requires a CUDA observation, a successful bounded
 transcription, worker termination after idle, lease release, and
 broker-confirmed standby.
+
+If STT and TTS cannot coexist in GPU memory, configure a very short positive
+`idleStopMs` for both local services. A value of `0` means no idle stop in the
+current OpenClaw lifecycle implementation and must not be used for that policy.
 
 ## Rollback
 
