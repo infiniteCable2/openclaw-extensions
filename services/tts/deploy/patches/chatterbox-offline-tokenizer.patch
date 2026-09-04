@@ -1,0 +1,86 @@
+diff --git a/src/chatterbox/models/tokenizers/tokenizer.py b/src/chatterbox/models/tokenizers/tokenizer.py
+index 84d45d3..704d2ac 100644
+--- a/src/chatterbox/models/tokenizers/tokenizer.py
++++ b/src/chatterbox/models/tokenizers/tokenizer.py
+@@ -1,11 +1,11 @@
+ import logging
+ import json
++import os
+ 
+ import torch
+ from pathlib import Path
+ from unicodedata import category, normalize
+ from tokenizers import Tokenizer
+-from huggingface_hub import hf_hub_download
+ 
+ 
+ # Special tokens
+@@ -161,17 +161,24 @@ class ChineseCangjieConverter:
+         self.word2cj = {}
+         self.cj2word = {}
+         self.segmenter = None
+-        self._load_cangjie_mapping(model_dir)
++        self.model_dir = Path(model_dir) if model_dir is not None else None
++        self._initialized = False
++
++    def _ensure_initialized(self):
++        if self._initialized:
++            return
++        self._load_cangjie_mapping()
+         self._init_segmenter()
++        self._initialized = True
+     
+-    def _load_cangjie_mapping(self, model_dir=None):
+-        """Load Cangjie mapping from HuggingFace model repository."""        
++    def _load_cangjie_mapping(self):
++        """Load Cangjie mapping from the already provisioned model tree."""
+         try:
+-            cangjie_file = hf_hub_download(
+-                repo_id=REPO_ID,
+-                filename="Cangjie5_TC.json",
+-                cache_dir=model_dir
+-            )
++            if self.model_dir is None:
++                raise FileNotFoundError("local model directory is unavailable")
++            cangjie_file = self.model_dir / "Cangjie5_TC.json"
++            if cangjie_file.is_symlink() or not cangjie_file.is_file():
++                raise FileNotFoundError("local Cangjie mapping is unavailable")
+             
+             with open(cangjie_file, "r", encoding="utf-8") as fp:
+                 data = json.load(fp)
+@@ -188,13 +195,25 @@ class ChineseCangjieConverter:
+             logger.warning(f"Could not load Cangjie mapping: {e}")
+     
+     def _init_segmenter(self):
+-        """Initialize pkuseg segmenter."""
++        """Initialize pkuseg only from an explicitly provisioned local model."""
++        model_path = os.getenv("CHATTERBOX_PKUSEG_MODEL_PATH", "").strip()
++        if not model_path:
++            logger.info("Local pkuseg model is not configured - Chinese segmentation will be skipped")
++            return
+         try:
++            resolved_model = Path(model_path)
++            if not resolved_model.is_absolute():
++                raise ValueError("pkuseg model path must be absolute")
++            if resolved_model.is_symlink() or not resolved_model.exists():
++                raise FileNotFoundError("local pkuseg model is unavailable")
+             from spacy_pkuseg import pkuseg
+-            self.segmenter = pkuseg()
++            self.segmenter = pkuseg(model_name=str(resolved_model))
+         except ImportError:
+             logger.warning("pkuseg not available - Chinese segmentation will be skipped")
+             self.segmenter = None
++        except Exception as exc:
++            logger.warning(f"Could not load local pkuseg model: {exc}")
++            self.segmenter = None
+     
+     def _cangjie_encode(self, glyph: str):
+         """Encode a single Chinese glyph to Cangjie code."""
+@@ -210,6 +229,7 @@ class ChineseCangjieConverter:
+     
+     def __call__(self, text):
+         """Convert Chinese characters in text to Cangjie tokens."""
++        self._ensure_initialized()
+         output = []
+         if self.segmenter is not None:
+             segmented_words = self.segmenter.cut(text)

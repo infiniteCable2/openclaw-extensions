@@ -28,8 +28,13 @@ python3.13 -m venv .venv
 ```
 
 The production Chatterbox, PyTorch CUDA, vendor source, model, and reference
-artifacts remain a separately pinned offline build. They must be provisioned
-before starting this service.
+artifacts are a separately pinned offline build. `deploy/` contains the proven
+99-distribution Debian 13/Python 3.13/CUDA 12.4 lock, full wheelhouse/source/
+model verifiers, the two reviewed Chatterbox runtime patches, a pinned online
+artifact builder, and a network-disabled runtime installer. The offline
+installer additionally requires an explicit SHA-256-bound wheel of this
+service. Model weights, wheels, vendor trees, and voices remain outside Git and
+must be provisioned before starting the service.
 
 Each `--voice-reference` is a public voice id mapped to one absolute,
 operator-controlled WAV file. The model is loaded once; the selected reference

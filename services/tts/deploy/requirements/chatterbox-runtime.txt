@@ -1,0 +1,18 @@
+# Runtime graph declared by Chatterbox commit
+# 5de7a54aa4e5e2baadb0182dde554908b48b85c2.  Torch and torchaudio are
+# installed separately from the CUDA 12.4 index.
+numpy>=2.0.0
+librosa==0.11.0
+scipy
+PyYAML
+onnx
+tqdm
+einops
+transformers==5.2.0
+diffusers==0.29.0
+conformer==0.3.2
+safetensors==0.5.3
+spacy-pkuseg
+pykakasi==2.3.0
+pyloudnorm
+omegaconf
