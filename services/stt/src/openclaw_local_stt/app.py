@@ -27,6 +27,22 @@ _ALLOWED_AUDIO_TYPES = {
     "audio/x-wav",
 }
 
+_AUDIO_SUFFIXES = {
+    "audio/aac": ".aac",
+    "audio/flac": ".flac",
+    "audio/m4a": ".m4a",
+    "audio/mp4": ".mp4",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/opus": ".opus",
+    "audio/wav": ".wav",
+    "audio/webm": ".webm",
+    "audio/x-m4a": ".m4a",
+    "audio/x-wav": ".wav",
+}
+
+_ALLOWED_FILENAME_SUFFIXES = frozenset(_AUDIO_SUFFIXES.values())
+
 
 class ServiceError(RuntimeError):
     def __init__(self, code: str, message: str, status: int, *, retryable: bool) -> None:
@@ -100,7 +116,12 @@ def _store_bounded_upload(*, max_audio_bytes: int) -> Path:
     if content_type not in _ALLOWED_AUDIO_TYPES:
         raise ServiceError("unsupported_media", "audio media type is unsupported", 400, retryable=False)
 
-    temp = tempfile.NamedTemporaryFile(prefix="openclaw-stt-", suffix=".audio", delete=False)
+    suffix = _AUDIO_SUFFIXES.get(content_type)
+    if suffix is None:
+        candidate = Path(upload.filename or "").suffix.lower()
+        suffix = candidate if candidate in _ALLOWED_FILENAME_SUFFIXES else ".audio"
+
+    temp = tempfile.NamedTemporaryFile(prefix="openclaw-stt-", suffix=suffix, delete=False)
     path = Path(temp.name)
     total = 0
     try:

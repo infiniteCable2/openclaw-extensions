@@ -14,7 +14,7 @@ class FakeBackend:
     observed_backend = "cuda"
 
     def __init__(self) -> None:
-        self.calls: list[tuple[bytes, str | None, str | None]] = []
+        self.calls: list[tuple[bytes, str | None, str | None, str]] = []
 
     def transcribe(
         self,
@@ -23,7 +23,7 @@ class FakeBackend:
         language: str | None,
         prompt: str | None,
     ) -> str:
-        self.calls.append((audio_path.read_bytes(), language, prompt))
+        self.calls.append((audio_path.read_bytes(), language, prompt, audio_path.suffix))
         return "Hallo Welt"
 
 
@@ -63,7 +63,29 @@ def test_openai_compatible_transcription(service) -> None:
     )
     assert response.status_code == 200
     assert response.get_json() == {"model": "faster-whisper", "text": "Hallo Welt"}
-    assert backend.calls == [(b"audio-bytes", "de", "Eigennamen")]
+    assert backend.calls == [(b"audio-bytes", "de", "Eigennamen", ".ogg")]
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type", "expected_suffix"),
+    [
+        ("message.wav", "audio/wav", ".wav"),
+        ("message.MP3", "audio/mpeg", ".mp3"),
+        ("message.webm", "application/octet-stream", ".webm"),
+        ("../../message.exe", "application/octet-stream", ".audio"),
+    ],
+)
+def test_upload_uses_safe_decoder_suffix(service, filename, content_type, expected_suffix) -> None:
+    client, backend = service
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "file": (BytesIO(b"audio-bytes"), filename, content_type),
+            "model": "faster-whisper",
+        },
+    )
+    assert response.status_code == 200
+    assert backend.calls[-1][3] == expected_suffix
 
 
 @pytest.mark.parametrize(
