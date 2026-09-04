@@ -14,6 +14,8 @@ test = ["pytest==8.4.2"]
 
 [project.scripts]
 openclaw-accelerator-run = "openclaw_accelerator.cli:main"
+openclaw-accelerator-broker = "openclaw_accelerator.broker:main"
+openclaw-accelerator-cuda-probe = "openclaw_accelerator.cuda_driver_probe:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openclaw_accelerator"]

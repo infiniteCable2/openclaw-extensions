@@ -14,15 +14,15 @@
         "version": { "const": 1 },
         "ok": { "const": true },
         "state": {
-          "enum": ["off", "attaching", "ready", "cooling", "fault"]
+          "enum": ["off", "attaching", "ready", "degraded", "detaching", "fault"]
         },
         "accelerator_id": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
         },
         "consumer": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
         },
         "lease_id": {
           "type": "string",

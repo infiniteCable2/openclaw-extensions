@@ -11,7 +11,7 @@
   "$defs": {
     "id": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+      "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
     },
     "leaseId": {
       "type": "string",
@@ -26,7 +26,7 @@
     "acquire": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "action", "accelerator_id", "consumer", "ttl_sec"],
+      "required": ["version", "action", "accelerator_id", "consumer"],
       "properties": {
         "version": { "const": 1 },
         "action": { "const": "acquire" },
@@ -38,7 +38,7 @@
     "renew": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "action", "accelerator_id", "lease_id", "ttl_sec"],
+      "required": ["version", "action", "accelerator_id", "lease_id"],
       "properties": {
         "version": { "const": 1 },
         "action": { "const": "renew" },

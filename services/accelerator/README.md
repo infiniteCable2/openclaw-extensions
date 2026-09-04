@@ -25,6 +25,41 @@ command after `--`. When accelerator management is disabled, point
 `localService.command` directly at the worker instead.
 
 The runner is implemented and contract-tested. The privileged hardware broker
-is deliberately a separate extraction and deployment unit. Until that neutral
-broker is installed on a host, required mode is not ready for production and
-must not be redirected to a legacy service.
+is an independently installed root-owned boundary in this package. Until that
+neutral broker is installed and accepted on a host, required mode is not ready
+for production and must not be redirected to a legacy service.
+
+## Privileged broker
+
+`openclaw-accelerator-broker` implements the v1 Unix-socket protocol for an
+explicit allowlist of Linux PCI/NVIDIA accelerator topologies. It preserves the
+already proven lifecycle behavior: immutable PCI identity checks, complete
+branch inventory validation, peer-credential lease ownership, per-UID rate and
+lease limits, renewable TTLs, NVIDIA/CUDA readiness, bounded degraded-state
+recovery, idle cooldown, and broker-confirmed detach.
+
+The broker never accepts commands, paths, units, device identifiers, or shell
+text from a client. Hardware topology and the one persistence-service unit are
+root-owned configuration validated against
+`contracts/accelerator-v1/broker-config.schema.json`. Status is content-free
+and never includes lease ids.
+
+The `systemd/` templates install the broker separately from OpenClaw. The
+root-owned process receives exactly one activated Unix socket, has no network
+address family, cannot read OpenClaw configuration or state, and grants socket
+access only through the `openclaw-accelerator` group. Its intentionally narrow
+remaining privileges are needed for fixed module, service, PCI sysfs, and
+device-client operations. Enablement, host-specific topology configuration,
+and production acceptance remain deployment decisions rather than package
+defaults.
+
+## Deployment layout
+
+- broker and CUDA probe: `/usr/lib/openclaw-accelerator/`;
+- root-owned configuration: `/etc/openclaw-accelerator/config.json`;
+- permission-restricted socket: `/run/openclaw-accelerator/accelerator.sock`;
+- client membership: `openclaw-accelerator` group.
+
+The supplied unit expects the source files to be installed at the fixed paths
+above. Release packaging must bind those files and the configuration template
+to reviewed hashes before a production cutover.
