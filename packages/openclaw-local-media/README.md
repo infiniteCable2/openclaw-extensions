@@ -45,6 +45,9 @@ status only after the requested GPU model is ready.
             "--host", "127.0.0.1",
             "--port", "8010",
           ],
+          env: {
+            LD_LIBRARY_PATH: "/absolute/stt-venv/lib/python3.13/site-packages/nvidia/cublas/lib:/absolute/stt-venv/lib/python3.13/site-packages/nvidia/cudnn/lib",
+          },
           healthUrl: "http://127.0.0.1:8010/ready",
           readyTimeoutMs: 300000,
           idleStopMs: 120000,
@@ -151,3 +154,10 @@ OpenClaw's idle stop terminates the runner. The runner first terminates the
 worker process group and only then releases its hardware lease. If acquisition
 or renewal is not proven, no worker remains available and OpenClaw receives a
 normal local-service readiness failure; no direct-worker fallback is attempted.
+
+The STT CUDA wheel directories shown in `localService.env.LD_LIBRARY_PATH` are
+part of the selected STT runtime release. They are required because
+CTranslate2 loads cuBLAS and cuDNN lazily on the first inference. Keep the paths
+release-specific and verify the libraries before selecting a candidate. Where
+STT and TTS do not fit concurrently, give both services a short positive
+`idleStopMs`; `0` disables idle termination.
