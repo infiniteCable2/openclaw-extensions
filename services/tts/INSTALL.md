@@ -16,7 +16,7 @@ refuse unsafe or reused targets.
 Provision or adopt the model with `deploy/chatterbox/model_artifact.py`. Adopt
 only its pinned data files, never another service's manifest. Vendor source
 trees use `deploy/chatterbox/source_artifact.py`; the offline wheelhouse uses
-`deploy/chatterbox/wheelhouse_artifact.py`. Run every verifier in full before
+`deploy/wheelhouse_artifact.py`. Run every verifier in full before
 allowing OpenClaw to select the candidate.
 
 ## Service-owned voice catalog
