@@ -14,7 +14,7 @@ repository later without changing the OpenClaw provider contract.
   (implemented and unit-tested).
 - `contracts/local-media-v1`: versioned, implementation-neutral service
   contract (OpenAPI).
-- `services/stt`: local speech-to-text runtime.
+- `services/stt`: local speech-to-text runtime (implemented and contract-tested).
 - `services/tts`: local text-to-speech runtime.
 - `services/accelerator`: optional privileged accelerator lifecycle broker.
 
@@ -27,7 +27,8 @@ dependency, protocol name, service name, or deployment path of this repository.
 
 ## Development status
 
-The native provider layer is implemented. The STT, TTS, and optional
-accelerator services are still extraction targets and are not production-ready
-in this repository yet. Service implementations are added only with contract
-tests and without implicit CPU or cloud fallback.
+The native provider layer and standalone STT service are implemented. TTS and
+the optional accelerator service are still extraction targets. None of the
+services is production-deployed from this repository yet. Service
+implementations are added only with contract tests and without implicit CPU or
+cloud fallback.
