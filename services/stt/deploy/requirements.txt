@@ -1,0 +1,3 @@
+# Active production profile. Alternative engines are never installed implicitly.
+-r requirements/base.txt
+-r requirements/faster-whisper.txt
