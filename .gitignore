@@ -2,6 +2,8 @@
 node_modules/
 dist/
 coverage/
+.coverage*
+htmlcov/
 *.tsbuildinfo
 *.tgz
 .pnpm-store/
@@ -62,7 +64,13 @@ credentials/
 *.key
 *.p12
 *.pfx
+*.jks
+*.keystore
 *.kdbx
+*.log
+*.pid
+*.sock
+*.dump
 *.sqlite
 *.sqlite-*
 *.db
