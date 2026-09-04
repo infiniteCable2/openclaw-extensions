@@ -73,14 +73,22 @@ def _exit_code(return_code: int) -> int:
 
 def _signal_worker(process: WorkerProcess, signal_number: int) -> None:
     if os.name == "posix":
-        os.killpg(process.pid, signal_number)
+        try:
+            os.killpg(process.pid, signal_number)
+        except ProcessLookupError:
+            if process.poll() is None:
+                raise
     else:
         process.send_signal(signal_number)
 
 
 def _kill_worker(process: WorkerProcess) -> None:
     if os.name == "posix":
-        os.killpg(process.pid, signal.SIGKILL)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            if process.poll() is None:
+                raise
     else:
         process.kill()
 

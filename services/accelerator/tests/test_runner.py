@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 from dataclasses import dataclass
 
 import pytest
 
+import openclaw_accelerator.runner as runner_module
 from openclaw_accelerator.client import BrokerError
 from openclaw_accelerator.runner import (
     EXIT_TEMPORARY_FAILURE,
@@ -104,7 +106,20 @@ def config() -> RunnerConfig:
     )
 
 
-def run_supervisor(client: FakeClient, process: FakeProcess, clock: FakeClock) -> int:
+def run_supervisor(
+    client: FakeClient,
+    process: FakeProcess,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> int:
+    if os.name == "posix":
+        def signal_group(_pid: int, signal_number: int) -> None:
+            if signal_number == signal.SIGKILL:
+                process.kill()
+            else:
+                process.send_signal(signal_number)
+
+        monkeypatch.setattr(runner_module.os, "killpg", signal_group)
     return LeaseSupervisor().run(
         client=client,
         config=config(),
@@ -117,12 +132,12 @@ def run_supervisor(client: FakeClient, process: FakeProcess, clock: FakeClock) -
     )
 
 
-def test_worker_starts_only_after_lease_and_release_follows_exit() -> None:
+def test_worker_starts_only_after_lease_and_release_follows_exit(monkeypatch) -> None:
     clock = FakeClock()
     lease = FakeLease(clock)
     client = FakeClient(lease)
     process = FakeProcess(exit_after_polls=2)
-    assert run_supervisor(client, process, clock) == 0
+    assert run_supervisor(client, process, clock, monkeypatch) == 0
     assert client.calls == 1
     assert lease.released is True
     assert process.signals == []
@@ -151,22 +166,28 @@ def test_acquire_failure_never_starts_worker() -> None:
     assert spawned is False
 
 
-def test_renewal_failure_stops_worker_before_release() -> None:
+def test_renewal_failure_stops_worker_before_release(monkeypatch) -> None:
     clock = FakeClock()
     lease = FakeLease(clock, renew_fails=True)
     process = FakeProcess()
-    assert run_supervisor(FakeClient(lease), process, clock) == EXIT_TEMPORARY_FAILURE
+    assert (
+        run_supervisor(FakeClient(lease), process, clock, monkeypatch)
+        == EXIT_TEMPORARY_FAILURE
+    )
     assert lease.renewals >= 2
     assert process.signals == [signal.SIGTERM]
     assert lease.released is True
     assert clock.epoch() < lease.expires_at_epoch
 
 
-def test_unproven_worker_stop_keeps_lease_until_ttl_expiry() -> None:
+def test_unproven_worker_stop_keeps_lease_until_ttl_expiry(monkeypatch) -> None:
     clock = FakeClock()
     lease = FakeLease(clock, renew_fails=True)
     process = FakeProcess(stoppable=False)
-    assert run_supervisor(FakeClient(lease), process, clock) == EXIT_TEMPORARY_FAILURE
+    assert (
+        run_supervisor(FakeClient(lease), process, clock, monkeypatch)
+        == EXIT_TEMPORARY_FAILURE
+    )
     assert process.signals == [signal.SIGTERM]
     assert process.kills == 1
     assert lease.released is False
