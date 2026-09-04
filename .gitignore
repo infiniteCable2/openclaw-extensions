@@ -50,6 +50,7 @@ logs/
 *.engine
 
 # Local configuration, credentials, and editor state
+AGENTS.md
 .env
 .env.*
 !.env.example
