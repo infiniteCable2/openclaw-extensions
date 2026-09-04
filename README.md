@@ -8,11 +8,12 @@ can evolve together during the first production cutover. Each service keeps an
 independent package and dependency boundary, allowing it to move to its own
 repository later without changing the OpenClaw provider contract.
 
-## Planned packages
+## Components
 
-- `packages/openclaw-local-media`: native OpenClaw STT and TTS provider plugin.
+- `packages/openclaw-local-media`: native OpenClaw STT and TTS provider plugin
+  (implemented and unit-tested).
 - `contracts/local-media-v1`: versioned, implementation-neutral service
-  contracts.
+  contract (OpenAPI).
 - `services/stt`: local speech-to-text runtime.
 - `services/tts`: local text-to-speech runtime.
 - `services/accelerator`: optional privileged accelerator lifecycle broker.
@@ -26,6 +27,7 @@ dependency, protocol name, service name, or deployment path of this repository.
 
 ## Development status
 
-The repository currently establishes architecture and extraction boundaries.
-Provider and service implementations are added only with contract tests and
-without implicit CPU or cloud fallback.
+The native provider layer is implemented. The STT, TTS, and optional
+accelerator services are still extraction targets and are not production-ready
+in this repository yet. Service implementations are added only with contract
+tests and without implicit CPU or cloud fallback.
