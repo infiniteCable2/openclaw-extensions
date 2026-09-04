@@ -147,16 +147,29 @@ components:
         acceleratorLease:
           enum: [disabled, valid, unavailable, expired]
     ServiceStatus:
-      allOf:
-        - $ref: "#/components/schemas/Readiness"
-        - type: object
-          properties:
-            activeRequests:
-              type: integer
-              minimum: 0
-            queueDepth:
-              type: integer
-              minimum: 0
+      type: object
+      additionalProperties: false
+      required: [ready, state, activeRequests, queueDepth]
+      properties:
+        ready:
+          type: boolean
+        state:
+          enum: [starting, loading, ready, busy, warm, cooling, standby, fault]
+        model:
+          type: string
+          maxLength: 128
+        requestedBackend:
+          enum: [cuda, cpu]
+        observedBackend:
+          enum: [cuda, cpu, unavailable, unknown]
+        acceleratorLease:
+          enum: [disabled, valid, unavailable, expired]
+        activeRequests:
+          type: integer
+          minimum: 0
+        queueDepth:
+          type: integer
+          minimum: 0
     Transcription:
       type: object
       additionalProperties: false

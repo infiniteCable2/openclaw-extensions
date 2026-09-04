@@ -49,7 +49,6 @@ def test_liveness_and_readiness_are_content_free(service) -> None:
     client, _backend, _encoder = service
     assert client.get("/live").get_json() == {"live": True}
     assert client.get("/ready").get_json() == {
-        "acceleratorLease": "disabled",
         "activeRequests": 0,
         "model": "chatterbox",
         "observedBackend": "cuda",
