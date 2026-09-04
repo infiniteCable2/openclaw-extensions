@@ -33,4 +33,7 @@ dependency, protocol name, service name, or deployment path of this repository.
 The native provider layer, standalone STT/TTS services, accelerator lease
 runner, and hardware-specific broker are implemented. None of the services is
 production-deployed from this repository yet. Service implementations are
-added only with contract tests and without implicit CPU or cloud fallback.
+added only with contract tests and without implicit CPU or cloud fallback. The
+STT and TTS service trees also retain their proven pinned CUDA dependency and
+artifact-verification toolchains without committing models, voices, wheels, or
+vendor checkouts.
