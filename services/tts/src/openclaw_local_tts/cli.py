@@ -8,6 +8,7 @@ from waitress import serve
 from .app import create_app
 from .audio import FfmpegAudioEncoder
 from .backend import ChatterboxBackend
+from .voice_catalog import load_voice_catalog
 
 
 def _voice_reference(value: str) -> tuple[str, Path]:
@@ -23,8 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8020)
     parser.add_argument("--model-path", type=Path, required=True)
     parser.add_argument("--model-id", default="chatterbox")
-    parser.add_argument("--voice-reference", action="append", type=_voice_reference, required=True)
-    parser.add_argument("--default-voice", default="default")
+    parser.add_argument("--voice-catalog", type=Path)
+    parser.add_argument("--voice-reference", action="append", type=_voice_reference, default=[])
+    parser.add_argument("--default-voice")
     parser.add_argument("--language", default="de")
     parser.add_argument("--chatterbox-source", type=Path, required=True)
     parser.add_argument("--perth-source", type=Path, required=True)
@@ -40,16 +42,32 @@ def main() -> None:
     args = build_parser().parse_args()
     if not 1 <= args.port <= 65535:
         raise SystemExit("port is outside its allowed range")
-    voice_references = dict(args.voice_reference)
-    if len(voice_references) != len(args.voice_reference):
-        raise SystemExit("voice reference ids must be unique")
+    if args.voice_catalog:
+        if args.voice_reference or args.default_voice:
+            raise SystemExit("voice catalog cannot be combined with direct voice arguments")
+        catalog = load_voice_catalog(args.voice_catalog)
+        voice_references = catalog.references
+        default_voice = catalog.default_voice
+        public_voices = catalog.public_voices
+        voice_generation_settings = catalog.generation_settings
+    else:
+        if not args.voice_reference:
+            raise SystemExit("voice catalog or at least one voice reference is required")
+        voice_references = dict(args.voice_reference)
+        if len(voice_references) != len(args.voice_reference):
+            raise SystemExit("voice reference ids must be unique")
+        default_voice = args.default_voice or "default"
+        public_voices = None
+        voice_generation_settings = None
     backend = ChatterboxBackend(
         model_path=args.model_path,
         voice_references=voice_references,
-        default_voice=args.default_voice,
+        default_voice=default_voice,
         chatterbox_source=args.chatterbox_source,
         perth_source=args.perth_source,
         s3tokenizer_source=args.s3tokenizer_source,
+        public_voices=public_voices,
+        voice_generation_settings=voice_generation_settings,
         model_id=args.model_id,
         language=args.language,
     )

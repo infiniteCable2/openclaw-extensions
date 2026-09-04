@@ -10,6 +10,10 @@ class FakeBackend:
     model_id = "chatterbox"
     default_voice = "example_voice_member"
     voice_ids = frozenset({"example_voice_member", "nova"})
+    public_voices = (
+        {"id": "example_voice_member", "name": "Example member voice", "locale": "de-DE"},
+        {"id": "nova", "name": "Nova"},
+    )
     requested_backend = "cuda"
     observed_backend = "cuda"
 
@@ -83,6 +87,23 @@ def test_voice_note_uses_selected_voice_without_reloading_model(service) -> None
     assert first.content_type == second.content_type == "audio/ogg"
     assert backend.calls == [("Hallo", "example_voice_member"), ("Guten Tag", "nova")]
     assert [call[1:] for call in encoder.calls] == [("opus", None), ("opus", None)]
+
+
+def test_voice_catalog_is_public_but_contains_no_reference_paths(service) -> None:
+    client, _backend, _encoder = service
+    response = client.get("/v1/voices")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "object": "list",
+        "model": "chatterbox",
+        "default_voice": "example_voice_member",
+        "data": [
+            {"id": "example_voice_member", "name": "Example member voice", "locale": "de-DE"},
+            {"id": "nova", "name": "Nova"},
+        ],
+    }
+    assert "path" not in response.get_data(as_text=True).lower()
 
 
 def test_telephony_requests_fixed_rate_pcm(service) -> None:

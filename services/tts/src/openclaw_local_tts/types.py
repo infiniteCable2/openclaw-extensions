@@ -14,6 +14,7 @@ class SynthesisBackend(Protocol):
     model_id: str
     default_voice: str
     voice_ids: frozenset[str]
+    public_voices: tuple[dict[str, str], ...]
     requested_backend: str
     observed_backend: str
 

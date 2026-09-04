@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "default_voice": "example_voice_member",
+  "voices": [
+    {
+      "id": "example_voice_member",
+      "name": "Example member voice",
+      "reference_path": "/var/lib/openclaw-local-media/voices/example_voice_member.wav",
+      "locale": "de-DE",
+      "description": "German default voice",
+      "generation": {
+        "exaggeration": 0.5,
+        "temperature": 0.8,
+        "cfg_weight": 0.5
+      }
+    },
+    {
+      "id": "nova",
+      "name": "Nova",
+      "reference_path": "/var/lib/openclaw-local-media/voices/nova.wav",
+      "locale": "de-DE",
+      "description": "German assistant voice"
+    }
+  ]
+}

@@ -8,6 +8,8 @@ import { requireLoopbackBaseUrl, resolveLoopbackBaseUrl } from "./local-url.js";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_AUDIO_RESPONSE_BYTES = 64 * 1024 * 1024;
+const MAX_VOICE_CATALOG_BYTES = 64 * 1024;
+const VOICE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 
 type SpeechProviderConfig = Record<string, unknown>;
 type SpeechProviderOverrides = Record<string, unknown>;
@@ -20,17 +22,6 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function readConfiguredVoices(config: SpeechProviderConfig): string[] {
-  const configured = Array.isArray(config.voices)
-    ? config.voices
-        .map((value) => readString(value))
-        .filter((value): value is string => Boolean(value))
-        .slice(0, 64)
-    : [];
-  const selected = readString(config.voice ?? config.voiceId) ?? DEFAULT_TTS_VOICE;
-  return [...new Set([selected, ...configured])];
 }
 
 function resolveProviderConfig(rawConfig: Record<string, unknown>): SpeechProviderConfig {
@@ -121,6 +112,74 @@ async function readBoundedAudioResponse(response: Response): Promise<Buffer> {
   return Buffer.concat(chunks, totalLength);
 }
 
+async function readBoundedVoiceCatalog(response: Response): Promise<
+  Array<{
+    id: string;
+    name: string;
+    locale?: string;
+    description?: string;
+  }>
+> {
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "application/json") {
+    throw new Error("Local media TTS returned a non-JSON voice catalog");
+  }
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_VOICE_CATALOG_BYTES) {
+    throw new Error("Local media TTS voice catalog exceeds its size limit");
+  }
+  if (!response.body) {
+    throw new Error("Local media TTS returned an empty voice catalog");
+  }
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      totalLength += value.byteLength;
+      if (totalLength > MAX_VOICE_CATALOG_BYTES) {
+        await reader.cancel();
+        throw new Error("Local media TTS voice catalog exceeds its size limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(Buffer.concat(chunks, totalLength).toString("utf8"));
+  } catch {
+    throw new Error("Local media TTS returned an invalid voice catalog");
+  }
+  const data = asObject(body)?.data;
+  if (!Array.isArray(data) || data.length < 1 || data.length > 64) {
+    throw new Error("Local media TTS returned an invalid voice catalog");
+  }
+  const seen = new Set<string>();
+  return data.map((raw) => {
+    const voice = asObject(raw);
+    const id = readString(voice?.id);
+    const name = readString(voice?.name);
+    if (!id || !name || !VOICE_ID_PATTERN.test(id) || seen.has(id)) {
+      throw new Error("Local media TTS returned an invalid voice catalog");
+    }
+    seen.add(id);
+    const locale = readString(voice?.locale);
+    const description = readString(voice?.description);
+    return {
+      id,
+      name,
+      ...(locale ? { locale } : {}),
+      ...(description ? { description } : {}),
+    };
+  });
+}
+
 export function buildLocalMediaSpeechProvider(): SpeechProviderPlugin {
   return {
     id: LOCAL_MEDIA_PROVIDER_ID,
@@ -132,8 +191,20 @@ export function buildLocalMediaSpeechProvider(): SpeechProviderPlugin {
     voices: [DEFAULT_TTS_VOICE],
     resolveConfig: ({ rawConfig }) => resolveProviderConfig(rawConfig),
     isConfigured: ({ providerConfig }) => Boolean(resolveLoopbackBaseUrl(providerConfig.baseUrl)),
-    listVoices: async ({ providerConfig }) =>
-      readConfiguredVoices(providerConfig ?? {}).map((id) => ({ id, name: id })),
+    async listVoices({ providerConfig, timeoutMs }) {
+      const config = providerConfig ?? {};
+      const baseUrl = requireLoopbackBaseUrl(config.baseUrl, "Local media TTS");
+      const signal = AbortSignal.timeout(timeoutMs ?? DEFAULT_TIMEOUT_MS);
+      const response = await fetch(`${baseUrl}/voices`, {
+        method: "GET",
+        redirect: "error",
+        signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Local media TTS voice catalog failed with HTTP ${response.status}`);
+      }
+      return await readBoundedVoiceCatalog(response);
+    },
     async synthesize(req) {
       const voiceNote = req.target === "voice-note";
       const responseFormat = voiceNote ? "opus" : "wav";

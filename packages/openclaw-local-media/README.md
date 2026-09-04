@@ -75,7 +75,6 @@ status only after the requested GPU model is ready.
         baseUrl: "http://127.0.0.1:8020/v1",
         model: "chatterbox",
         voice: "example_member",
-        voices: ["example_member", "nova"],
         localService: {
           command: "/absolute/path/to/openclaw-local-tts",
           args: [
@@ -83,9 +82,7 @@ status only after the requested GPU model is ready.
             "--chatterbox-source", "/absolute/offline/chatterbox-source",
             "--perth-source", "/absolute/offline/perth-source",
             "--s3tokenizer-source", "/absolute/offline/s3tokenizer-source",
-            "--voice-reference", "example_member=/absolute/private/voices/example_member.wav",
-            "--voice-reference", "nova=/absolute/private/voices/nova.wav",
-            "--default-voice", "example_member",
+            "--voice-catalog", "/absolute/private/tts-voices.json",
             "--host", "127.0.0.1",
             "--port", "8020",
           ],
@@ -99,7 +96,10 @@ status only after the requested GPU model is ready.
 }
 ```
 
-`voice` is the provider default. An OpenClaw TTS persona can override it with
+The plugin discovers available voice ids from the local service's bounded
+`GET /v1/voices` response. Reference paths and voice-specific generation
+settings are deliberately omitted from that response and remain private to the
+service. `voice` is the provider default. An OpenClaw TTS persona can override it with
 `personas.<id>.providers.local-media.voice`; an explicit permitted per-request
 override wins over the persona. The service maps these public voice ids to
 operator-configured reference files and never accepts a reference path over the
