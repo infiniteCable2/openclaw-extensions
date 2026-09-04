@@ -51,6 +51,30 @@ def test_chatterbox_model_manifest_round_trip_is_pinned_to_v3(
     assert model_artifact.MANIFEST_NAME == "openclaw-model-manifest.json"
 
 
+def test_chatterbox_cli_adopts_an_existing_pinned_file_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_dir = tmp_path / "model"
+    _write_fixture(model_dir, monkeypatch)
+    monkeypatch.setattr(
+        model_artifact.sys,
+        "argv",
+        [
+            "model_artifact.py",
+            "--output-dir",
+            str(model_dir),
+            "--write-manifest",
+            "--quiet",
+        ],
+    )
+
+    assert model_artifact.main() == 0
+    assert model_artifact.validate_model_artifact(model_dir)["model_revision"] == (
+        model_artifact.MODEL_REVISION
+    )
+
+
 def test_chatterbox_model_validation_rejects_modified_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

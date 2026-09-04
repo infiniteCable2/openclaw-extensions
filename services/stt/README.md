@@ -41,5 +41,7 @@ directory:
 graph and the exact `large-v3-turbo` model revision. `build_runtime.sh` refuses
 root, existing targets, paths inside the service source, and other Python
 minor versions. `model_artifact.py` provisions or fully verifies the offline
-model tree using `openclaw-model-manifest.json`. Production starts must use its
+model tree using `openclaw-model-manifest.json`. An already verified legacy
+artifact can be copied as data files only and adopted with `--write-manifest`;
+foreign manifests must not be copied. Production starts must use its
 `--verify-only --quiet` mode before acquiring the model service.

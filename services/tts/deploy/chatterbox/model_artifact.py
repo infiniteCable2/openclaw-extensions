@@ -245,14 +245,20 @@ def provision_model(path: Path) -> tuple[str, dict[str, Any]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
-    parser.add_argument("--verify-only", action="store_true")
+    operation = parser.add_mutually_exclusive_group()
+    operation.add_argument("--verify-only", action="store_true")
+    operation.add_argument("--write-manifest", action="store_true")
     parser.add_argument("--metadata-only", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     try:
         output_dir = _validate_output_path(args.output_dir)
-        if args.verify_only:
+        if args.write_manifest:
+            manifest = write_manifest(output_dir)
+            validate_model_artifact(output_dir)
+            status = "adopted"
+        elif args.verify_only:
             manifest = validate_model_artifact(
                 output_dir,
                 full_hash=not args.metadata_only,

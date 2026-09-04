@@ -36,6 +36,11 @@ installer additionally requires an explicit SHA-256-bound wheel of this
 service. Model weights, wheels, vendor trees, and voices remain outside Git and
 must be provisioned before starting the service.
 
+An existing verified model may be copied as its pinned data files only and
+adopted with `model_artifact.py --write-manifest`; foreign manifests must not
+be copied. The pinned file set and full digests are checked before the neutral
+manifest is accepted.
+
 Each `--voice-reference` is a public voice id mapped to one absolute,
 operator-controlled WAV file. The model is loaded once; the selected reference
 changes per request:
