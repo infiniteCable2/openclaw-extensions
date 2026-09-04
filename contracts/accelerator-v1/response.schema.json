@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/contracts/accelerator-v1/response.schema.json",
+  "title": "Accelerator lease response v1",
+  "oneOf": [
+    { "$ref": "#/$defs/success" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "success": {
+      "type": "object",
+      "required": ["version", "ok"],
+      "properties": {
+        "version": { "const": 1 },
+        "ok": { "const": true },
+        "state": {
+          "enum": ["off", "attaching", "ready", "cooling", "fault"]
+        },
+        "accelerator_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "consumer": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "lease_id": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 512
+        },
+        "expires_at_epoch": { "type": "number" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "ok", "error_code", "retryable"],
+      "properties": {
+        "version": { "const": 1 },
+        "ok": { "const": false },
+        "error_code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,127}$"
+        },
+        "retryable": { "type": "boolean" },
+        "error_type": { "type": "string", "maxLength": 128 },
+        "error_stage": { "type": "string", "maxLength": 128 }
+      }
+    }
+  }
+}

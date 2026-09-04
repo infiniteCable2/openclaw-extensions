@@ -107,3 +107,32 @@ tool. Each worker may be deployed in exactly one explicit mode:
 
 There is intentionally no `auto` or best-effort mode. OpenClaw owns the worker
 process lease; the worker and broker own hardware readiness and proven standby.
+
+Required mode uses the standalone runner as the local-service command. The
+real worker follows `--`; all paths are absolute and installed outside the
+plugin package:
+
+```json5
+localService: {
+  command: "/absolute/path/to/openclaw-accelerator-run",
+  args: [
+    "--consumer", "openclaw-stt",
+    "--ttl-seconds", "90",
+    "--renew-interval-seconds", "20",
+    "--renewal-failure-grace-seconds", "20",
+    "--",
+    "/absolute/path/to/openclaw-local-stt",
+    "--model-path", "/absolute/offline/model/path",
+    "--host", "127.0.0.1",
+    "--port", "8010",
+  ],
+  healthUrl: "http://127.0.0.1:8010/ready",
+  readyTimeoutMs: 300000,
+  idleStopMs: 120000,
+}
+```
+
+OpenClaw's idle stop terminates the runner. The runner first terminates the
+worker process group and only then releases its hardware lease. If acquisition
+or renewal is not proven, no worker remains available and OpenClaw receives a
+normal local-service readiness failure; no direct-worker fallback is attempted.

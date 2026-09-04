@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/contracts/accelerator-v1/request.schema.json",
+  "title": "Accelerator lease request v1",
+  "oneOf": [
+    { "$ref": "#/$defs/acquire" },
+    { "$ref": "#/$defs/renew" },
+    { "$ref": "#/$defs/release" },
+    { "$ref": "#/$defs/status" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "leaseId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 512
+    },
+    "ttl": {
+      "type": "number",
+      "minimum": 5,
+      "maximum": 86400
+    },
+    "acquire": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "action", "accelerator_id", "consumer", "ttl_sec"],
+      "properties": {
+        "version": { "const": 1 },
+        "action": { "const": "acquire" },
+        "accelerator_id": { "$ref": "#/$defs/id" },
+        "consumer": { "$ref": "#/$defs/id" },
+        "ttl_sec": { "$ref": "#/$defs/ttl" }
+      }
+    },
+    "renew": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "action", "accelerator_id", "lease_id", "ttl_sec"],
+      "properties": {
+        "version": { "const": 1 },
+        "action": { "const": "renew" },
+        "accelerator_id": { "$ref": "#/$defs/id" },
+        "lease_id": { "$ref": "#/$defs/leaseId" },
+        "ttl_sec": { "$ref": "#/$defs/ttl" }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "action", "accelerator_id", "lease_id"],
+      "properties": {
+        "version": { "const": 1 },
+        "action": { "const": "release" },
+        "accelerator_id": { "$ref": "#/$defs/id" },
+        "lease_id": { "$ref": "#/$defs/leaseId" }
+      }
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "action", "accelerator_id"],
+      "properties": {
+        "version": { "const": 1 },
+        "action": { "const": "status" },
+        "accelerator_id": { "$ref": "#/$defs/id" }
+      }
+    }
+  }
+}
