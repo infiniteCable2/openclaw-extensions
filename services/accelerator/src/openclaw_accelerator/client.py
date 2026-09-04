@@ -76,7 +76,7 @@ class AcceleratorLease:
 
 
 class AcceleratorClient:
-    def __init__(self, socket_path: Path, *, timeout_seconds: float = 5.0) -> None:
+    def __init__(self, socket_path: Path, *, timeout_seconds: float = 60.0) -> None:
         path = Path(socket_path)
         if not path.is_absolute():
             raise ValueError("accelerator socket path must be absolute")

@@ -19,10 +19,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--accelerator-id", default="gpu0")
     parser.add_argument("--consumer", required=True)
-    parser.add_argument("--ttl-seconds", type=float, default=90.0)
+    parser.add_argument("--ttl-seconds", type=float, default=300.0)
     parser.add_argument("--renew-interval-seconds", type=float, default=20.0)
     parser.add_argument("--renewal-failure-grace-seconds", type=float, default=20.0)
-    parser.add_argument("--broker-timeout-seconds", type=float, default=5.0)
+    parser.add_argument("--broker-timeout-seconds", type=float, default=60.0)
     parser.add_argument("--shutdown-timeout-seconds", type=float, default=20.0)
     parser.add_argument("worker", nargs=argparse.REMAINDER)
     return parser

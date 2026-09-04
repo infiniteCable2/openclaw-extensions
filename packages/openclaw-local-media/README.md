@@ -131,9 +131,10 @@ localService: {
   command: "/absolute/path/to/openclaw-accelerator-run",
   args: [
     "--consumer", "openclaw-stt",
-    "--ttl-seconds", "90",
+    "--ttl-seconds", "300",
     "--renew-interval-seconds", "20",
     "--renewal-failure-grace-seconds", "20",
+    "--broker-timeout-seconds", "60",
     "--",
     "/absolute/path/to/openclaw-local-stt",
     "--model-path", "/absolute/offline/model/path",

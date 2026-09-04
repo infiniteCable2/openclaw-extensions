@@ -203,3 +203,9 @@ def test_unsafe_renewal_window_is_rejected() -> None:
     )
     with pytest.raises(ValueError, match="safe renewal window"):
         unsafe.validate(broker_timeout_seconds=10)
+
+
+def test_defaults_allow_a_bounded_cold_attach_window() -> None:
+    defaults = RunnerConfig(accelerator_id="gpu0", consumer="openclaw-stt")
+    defaults.validate(broker_timeout_seconds=60)
+    assert defaults.ttl_seconds == 300

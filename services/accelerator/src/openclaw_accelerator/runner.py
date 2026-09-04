@@ -41,7 +41,7 @@ class LeaseClient(Protocol):
 class RunnerConfig:
     accelerator_id: str
     consumer: str
-    ttl_seconds: float = 90.0
+    ttl_seconds: float = 300.0
     renew_interval_seconds: float = 20.0
     renewal_failure_grace_seconds: float = 20.0
     shutdown_timeout_seconds: float = 20.0
