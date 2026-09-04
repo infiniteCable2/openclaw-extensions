@@ -1,0 +1,24 @@
+{
+  "id": "local-media",
+  "activation": {
+    "onStartup": false
+  },
+  "enabledByDefault": true,
+  "contracts": {
+    "speechProviders": ["local-media"],
+    "mediaUnderstandingProviders": ["local-media"]
+  },
+  "mediaUnderstandingProviderMetadata": {
+    "local-media": {
+      "capabilities": ["audio"],
+      "defaultModels": {
+        "audio": "faster-whisper"
+      }
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

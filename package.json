@@ -1,0 +1,10 @@
+{
+  "name": "openclaw-extensions-workspace",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "build": "pnpm --recursive run build",
+    "check": "pnpm --recursive run check",
+    "test": "pnpm --recursive run test"
+  }
+}

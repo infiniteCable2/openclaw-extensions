@@ -1,0 +1,11 @@
+packages:
+  - "packages/*"
+
+# These are transitive OpenClaw dependencies. The local-media plugin neither
+# imports their native artifacts nor needs their install-time generators.
+allowBuilds:
+  "@google/genai": false
+  koffi: false
+  openclaw: false
+  protobufjs: false
+  tree-sitter-bash: false
