@@ -60,17 +60,18 @@ def test_reference_voice_changes_per_request_without_model_reload(tmp_path, monk
         s3tokenizer_source=s3tokenizer_source,
         voice_generation_settings={"nova": {"temperature": 0.7}},
     )
-    first = backend.synthesize("Hallo", voice_id="astrid")
+    first_segments = list(backend.synthesize_segments(["Hallo", "Welt"], voice_id="astrid"))
     second = backend.synthesize("Guten Tag", voice_id="nova")
 
     assert len(load_calls) == 1
     assert load_calls[0][1] == {"device": "cuda", "t3_model": "v3"}
     assert generated_references == [
         (str(astrid.resolve()), {}),
+        (None, {}),
         (str(nova.resolve()), {"temperature": 0.7}),
     ]
-    assert first.sample_rate == second.sample_rate == 24_000
-    assert len(first.data) == len(second.data) == 6
+    assert all(segment.sample_rate == second.sample_rate == 24_000 for segment in first_segments)
+    assert all(len(segment.data) == len(second.data) == 6 for segment in first_segments)
 
 
 def test_default_voice_must_be_allowlisted(tmp_path) -> None:

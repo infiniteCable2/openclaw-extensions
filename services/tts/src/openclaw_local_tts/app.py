@@ -8,6 +8,8 @@ from typing import Iterator
 from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
+from .audio import join_speech_segments
+from .speech_segments import split_speech_text
 from .types import AudioEncoder, SynthesisBackend
 
 _ALLOWED_FORMATS = {"opus", "pcm", "wav"}
@@ -166,7 +168,17 @@ def create_app(
                 raise ServiceError("invalid_request", "sample rate is unsupported", 400, retryable=False)
 
             with state.admit():
-                rendered = backend.synthesize(text, voice_id=voice)
+                segments = split_speech_text(text)
+                rendered_segments = list(
+                    backend.synthesize_segments(
+                        (segment.text for segment in segments),
+                        voice_id=voice,
+                    )
+                )
+                rendered = join_speech_segments(
+                    rendered_segments,
+                    [segment.pause_after_ms for segment in segments],
+                )
                 audio = encoder.encode(
                     rendered,
                     output_format=output_format,

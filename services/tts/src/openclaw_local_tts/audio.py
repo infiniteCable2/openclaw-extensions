@@ -2,10 +2,34 @@ from __future__ import annotations
 
 import subprocess
 import wave
+from collections.abc import Sequence
 from io import BytesIO
 from pathlib import Path
 
 from .types import RenderedPcm
+
+
+def join_speech_segments(
+    rendered_segments: Sequence[RenderedPcm],
+    pauses_after_ms: Sequence[int],
+) -> RenderedPcm:
+    """Join ordered mono PCM segments, inserting silence only between them."""
+    if not rendered_segments or len(rendered_segments) != len(pauses_after_ms):
+        raise ValueError("rendered speech segments are incomplete")
+    sample_rate = rendered_segments[0].sample_rate
+    output = bytearray()
+    for index, rendered in enumerate(rendered_segments):
+        if rendered.sample_rate != sample_rate:
+            raise ValueError("rendered speech segment sample rates differ")
+        if not rendered.data or len(rendered.data) % 2:
+            raise ValueError("rendered speech segment PCM is empty or incomplete")
+        output.extend(rendered.data)
+        if index < len(rendered_segments) - 1:
+            pause_ms = pauses_after_ms[index]
+            if pause_ms < 0 or pause_ms > 2000:
+                raise ValueError("rendered speech segment pause is invalid")
+            output.extend(b"\x00\x00" * (sample_rate * pause_ms // 1000))
+    return RenderedPcm(data=bytes(output), sample_rate=sample_rate)
 
 
 class FfmpegAudioEncoder:

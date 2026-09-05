@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openclaw_local_tts.audio import FfmpegAudioEncoder
+from openclaw_local_tts.audio import FfmpegAudioEncoder, join_speech_segments
 from openclaw_local_tts.types import RenderedPcm
 
 
@@ -43,3 +43,16 @@ def test_encoder_failure_does_not_expose_subprocess_output(monkeypatch) -> None:
             output_format="opus",
             sample_rate=None,
         )
+
+
+def test_speech_segments_are_joined_in_order_with_bounded_pause() -> None:
+    joined = join_speech_segments(
+        [
+            RenderedPcm(data=b"\x01\x00", sample_rate=1000),
+            RenderedPcm(data=b"\x02\x00", sample_rate=1000),
+        ],
+        [2, 180],
+    )
+
+    assert joined.sample_rate == 1000
+    assert joined.data == b"\x01\x00" + b"\x00\x00" * 2 + b"\x02\x00"

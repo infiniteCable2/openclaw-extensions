@@ -4,6 +4,7 @@ import inspect
 import os
 import re
 import sys
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from .types import RenderedPcm
@@ -111,14 +112,38 @@ class ChatterboxBackend:
         if self.sample_rate <= 0:
             raise RuntimeError("Chatterbox returned an invalid sample rate")
 
+    def synthesize_segments(
+        self,
+        texts: Iterable[str],
+        *,
+        voice_id: str,
+    ) -> Iterator[RenderedPcm]:
+        first_segment = True
+        for text in texts:
+            yield self._synthesize_segment(
+                text,
+                voice_id=voice_id,
+                prepare_voice=first_segment,
+            )
+            first_segment = False
+
     def synthesize(self, text: str, *, voice_id: str) -> RenderedPcm:
+        return next(self.synthesize_segments([text], voice_id=voice_id))
+
+    def _synthesize_segment(
+        self,
+        text: str,
+        *,
+        voice_id: str,
+        prepare_voice: bool,
+    ) -> RenderedPcm:
         import numpy as np
         import torch
 
         waveform = self._client.generate(
             text=text,
             language_id=self.language,
-            audio_prompt_path=str(self._voice_references[voice_id]),
+            audio_prompt_path=str(self._voice_references[voice_id]) if prepare_voice else None,
             **self._voice_generation_settings[voice_id],
         )
         if waveform is None:
