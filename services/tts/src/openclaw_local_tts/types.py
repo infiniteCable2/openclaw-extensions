@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -18,7 +19,12 @@ class SynthesisBackend(Protocol):
     requested_backend: str
     observed_backend: str
 
-    def synthesize(self, text: str, *, voice_id: str) -> RenderedPcm: ...
+    def synthesize_segments(
+        self,
+        texts: Iterable[str],
+        *,
+        voice_id: str,
+    ) -> Iterator[RenderedPcm]: ...
 
 
 class AudioEncoder(Protocol):

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable, Iterator
+
 import pytest
 
 from openclaw_local_tts.app import create_app
@@ -23,6 +26,15 @@ class FakeBackend:
     def synthesize(self, text: str, *, voice_id: str) -> RenderedPcm:
         self.calls.append((text, voice_id))
         return RenderedPcm(data=b"\x00\x00\x01\x00", sample_rate=24_000)
+
+    def synthesize_segments(
+        self,
+        texts: Iterable[str],
+        *,
+        voice_id: str,
+    ) -> Iterator[RenderedPcm]:
+        for text in texts:
+            yield self.synthesize(text, voice_id=voice_id)
 
 
 class FakeEncoder:
@@ -198,3 +210,66 @@ def test_text_limit_is_enforced_before_synthesis(service) -> None:
     assert response.status_code == 400
     assert response.get_json()["error"]["code"] == "invalid_request"
     assert backend.calls == []
+
+
+def test_long_speech_is_segmented_in_order_and_encoded_once() -> None:
+    backend = FakeBackend()
+    encoder = FakeEncoder()
+    app = create_app(backend, encoder, max_text_characters=1000)
+    app.config.update(TESTING=True)
+    client = app.test_client()
+    text = " ".join(
+        [
+            "Der erste Abschnitt beschreibt den Anfang einer längeren Sprachausgabe ausführlich.",
+            "Danach folgt ein zweiter Satz mit weiteren nützlichen Einzelheiten für den Hörer.",
+            "Zum Abschluss stellt ein dritter Satz sicher, dass kein Inhalt verloren geht.",
+        ]
+    )
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": text,
+            "model": "chatterbox",
+            "voice": "nova",
+            "response_format": "opus",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(backend.calls) > 1
+    assert {voice for _chunk, voice in backend.calls} == {"nova"}
+    source_words = re.findall(r"\b\w+\b", text, flags=re.UNICODE)
+    rendered_words = [
+        word
+        for chunk, _voice in backend.calls
+        for word in re.findall(r"\b\w+\b", chunk, flags=re.UNICODE)
+    ]
+    assert rendered_words == source_words
+    assert len(encoder.calls) == 1
+
+
+def test_failed_segment_never_returns_partial_audio() -> None:
+    class FailingBackend(FakeBackend):
+        def synthesize(self, text: str, *, voice_id: str) -> RenderedPcm:
+            if self.calls:
+                raise RuntimeError("synthetic segment failure")
+            return super().synthesize(text, voice_id=voice_id)
+
+    backend = FailingBackend()
+    encoder = FakeEncoder()
+    app = create_app(backend, encoder, max_text_characters=1000)
+    app.config.update(TESTING=True)
+    response = app.test_client().post(
+        "/v1/audio/speech",
+        json={
+            "input": " ".join(f"Wort{index}." for index in range(50)),
+            "model": "chatterbox",
+            "voice": "nova",
+            "response_format": "opus",
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.get_json()["error"]["code"] == "inference_failed"
+    assert encoder.calls == []

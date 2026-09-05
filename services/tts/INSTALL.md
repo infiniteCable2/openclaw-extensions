@@ -65,7 +65,15 @@ of truth for its actual voice material and tuning.
 
 Acceptance requires public-catalog privacy, CUDA observation, successful Opus
 synthesis, correct per-voice switching without a second model load, worker
-termination after idle, lease release, and broker-confirmed standby.
+termination after idle, lease release, and broker-confirmed standby. Include a
+long German sample that crosses the service's segment boundary: every source
+word must remain represented, Chatterbox must prepare the selected reference
+only once for the request, and the result must be one ordered audio object.
+
+The current HTTP endpoint is batch delivery. Do not describe raw HTTP response
+chunks as low-latency telephony streaming: early telephone playback additionally
+requires an OpenClaw transport contract that consumes completed PCM segments as
+they are produced and cancels queued work on barge-in.
 
 ## Rollback
 
