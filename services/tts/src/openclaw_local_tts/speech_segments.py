@@ -3,9 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+import syntok.segmenter
 
-_SENTENCE_END = re.compile(r'[.!?]+(?:["»“”’\)\]]+)?(?=\s|$)')
-_PARAGRAPH_BREAK = re.compile(r"\n\s*\n+", re.UNICODE)
 _CLAUSE_END = re.compile(r"[;:,–—]\s+", re.UNICODE)
 _WORD = re.compile(r"\b\w+\b", re.UNICODE)
 
@@ -27,19 +26,16 @@ def _word_count(text: str) -> int:
     return len(_WORD.findall(text))
 
 
-def _split_sentences(text: str) -> list[str]:
-    sentences: list[str] = []
-    last_end = 0
-    for match in _SENTENCE_END.finditer(text):
-        end = match.end()
-        sentence = text[last_end:end]
-        if sentence.strip():
-            sentences.append(sentence.strip())
-        last_end = end
-    remainder = text[last_end:].strip()
-    if remainder:
-        sentences.append(remainder)
-    return sentences
+def _split_paragraphs(text: str) -> list[list[str]]:
+    paragraphs: list[list[str]] = []
+    for paragraph in syntok.segmenter.analyze(text):
+        sentences = [
+            "".join(map(str, sentence)).strip()
+            for sentence in paragraph
+        ]
+        if sentences:
+            paragraphs.append(sentences)
+    return paragraphs
 
 
 def _within_limits(text: str, *, max_words: int, max_characters: int) -> bool:
@@ -105,12 +101,12 @@ def split_speech_text(
     if target_words < 1 or max_words < target_words or max_characters < 64:
         raise ValueError("speech segment limits are invalid")
 
-    paragraphs = [part.strip() for part in _PARAGRAPH_BREAK.split(normalized) if part.strip()]
+    paragraphs = _split_paragraphs(normalized)
     segments: list[SpeechSegment] = []
-    for paragraph_index, paragraph in enumerate(paragraphs):
+    for paragraph_index, sentences in enumerate(paragraphs):
         units = [
             unit
-            for sentence in _split_sentences(paragraph)
+            for sentence in sentences
             for unit in _bound_sentence(
                 sentence,
                 max_words=max_words,

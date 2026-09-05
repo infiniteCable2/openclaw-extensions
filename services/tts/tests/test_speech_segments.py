@@ -40,3 +40,44 @@ def test_speech_segments_bound_unpunctuated_text_without_losing_words() -> None:
     assert all(len(segment.text) <= 180 for segment in segments)
     assert all(len(_words(segment.text)) <= 24 for segment in segments)
     assert [word for segment in segments for word in _words(segment.text)] == _words(text)
+
+
+def test_speech_segments_keep_numbered_list_markers_with_their_items() -> None:
+    text = (
+        "1. Der erste Punkt hat etwas mehr Inhalt. "
+        "2. Der zweite Punkt bleibt ebenfalls zusammen. Danach folgt ein Satz."
+    )
+
+    segments = split_speech_text(
+        text,
+        target_words=4,
+        max_words=12,
+        max_characters=200,
+    )
+
+    assert [segment.text for segment in segments] == [
+        "1. Der erste Punkt hat etwas mehr Inhalt.",
+        "2. Der zweite Punkt bleibt ebenfalls zusammen.",
+        "Danach folgt ein Satz.",
+    ]
+
+
+def test_speech_segments_disambiguate_german_abbreviations_and_numbers() -> None:
+    text = (
+        "Dr. Müller kommt um 14.30 Uhr. Danach betrifft es z. B. STT und TTS. "
+        "Version 2.0 bleibt aktiv."
+    )
+
+    segments = split_speech_text(
+        text,
+        target_words=8,
+        max_words=20,
+        max_characters=200,
+    )
+
+    assert [segment.text for segment in segments] == [
+        "Dr. Müller kommt um 14.30 Uhr.",
+        "Danach betrifft es z. B. STT und TTS.",
+        "Version 2.0 bleibt aktiv.",
+    ]
+    assert [word for segment in segments for word in _words(segment.text)] == _words(text)

@@ -9,6 +9,7 @@ DEPLOY_ROOT = SERVICE_ROOT / "deploy"
 
 
 def test_chatterbox_runtime_reuses_the_proven_dependency_graph() -> None:
+    base = (DEPLOY_ROOT / "requirements" / "base.txt").read_text(encoding="utf-8")
     runtime = (DEPLOY_ROOT / "requirements" / "chatterbox-runtime.txt").read_text(
         encoding="utf-8"
     )
@@ -22,6 +23,7 @@ def test_chatterbox_runtime_reuses_the_proven_dependency_graph() -> None:
     assert "transformers==5.2.0" in runtime
     assert "diffusers==0.29.0" in runtime
     assert "safetensors==0.5.3" in runtime
+    assert "syntok==1.4.4" in base
     assert "gradio" not in runtime
     assert "https://download.pytorch.org/whl/cu124" in torch_profile
     assert "torch==2.6.0" in torch_profile
@@ -31,14 +33,14 @@ def test_chatterbox_runtime_reuses_the_proven_dependency_graph() -> None:
         for line in constraints.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
-    assert len(locked) == 99
+    assert len(locked) == 100
     assert hashlib.sha256(("\n".join(locked) + "\n").encode()).hexdigest() == (
-        "97ef81094b99a2f98e8764da5708b731c9f752d40ffda724c0df80a9ea7ee309"
+        "ce3c2f81f914673802567ce20470c793565504b73f411b1e797f7e0b9013ebe8"
     )
     assert "numpy==2.4.6" in locked
     assert "torch==2.6.0+cu124" in locked
     assert "torchaudio==2.6.0+cu124" in locked
-    assert "voicecore" not in (runtime + torch_profile + constraints).lower()
+    assert "voicecore" not in (base + runtime + torch_profile + constraints).lower()
 
 
 def test_online_builder_keeps_exact_sources_and_installs_this_service() -> None:

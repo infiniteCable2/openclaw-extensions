@@ -69,6 +69,8 @@ termination after idle, lease release, and broker-confirmed standby. Include a
 long German sample that crosses the service's segment boundary: every source
 word must remain represented, Chatterbox must prepare the selected reference
 only once for the request, and the result must be one ordered audio object.
+Also cover numbered lists, German abbreviations, clock times, and decimal
+numbers; Syntok must keep their punctuation attached to the intended sentence.
 
 The current HTTP endpoint is batch delivery. Do not describe raw HTTP response
 chunks as low-latency telephony streaming: early telephone playback additionally
