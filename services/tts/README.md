@@ -19,10 +19,12 @@ binary performs bounded Opus/WAV/PCM encoding; it is not discovered through
 - `POST /v1/audio/speech`: OpenAI-compatible synthesis request.
 
 Voice-note output is Ogg Opus. Telephony output is raw mono PCM16 at the
-requested supported rate. Long input is split at sentence, paragraph, and
-clause boundaries before it reaches Chatterbox's approximately 40-second
-single-generation ceiling. All segments retain one request's selected voice,
-are synthesized in order, joined as PCM with bounded pauses, and encoded once.
+requested supported rate. Syntok disambiguates German and English sentence and
+paragraph boundaries without a model or accelerator allocation. The service
+then bounds long sentences at clause or word boundaries before they reach
+Chatterbox's approximately 40-second single-generation ceiling. All segments
+retain one request's selected voice, are synthesized in order, joined as PCM
+with bounded pauses, and encoded once.
 The backend exposes the ordered segment iterator needed by a future streaming
 transport; this endpoint deliberately remains one complete response for Matrix
 and other attachment-style channels. The service never logs input text or
@@ -38,7 +40,7 @@ python3.13 -m venv .venv
 
 The production Chatterbox, PyTorch CUDA, vendor source, model, and reference
 artifacts are a separately pinned offline build. `deploy/` contains the proven
-99-distribution Debian 13/Python 3.13/CUDA 12.4 lock, full wheelhouse/source/
+100-distribution Debian 13/Python 3.13/CUDA 12.4 lock, full wheelhouse/source/
 model verifiers, the two reviewed Chatterbox runtime patches, a pinned online
 artifact builder, and a network-disabled runtime installer. The offline
 installer additionally requires an explicit SHA-256-bound wheel of this

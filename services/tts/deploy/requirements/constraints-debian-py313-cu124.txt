@@ -87,6 +87,7 @@ standard-aifc==3.13.0
 standard-chunk==3.13.0
 standard-sunau==3.13.0
 sympy==1.13.1
+syntok==1.4.4
 threadpoolctl==3.6.0
 tokenizers==0.22.2
 torch==2.6.0+cu124
