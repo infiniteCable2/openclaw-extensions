@@ -172,6 +172,46 @@ describe("local media speech provider", () => {
     await expect(readStream(result.audioStream)).rejects.toThrow("ended before completion");
   });
 
+  it("cancels the upstream HTTP body when telephony playback is interrupted", async () => {
+    const upstreamCancel = vi.fn();
+    const firstFrame = Buffer.alloc(6);
+    firstFrame.writeUInt32BE(2, 0);
+    firstFrame.set([1, 2], 4);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(firstFrame);
+      },
+      cancel: upstreamCancel,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(body, {
+          status: 200,
+          headers: {
+            "content-type": "application/vnd.openclaw.pcm-stream",
+            "x-openclaw-audio-sample-rate": "16000",
+          },
+        }),
+      ),
+    );
+    const { provider, providerConfig } = configuredProvider();
+    const result = await provider.streamSynthesizeTelephony({
+      text: "Unterbrechbar",
+      providerConfig,
+      timeoutMs: 1_000,
+    });
+    const reader = result.audioStream.getReader();
+
+    await expect(reader.read()).resolves.toMatchObject({
+      done: false,
+      value: Uint8Array.from([1, 2]),
+    });
+    await reader.cancel("barge-in");
+
+    expect(upstreamCancel).toHaveBeenCalledWith("barge-in");
+  });
+
   it("does not report remote endpoints as configured", () => {
     const provider = buildLocalMediaSpeechProvider();
     expect(
