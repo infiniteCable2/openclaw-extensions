@@ -1,9 +1,5 @@
 import type { SpeechProviderPlugin } from "openclaw/plugin-sdk/plugin-entry";
-import {
-  DEFAULT_TTS_MODEL,
-  DEFAULT_TTS_VOICE,
-  LOCAL_MEDIA_PROVIDER_ID,
-} from "./constants.js";
+import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { requireLoopbackBaseUrl, resolveLoopbackBaseUrl } from "./local-url.js";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -13,6 +9,19 @@ const VOICE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 
 type SpeechProviderConfig = Record<string, unknown>;
 type SpeechProviderOverrides = Record<string, unknown>;
+type LocalMediaSpeechProvider = SpeechProviderPlugin & {
+  streamSynthesizeTelephony(req: {
+    text: string;
+    providerConfig: SpeechProviderConfig;
+    providerOverrides?: SpeechProviderOverrides;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }): Promise<{
+    audioStream: ReadableStream<Uint8Array>;
+    outputFormat: string;
+    sampleRate: number;
+  }>;
+};
 
 function asObject(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -74,9 +83,113 @@ async function requestSpeech(params: {
   return await readBoundedAudioResponse(response);
 }
 
+async function requestSpeechStream(params: {
+  text: string;
+  providerConfig: SpeechProviderConfig;
+  overrides?: SpeechProviderOverrides;
+  sampleRate: number;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}): Promise<ReadableStream<Uint8Array>> {
+  const baseUrl = requireLoopbackBaseUrl(params.providerConfig.baseUrl, "Local media TTS");
+  const selection = readSpeechSelection(params.providerConfig, params.overrides);
+  const timeoutSignal = AbortSignal.timeout(params.timeoutMs);
+  const signal = params.signal ? AbortSignal.any([params.signal, timeoutSignal]) : timeoutSignal;
+  const response = await fetch(`${baseUrl}/audio/speech/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      input: params.text,
+      model: selection.model,
+      voice: selection.voice,
+      response_format: "pcm",
+      sample_rate: params.sampleRate,
+    }),
+    redirect: "error",
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Local media streaming TTS failed with HTTP ${response.status}`);
+  }
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "application/vnd.openclaw.pcm-stream") {
+    throw new Error("Local media streaming TTS returned an invalid content type");
+  }
+  if (Number(response.headers.get("x-openclaw-audio-sample-rate")) !== params.sampleRate) {
+    throw new Error("Local media streaming TTS returned an unexpected sample rate");
+  }
+  if (!response.body) {
+    throw new Error("Local media streaming TTS returned an empty response");
+  }
+
+  const reader = response.body.getReader();
+  let buffered = Buffer.alloc(0);
+  let totalLength = 0;
+  let complete = false;
+  const readMore = async () => {
+    const next = await reader.read();
+    if (next.done) {
+      throw new Error("Local media streaming TTS response ended before completion");
+    }
+    buffered = Buffer.concat([buffered, Buffer.from(next.value)]);
+  };
+  const readFrame = async (): Promise<Uint8Array | undefined> => {
+    while (buffered.byteLength < 4) {
+      await readMore();
+    }
+    const frameLength = buffered.readUInt32BE(0);
+    if (frameLength === 0) {
+      buffered = buffered.subarray(4);
+      complete = true;
+      return undefined;
+    }
+    if (frameLength > MAX_AUDIO_RESPONSE_BYTES || frameLength % 2 !== 0) {
+      throw new Error("Local media streaming TTS returned an invalid frame");
+    }
+    while (buffered.byteLength < 4 + frameLength) {
+      await readMore();
+    }
+    const frame = buffered.subarray(4, 4 + frameLength);
+    buffered = buffered.subarray(4 + frameLength);
+    totalLength += frame.byteLength;
+    if (totalLength > MAX_AUDIO_RESPONSE_BYTES) {
+      throw new Error("Local media streaming TTS response exceeds the configured size limit");
+    }
+    return Uint8Array.from(frame);
+  };
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const frame = await readFrame();
+        if (frame) {
+          controller.enqueue(frame);
+          return;
+        }
+        if (!complete || totalLength === 0 || buffered.byteLength !== 0) {
+          throw new Error("Local media streaming TTS returned an incomplete response");
+        }
+        controller.close();
+        reader.releaseLock();
+      } catch (error) {
+        await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason).catch(() => undefined);
+      reader.releaseLock();
+    },
+  });
+}
+
 async function readBoundedAudioResponse(response: Response): Promise<Buffer> {
   const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-  if (contentType && !contentType.startsWith("audio/") && contentType !== "application/octet-stream") {
+  if (
+    contentType &&
+    !contentType.startsWith("audio/") &&
+    contentType !== "application/octet-stream"
+  ) {
     throw new Error("Local media TTS returned a non-audio response");
   }
   const declaredLength = Number(response.headers.get("content-length"));
@@ -180,7 +293,7 @@ async function readBoundedVoiceCatalog(response: Response): Promise<
   });
 }
 
-export function buildLocalMediaSpeechProvider(): SpeechProviderPlugin {
+export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
   return {
     id: LOCAL_MEDIA_PROVIDER_ID,
     label: "Local media",
@@ -239,6 +352,21 @@ export function buildLocalMediaSpeechProvider(): SpeechProviderPlugin {
           responseFormat: "pcm",
           sampleRate,
           timeoutMs: req.timeoutMs,
+        }),
+        outputFormat: "pcm",
+        sampleRate,
+      };
+    },
+    async streamSynthesizeTelephony(req) {
+      const sampleRate = 16_000;
+      return {
+        audioStream: await requestSpeechStream({
+          text: req.text,
+          providerConfig: req.providerConfig,
+          overrides: req.providerOverrides,
+          sampleRate,
+          timeoutMs: req.timeoutMs,
+          signal: req.signal,
         }),
         outputFormat: "pcm",
         sampleRate,

@@ -19,6 +19,7 @@ class FakeBackend:
     )
     requested_backend = "cuda"
     observed_backend = "cuda"
+    sample_rate = 24_000
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -133,6 +134,74 @@ def test_telephony_requests_fixed_rate_pcm(service) -> None:
     assert response.status_code == 200
     assert response.content_type == "application/octet-stream"
     assert encoder.calls[0][1:] == ("pcm", 16000)
+
+
+def test_telephony_stream_yields_ordered_segments_before_the_request_finishes() -> None:
+    class StreamingEncoder(FakeEncoder):
+        def encode(
+            self,
+            rendered: RenderedPcm,
+            *,
+            output_format: str,
+            sample_rate: int | None,
+        ) -> bytes:
+            self.calls.append((rendered, output_format, sample_rate))
+            return rendered.data
+
+    backend = FakeBackend()
+    encoder = StreamingEncoder()
+    app = create_app(backend, encoder, max_text_characters=1000)
+    app.config.update(TESTING=True)
+    text = " ".join(
+        [
+            "Der erste Abschnitt enthält genügend Wörter für ein frühes Sprachsegment.",
+            "Der zweite Abschnitt folgt danach und darf den ersten nicht verzögern.",
+            "Ein dritter Abschnitt bestätigt die korrekte Reihenfolge der Ausgabe.",
+            "Zum Abschluss bleibt auch die konfigurierte Stimme über alle Segmente gleich.",
+        ]
+    )
+
+    response = app.test_client().post(
+        "/v1/audio/speech/stream",
+        json={
+            "input": text,
+            "model": "chatterbox",
+            "voice": "nova",
+            "response_format": "pcm",
+            "sample_rate": 16000,
+        },
+        buffered=False,
+    )
+    iterator = iter(response.response)
+    first_frame = next(iterator)
+
+    assert response.status_code == 200
+    assert response.content_type == "application/vnd.openclaw.pcm-stream"
+    assert response.headers["X-OpenClaw-Audio-Sample-Rate"] == "16000"
+    assert len(backend.calls) == 1
+    assert int.from_bytes(first_frame[:4], "big") == len(first_frame) - 4
+    remaining = list(iterator)
+    assert remaining[-1] == b"\x00\x00\x00\x00"
+    assert len(backend.calls) > 1
+    assert {voice for _text, voice in backend.calls} == {"nova"}
+    assert len(encoder.calls) == len(backend.calls)
+
+
+def test_telephony_stream_rejects_non_pcm_without_starting_inference(service) -> None:
+    client, backend, _encoder = service
+    response = client.post(
+        "/v1/audio/speech/stream",
+        json={
+            "input": "Guten Tag",
+            "model": "chatterbox",
+            "voice": "astrid",
+            "response_format": "opus",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"]["code"] == "invalid_request"
+    assert backend.calls == []
 
 
 @pytest.mark.parametrize(

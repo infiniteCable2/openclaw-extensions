@@ -17,18 +17,18 @@ binary performs bounded Opus/WAV/PCM encoding; it is not discovered through
 - `GET /v1/voices`: public voice ids and descriptions, never private paths or
   generation settings.
 - `POST /v1/audio/speech`: OpenAI-compatible synthesis request.
+- `POST /v1/audio/speech/stream`: framed PCM segments for live transports.
 
 Voice-note output is Ogg Opus. Telephony output is raw mono PCM16 at the
 requested supported rate. Syntok disambiguates German and English sentence and
 paragraph boundaries without a model or accelerator allocation. The service
 then bounds long sentences at clause or word boundaries before they reach
 Chatterbox's approximately 40-second single-generation ceiling. All segments
-retain one request's selected voice, are synthesized in order, joined as PCM
-with bounded pauses, and encoded once.
-The backend exposes the ordered segment iterator needed by a future streaming
-transport; this endpoint deliberately remains one complete response for Matrix
-and other attachment-style channels. The service never logs input text or
-generated audio.
+retain one request's selected voice and are synthesized in order. The regular
+endpoint joins all PCM with bounded pauses and encodes once for attachment-style
+channels. The streaming endpoint emits each completed PCM segment immediately
+with a length prefix and a final completion frame; clients must reject truncated
+streams. The service never logs input text or generated audio.
 
 ## Development
 

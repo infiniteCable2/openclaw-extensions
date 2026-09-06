@@ -41,9 +41,12 @@ status only after the requested GPU model is ready.
         localService: {
           command: "/absolute/path/to/openclaw-local-stt",
           args: [
-            "--model-path", "/absolute/offline/stt-model",
-            "--host", "127.0.0.1",
-            "--port", "8010",
+            "--model-path",
+            "/absolute/offline/stt-model",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8010",
           ],
           env: {
             LD_LIBRARY_PATH: "/absolute/stt-venv/lib/python3.13/site-packages/nvidia/cublas/lib:/absolute/stt-venv/lib/python3.13/site-packages/nvidia/cudnn/lib",
@@ -81,13 +84,20 @@ status only after the requested GPU model is ready.
         localService: {
           command: "/absolute/path/to/openclaw-local-tts",
           args: [
-            "--model-path", "/absolute/offline/tts-model",
-            "--chatterbox-source", "/absolute/offline/chatterbox-source",
-            "--perth-source", "/absolute/offline/perth-source",
-            "--s3tokenizer-source", "/absolute/offline/s3tokenizer-source",
-            "--voice-catalog", "/absolute/private/tts-voices.json",
-            "--host", "127.0.0.1",
-            "--port", "8020",
+            "--model-path",
+            "/absolute/offline/tts-model",
+            "--chatterbox-source",
+            "/absolute/offline/chatterbox-source",
+            "--perth-source",
+            "/absolute/offline/perth-source",
+            "--s3tokenizer-source",
+            "/absolute/offline/s3tokenizer-source",
+            "--voice-catalog",
+            "/absolute/private/tts-voices.json",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8020",
           ],
           healthUrl: "http://127.0.0.1:8020/ready",
           readyTimeoutMs: 300000,
@@ -122,6 +132,14 @@ defaults are provided; a meeting integration may override `baseUrl`, `model`,
 `minSpeechMs`, `maxUtteranceMs`, `requestTimeoutMs`, and
 `maxQueuedUtterances` in its realtime provider configuration. `baseUrl` remains
 mandatory and loopback-only.
+
+Before an admitted incoming call is answered, OpenClaw can prepare the realtime
+transcription provider and the exact agent-scoped TTS persona. The plugin uses
+the same host-owned local-service leases for this readiness phase, so model
+startup is deduplicated and both workers remain leased for the call. Live TTS
+uses the service's framed PCM endpoint: each linguistic segment becomes
+available to the meeting transport as soon as that segment finishes, while
+voice-note synthesis keeps the complete-response path.
 
 ## Accelerator modes
 
