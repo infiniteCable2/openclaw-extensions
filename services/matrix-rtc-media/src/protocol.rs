@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 pub const SAMPLE_RATE: u32 = 24_000;
 pub const CHANNELS: u32 = 1;
 pub const FRAME_SAMPLES: usize = 240;
+pub const OUTPUT_FRAME_MAGIC: [u8; 4] = *b"OCAP";
+pub const OUTPUT_FRAME_VERSION: u8 = 1;
+pub const OUTPUT_FRAME_HEADER_BYTES: usize = 20;
+pub const MAX_OUTPUT_FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 const MAX_JWT_BYTES: usize = 16 * 1024;
 const MAX_IDENTITY_BYTES: usize = 512;
 
@@ -24,6 +28,9 @@ pub enum ControlMessage {
         participant_identity: String,
         index: u8,
         key_base64: String,
+    },
+    ClearOutput {
+        generation: u64,
     },
     Stop {},
 }
@@ -57,6 +64,7 @@ pub struct DecodedKey {
 pub enum ControlEvent<'a> {
     Ready,
     Connected,
+    OutputCleared { generation: u64 },
     Stopped,
     Fatal { code: &'a str },
 }
@@ -86,6 +94,29 @@ pub fn decode_key(identity: String, index: u8, encoded: String) -> anyhow::Resul
         index,
         key,
     })
+}
+
+pub fn decode_output_frame_header(
+    header: &[u8; OUTPUT_FRAME_HEADER_BYTES],
+) -> anyhow::Result<(u64, usize)> {
+    ensure!(
+        header[..4] == OUTPUT_FRAME_MAGIC,
+        "invalid output frame magic"
+    );
+    ensure!(
+        header[4] == OUTPUT_FRAME_VERSION,
+        "unsupported output frame version"
+    );
+    ensure!(header[5..8] == [0, 0, 0], "invalid output frame flags");
+    let generation = u64::from_be_bytes(header[8..16].try_into()?);
+    let payload_bytes = u32::from_be_bytes(header[16..20].try_into()?) as usize;
+    ensure!(
+        payload_bytes > 0
+            && payload_bytes <= MAX_OUTPUT_FRAME_BYTES
+            && payload_bytes.is_multiple_of(2),
+        "invalid output frame payload size"
+    );
+    Ok((generation, payload_bytes))
 }
 
 pub fn validate_start(message: ControlMessage) -> anyhow::Result<SessionStart> {
@@ -155,6 +186,15 @@ mod tests {
         )
     }
 
+    fn frame_header(generation: u64, payload_bytes: u32) -> [u8; OUTPUT_FRAME_HEADER_BYTES] {
+        let mut header = [0_u8; OUTPUT_FRAME_HEADER_BYTES];
+        header[..4].copy_from_slice(&OUTPUT_FRAME_MAGIC);
+        header[4] = OUTPUT_FRAME_VERSION;
+        header[8..16].copy_from_slice(&generation.to_be_bytes());
+        header[16..20].copy_from_slice(&payload_bytes.to_be_bytes());
+        header
+    }
+
     #[test]
     fn accepts_one_exact_remote_and_a_16_byte_key() {
         let encoded = STANDARD.encode([7_u8; 16]);
@@ -167,6 +207,29 @@ mod tests {
         let start = validate_start(parsed).unwrap();
         assert_eq!(start.allowed_remote_identities.len(), 1);
         assert_eq!(start.initial_keys[0].key, vec![7_u8; 16]);
+    }
+
+    #[test]
+    fn accepts_bounded_generation_tagged_pcm_frames() {
+        assert_eq!(
+            decode_output_frame_header(&frame_header(42, 480)).unwrap(),
+            (42, 480)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_oversized_output_frames() {
+        let mut invalid_magic = frame_header(1, 480);
+        invalid_magic[0] = b'X';
+        assert!(decode_output_frame_header(&invalid_magic).is_err());
+        assert!(decode_output_frame_header(&frame_header(1, 0)).is_err());
+        assert!(
+            decode_output_frame_header(&frame_header(
+                1,
+                u32::try_from(MAX_OUTPUT_FRAME_BYTES + 2).unwrap()
+            ))
+            .is_err()
+        );
     }
 
     #[test]

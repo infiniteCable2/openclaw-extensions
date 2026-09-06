@@ -29,5 +29,9 @@ The parent Matrix plugin must create a private runtime directory and unique
 control-socket path for every call. It must remove stale paths before launch,
 wait for the `ready` event, send the `start` envelope over the socket, and kill
 the bridge if identity policy, MatrixRTC membership, E2EE, or transport health
-fails. A release is not accepted until a real encrypted Element X call proves
-bidirectional audio, barge-in, teardown, and rejection of a third participant.
+fails. Replace the bridge and OpenClaw transport in one atomic,
+rollback-protected cutover because stdin framing and the `clear_output`
+acknowledgement form one versioned contract.
+
+A release is not accepted until a real encrypted Element X call proves
+bidirectional audio, Barge-in, teardown, and rejection of a third participant.
