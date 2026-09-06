@@ -18,6 +18,7 @@ class SynthesisBackend(Protocol):
     public_voices: tuple[dict[str, str], ...]
     requested_backend: str
     observed_backend: str
+    sample_rate: int
 
     def synthesize_segments(
         self,

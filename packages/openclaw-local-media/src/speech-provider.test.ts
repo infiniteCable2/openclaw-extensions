@@ -26,6 +26,32 @@ function configuredProvider() {
   return { provider, providerConfig };
 }
 
+function framedPcmStream(frames: Uint8Array[]): ReadableStream<Uint8Array> {
+  const chunks = frames.flatMap((frame) => {
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(frame.byteLength);
+    return [header, Buffer.from(frame)];
+  });
+  chunks.push(Buffer.alloc(4));
+  const wire = Buffer.concat(chunks);
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(wire.subarray(0, 3));
+      controller.enqueue(wire.subarray(3, 9));
+      controller.enqueue(wire.subarray(9));
+      controller.close();
+    },
+  });
+}
+
+async function readStream(stream: ReadableStream<Uint8Array>): Promise<Buffer[]> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return chunks;
+}
+
 describe("local media speech provider", () => {
   it("renders a Matrix-compatible Opus voice note", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
@@ -88,6 +114,62 @@ describe("local media speech provider", () => {
       response_format: "pcm",
       sample_rate: 16_000,
     });
+  });
+
+  it("decodes ordered framed PCM for streaming telephony", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(framedPcmStream([Uint8Array.from([1, 2]), Uint8Array.from([3, 4, 5, 6])]), {
+        status: 200,
+        headers: {
+          "content-type": "application/vnd.openclaw.pcm-stream",
+          "x-openclaw-audio-sample-rate": "16000",
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { provider, providerConfig } = configuredProvider();
+
+    const result = await provider.streamSynthesizeTelephony({
+      text: "Guten Tag",
+      providerConfig,
+      timeoutMs: 1_000,
+    });
+
+    await expect(readStream(result.audioStream)).resolves.toEqual([
+      Buffer.from([1, 2]),
+      Buffer.from([3, 4, 5, 6]),
+    ]);
+    expect(result).toMatchObject({ outputFormat: "pcm", sampleRate: 16_000 });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:8020/v1/audio/speech/stream");
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      voice: "nova",
+      response_format: "pcm",
+      sample_rate: 16_000,
+    });
+  });
+
+  it("rejects a telephony stream without a completion frame", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(Uint8Array.from([0, 0, 0, 2, 1, 2]), {
+          status: 200,
+          headers: {
+            "content-type": "application/vnd.openclaw.pcm-stream",
+            "x-openclaw-audio-sample-rate": "16000",
+          },
+        }),
+      ),
+    );
+    const { provider, providerConfig } = configuredProvider();
+    const result = await provider.streamSynthesizeTelephony({
+      text: "Unvollständig",
+      providerConfig,
+      timeoutMs: 1_000,
+    });
+
+    await expect(readStream(result.audioStream)).rejects.toThrow("ended before completion");
   });
 
   it("does not report remote endpoints as configured", () => {

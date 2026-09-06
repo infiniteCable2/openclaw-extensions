@@ -72,10 +72,12 @@ only once for the request, and the result must be one ordered audio object.
 Also cover numbered lists, German abbreviations, clock times, and decimal
 numbers; Syntok must keep their punctuation attached to the intended sentence.
 
-The current HTTP endpoint is batch delivery. Do not describe raw HTTP response
-chunks as low-latency telephony streaming: early telephone playback additionally
-requires an OpenClaw transport contract that consumes completed PCM segments as
-they are produced and cancels queued work on barge-in.
+Attachment delivery continues to use the complete-response endpoint. Live
+transports use `/v1/audio/speech/stream`, whose binary frames preserve service-owned
+linguistic segment boundaries across arbitrary HTTP chunking. Acceptance must
+prove first-segment playback before later synthesis completes, ordered delivery,
+bounded total audio, cancellation on barge-in, and rejection of a stream without
+its terminal completion frame.
 
 ## Rollback
 
