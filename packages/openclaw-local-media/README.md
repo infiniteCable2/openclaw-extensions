@@ -1,7 +1,7 @@
 # OpenClaw local media plugin
 
-This package registers one native media-understanding provider for STT and one
-native speech provider for TTS. Both use the provider id `local-media`.
+This package registers native batch and realtime-adapter STT capabilities plus
+one native speech provider for TTS. All use the provider id `local-media`.
 
 It will use OpenClaw's configured local-service lease mechanism instead of
 starting or supervising workers itself. Channel behavior remains in OpenClaw:
@@ -111,6 +111,17 @@ provider request.
 This preserves the agreed Matrix behavior: inbound text gets a text reply;
 an inbound voice note is transcribed before the agent run and gets the normal
 text reply plus a synthesized voice note.
+
+Live meeting transports can select `local-media` as their realtime
+transcription provider. The adapter accepts OpenClaw's 8 kHz G.711 mu-law
+meeting stream, detects bounded utterances, converts each utterance to a WAV in
+memory, and submits it to the same local `/v1/audio/transcriptions` endpoint.
+It keeps at most two utterances queued and fails closed on overflow. Sensible
+defaults are provided; a meeting integration may override `baseUrl`, `model`,
+`language`, `speechRmsThreshold`, `speechOnsetMs`, `silenceMs`, `preRollMs`,
+`minSpeechMs`, `maxUtteranceMs`, `requestTimeoutMs`, and
+`maxQueuedUtterances` in its realtime provider configuration. `baseUrl` remains
+mandatory and loopback-only.
 
 ## Accelerator modes
 
