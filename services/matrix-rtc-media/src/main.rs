@@ -20,8 +20,8 @@ use livekit::{
     },
 };
 use protocol::{
-    CHANNELS, ControlEvent, ControlMessage, DecodedKey, FRAME_SAMPLES, SAMPLE_RATE, decode_key,
-    validate_start,
+    CHANNELS, ControlEvent, ControlMessage, DecodedKey, OUTPUT_FRAME_HEADER_BYTES, SAMPLE_RATE,
+    decode_key, decode_output_frame_header, validate_start,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -30,6 +30,12 @@ use tokio::{
 };
 
 const MAX_CONTROL_LINE_BYTES: usize = 128 * 1024;
+const OUTPUT_QUEUE_MS: u32 = 20;
+
+struct OutputState {
+    generation: u64,
+    source: NativeAudioSource,
+}
 
 fn control_socket_arg() -> anyhow::Result<PathBuf> {
     let mut args = env::args_os();
@@ -95,21 +101,37 @@ async fn pump_remote_audio(
     Ok(())
 }
 
-async fn pump_local_audio(source: NativeAudioSource) -> anyhow::Result<()> {
+async fn read_output_frame(stdin: &mut tokio::io::Stdin) -> anyhow::Result<Option<(u64, Vec<u8>)>> {
+    let mut header = [0_u8; OUTPUT_FRAME_HEADER_BYTES];
+    if stdin.read(&mut header[..1]).await? == 0 {
+        return Ok(None);
+    }
+    stdin
+        .read_exact(&mut header[1..])
+        .await
+        .context("truncated output frame header")?;
+    let (generation, payload_bytes) = decode_output_frame_header(&header)?;
+    let mut payload = vec![0_u8; payload_bytes];
+    stdin
+        .read_exact(&mut payload)
+        .await
+        .context("truncated output frame payload")?;
+    Ok(Some((generation, payload)))
+}
+
+async fn pump_local_audio(output: Arc<Mutex<OutputState>>) -> anyhow::Result<()> {
     let mut stdin = tokio::io::stdin();
-    let mut bytes = vec![0_u8; FRAME_SAMPLES * 2];
-    loop {
-        match stdin.read_exact(&mut bytes).await {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-            Err(error) => return Err(error.into()),
-        }
-        let mut frame = AudioFrame::new(SAMPLE_RATE, CHANNELS, FRAME_SAMPLES as u32);
+    while let Some((generation, bytes)) = read_output_frame(&mut stdin).await? {
+        let mut frame = AudioFrame::new(SAMPLE_RATE, CHANNELS, (bytes.len() / 2) as u32);
         for (sample, chunk) in frame.data.to_mut().iter_mut().zip(bytes.chunks_exact(2)) {
             *sample = i16::from_le_bytes([chunk[0], chunk[1]]);
         }
-        source.capture_frame(&frame).await?;
+        let state = output.lock().await;
+        if generation == state.generation {
+            state.source.capture_frame(&frame).await?;
+        }
     }
+    Ok(())
 }
 
 async fn run_started_session(
@@ -154,7 +176,7 @@ async fn run_started_session(
         },
         SAMPLE_RATE,
         CHANNELS,
-        1_000,
+        OUTPUT_QUEUE_MS,
     );
     let track =
         LocalAudioTrack::create_audio_track("openclaw", RtcAudioSource::Native(source.clone()));
@@ -171,13 +193,25 @@ async fn run_started_session(
     send_event(&writer, ControlEvent::Connected).await?;
     let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
     let (fatal_tx, mut fatal_rx) = mpsc::channel::<()>(1);
-    let local_audio = tokio::spawn(async move { pump_local_audio(source).await });
+    let output = Arc::new(Mutex::new(OutputState {
+        generation: 0,
+        source,
+    }));
+    let mut local_audio = tokio::spawn(pump_local_audio(output.clone()));
 
     loop {
         tokio::select! {
             message = read_control_line(&mut control) => match message? {
                 ControlMessage::Key { participant_identity, index, key_base64 } => {
                     install_key(&key_provider, decode_key(participant_identity, index, key_base64)?)?;
+                }
+                ControlMessage::ClearOutput { generation } => {
+                    let mut state = output.lock().await;
+                    ensure!(generation > state.generation, "output generation must increase");
+                    state.generation = generation;
+                    state.source.clear_buffer();
+                    drop(state);
+                    send_event(&writer, ControlEvent::OutputCleared { generation }).await?;
                 }
                 ControlMessage::Stop {} => break,
                 ControlMessage::Start { .. } => anyhow::bail!("session is already started"),
@@ -209,6 +243,12 @@ async fn run_started_session(
                 }
                 Some(RoomEvent::Disconnected { .. }) | None => break,
                 _ => {}
+            },
+            result = &mut local_audio => {
+                match result {
+                    Ok(Ok(())) => break,
+                    _ => anyhow::bail!("local audio stream failed"),
+                }
             },
             _ = fatal_rx.recv() => anyhow::bail!("remote audio stream failed"),
         }
