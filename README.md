@@ -16,6 +16,8 @@ repository later without changing the OpenClaw provider contract.
   contract (OpenAPI).
 - `services/stt`: local speech-to-text runtime (implemented and contract-tested).
 - `services/tts`: local text-to-speech runtime (implemented and contract-tested).
+- `services/matrix-rtc-media`: fail-closed native PCM/E2EE transport for
+  MatrixRTC calls; Matrix identity and agent routing remain in OpenClaw.
 - `services/accelerator`: optional fail-closed lease runner and narrow
   Linux/PCI/NVIDIA lifecycle broker (implemented and contract-tested).
 - `contracts/accelerator-v1`: versioned Unix-socket lease and broker
