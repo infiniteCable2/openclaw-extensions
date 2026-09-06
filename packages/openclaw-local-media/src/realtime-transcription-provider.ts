@@ -13,6 +13,12 @@ type RealtimeTranscriptionSessionCreateRequest = Parameters<
 type RealtimeTranscriptionSession = ReturnType<
   RealtimeTranscriptionProviderPlugin["createSession"]
 >;
+type LocalRealtimeTranscriptionProvider = RealtimeTranscriptionProviderPlugin & {
+  prepareSession(request: {
+    providerConfig: RealtimeTranscriptionProviderConfig;
+    signal?: AbortSignal;
+  }): Promise<{ release(): void | Promise<void> } | undefined>;
+};
 
 type LocalRealtimeConfig = {
   baseUrl: string;
@@ -33,7 +39,7 @@ const INPUT_BYTES_PER_MS = INPUT_SAMPLE_RATE / 1_000;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 
 function decodeMulawByte(encoded: number): number {
-  const value = (~encoded) & 0xff;
+  const value = ~encoded & 0xff;
   const sign = value & 0x80;
   const exponent = (value >> 4) & 0x07;
   const mantissa = value & 0x0f;
@@ -154,7 +160,11 @@ async function transcribeUtterance(params: {
       throw new Error(`Local media realtime transcription failed with HTTP ${response.status}`);
     }
     const body = await readBoundedJson(response);
-    if (!body || typeof body !== "object" || typeof (body as { text?: unknown }).text !== "string") {
+    if (
+      !body ||
+      typeof body !== "object" ||
+      typeof (body as { text?: unknown }).text !== "string"
+    ) {
       throw new Error("Local media realtime transcription returned an invalid response");
     }
     return (body as { text: string }).text.trim();
@@ -197,7 +207,9 @@ function createSession(
     }
     closed = true;
     connected = false;
-    request.onError?.(error instanceof Error ? error : new Error("Local media transcription failed"));
+    request.onError?.(
+      error instanceof Error ? error : new Error("Local media transcription failed"),
+    );
   };
 
   const enqueue = (audio: Buffer) => {
@@ -300,7 +312,7 @@ function createSession(
 
 export function buildLocalRealtimeTranscriptionProvider(
   acquireLocalService: AcquireLocalService,
-): RealtimeTranscriptionProviderPlugin {
+): LocalRealtimeTranscriptionProvider {
   return {
     id: LOCAL_MEDIA_PROVIDER_ID,
     label: "Local Media",
@@ -314,6 +326,13 @@ export function buildLocalRealtimeTranscriptionProvider(
       } catch {
         return false;
       }
+    },
+    prepareSession: async ({ providerConfig, signal }) => {
+      const config = normalizeConfig(providerConfig);
+      return await acquireLocalService(
+        { providerId: LOCAL_MEDIA_PROVIDER_ID, baseUrl: config.baseUrl },
+        signal,
+      );
     },
     createSession: (request) => createSession(request, acquireLocalService),
   };

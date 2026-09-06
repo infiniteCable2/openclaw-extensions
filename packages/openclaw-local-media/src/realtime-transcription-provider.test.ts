@@ -35,6 +35,21 @@ async function waitFor(check: () => boolean) {
 }
 
 describe("local media realtime transcription provider", () => {
+  it("prepares and retains the worker before a realtime session starts", async () => {
+    const lease = { release: vi.fn() };
+    const acquire = vi.fn().mockResolvedValue(lease);
+    const provider = buildLocalRealtimeTranscriptionProvider(acquire);
+    const signal = new AbortController().signal;
+
+    await expect(
+      provider.prepareSession({ providerConfig: requestConfig(), signal }),
+    ).resolves.toBe(lease);
+    expect(acquire).toHaveBeenCalledWith(
+      { providerId: "local-media", baseUrl: "http://127.0.0.1:8010/v1" },
+      signal,
+    );
+  });
+
   it("segments mu-law speech, acquires a lease, and submits an 8 kHz WAV", async () => {
     const release = vi.fn();
     const acquire = vi.fn().mockResolvedValue({ release });
@@ -97,13 +112,18 @@ describe("local media realtime transcription provider", () => {
   it("rejects non-loopback endpoints before opening a session", () => {
     const provider = buildLocalRealtimeTranscriptionProvider(vi.fn());
     expect(() =>
-      provider.createSession({ providerConfig: requestConfig({ baseUrl: "https://example.test/v1" }) }),
+      provider.createSession({
+        providerConfig: requestConfig({ baseUrl: "https://example.test/v1" }),
+      }),
     ).toThrow("requires an explicit loopback HTTP(S) baseUrl");
   });
 
   it("fails closed when the bounded utterance queue overflows", async () => {
     const acquire = vi.fn().mockResolvedValue({ release: vi.fn() });
-    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => {})),
+    );
     const onError = vi.fn();
     const provider = buildLocalRealtimeTranscriptionProvider(acquire);
     const session = provider.createSession({
@@ -123,7 +143,9 @@ describe("local media realtime transcription provider", () => {
 
     expect(onError).toHaveBeenCalledOnce();
     expect(onError.mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ message: "Local media realtime transcription queue limit exceeded" }),
+      expect.objectContaining({
+        message: "Local media realtime transcription queue limit exceeded",
+      }),
     );
     expect(session.isConnected()).toBe(false);
   });
