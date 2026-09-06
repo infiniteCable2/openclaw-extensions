@@ -1,0 +1,20 @@
+[package]
+name = "openclaw-matrix-rtc-media"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Fail-closed PCM media bridge for OpenClaw MatrixRTC calls"
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+futures-util = "0.3"
+livekit = { git = "https://github.com/livekit/rust-sdks", rev = "20e442edab8e91f399ca62e0f5d811ed0002a4b2", features = ["native-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.45", features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "sync"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,36 @@
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+
+RUN echo 'deb http://deb.debian.org/debian trixie-backports main' \
+        > /etc/apt/sources.list.d/backports.list \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        -t trixie-backports \
+        build-essential \
+        ca-certificates \
+        cargo \
+        clang-21 \
+        git \
+        libdrm-dev \
+        libgbm-dev \
+        libgl1-mesa-dev \
+        libglib2.0-dev \
+        libssl-dev \
+        libva-dev \
+        libx11-dev \
+        libxcomposite-dev \
+        libxdamage-dev \
+        libxext-dev \
+        libxfixes-dev \
+        libxrandr-dev \
+        pkg-config \
+        protobuf-compiler \
+        rustc \
+        rustfmt \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CC=clang-21 \
+    CXX=clang++-21
+
+WORKDIR /src
+
+CMD ["cargo", "test", "--locked"]
