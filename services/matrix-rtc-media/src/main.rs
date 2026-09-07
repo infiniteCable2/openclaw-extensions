@@ -30,7 +30,9 @@ use tokio::{
 };
 
 const MAX_CONTROL_LINE_BYTES: usize = 128 * 1024;
-const OUTPUT_QUEUE_MS: u32 = 20;
+// Keep the proven LiveKit source capacity. Barge-in explicitly clears this
+// queue; shrinking it causes the native SDK to publish silence under load.
+const OUTPUT_QUEUE_MS: u32 = 1_000;
 
 struct OutputState {
     generation: u64,
