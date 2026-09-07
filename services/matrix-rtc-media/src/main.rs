@@ -121,8 +121,12 @@ async fn read_output_frame(stdin: &mut tokio::io::Stdin) -> anyhow::Result<Optio
     Ok(Some((generation, payload)))
 }
 
-async fn pump_local_audio(output: Arc<Mutex<OutputState>>) -> anyhow::Result<()> {
+async fn pump_local_audio(
+    output: Arc<Mutex<OutputState>>,
+    frame_diagnostic: bool,
+) -> anyhow::Result<()> {
     let mut stdin = tokio::io::stdin();
+    let mut first_frame = true;
     while let Some((generation, bytes)) = read_output_frame(&mut stdin).await? {
         let mut frame = AudioFrame::new(SAMPLE_RATE, CHANNELS, (bytes.len() / 2) as u32);
         for (sample, chunk) in frame.data.to_mut().iter_mut().zip(bytes.chunks_exact(2)) {
@@ -130,8 +134,18 @@ async fn pump_local_audio(output: Arc<Mutex<OutputState>>) -> anyhow::Result<()>
         }
         let state = output.lock().await;
         if generation == state.generation {
+            if first_frame && frame_diagnostic {
+                eprintln!(
+                    "matrix_rtc_media_output_frame_nonzero={}",
+                    bytes.iter().any(|byte| *byte != 0)
+                );
+            }
             state.source.capture_frame(&frame).await?;
+            if first_frame && frame_diagnostic {
+                eprintln!("matrix_rtc_media_output_frame_captured=true");
+            }
         }
+        first_frame = false;
     }
     Ok(())
 }
@@ -199,7 +213,8 @@ async fn run_started_session(
         generation: 0,
         source,
     }));
-    let mut local_audio = tokio::spawn(pump_local_audio(output.clone()));
+    let frame_diagnostic = env::var_os("OPENCLAW_MATRIX_RTC_FRAME_DIAGNOSTIC").is_some();
+    let mut local_audio = tokio::spawn(pump_local_audio(output.clone(), frame_diagnostic));
 
     loop {
         tokio::select! {
