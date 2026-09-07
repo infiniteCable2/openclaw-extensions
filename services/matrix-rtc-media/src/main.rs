@@ -20,8 +20,8 @@ use livekit::{
     },
 };
 use protocol::{
-    CHANNELS, ControlEvent, ControlMessage, DecodedKey, OUTPUT_FRAME_HEADER_BYTES, SAMPLE_RATE,
-    decode_key, decode_output_frame_header, validate_start,
+    CHANNELS, ControlEvent, ControlMessage, DecodedKey, FRAME_SAMPLES, OUTPUT_FRAME_HEADER_BYTES,
+    SAMPLE_RATE, decode_key, decode_output_frame_header, validate_start,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -34,9 +34,15 @@ const MAX_CONTROL_LINE_BYTES: usize = 128 * 1024;
 // queue; shrinking it causes the native SDK to publish silence under load.
 const OUTPUT_QUEUE_MS: u32 = 1_000;
 
-struct OutputState {
-    generation: u64,
-    source: NativeAudioSource,
+enum OutputCommand {
+    Frame {
+        generation: u64,
+        bytes: Vec<u8>,
+    },
+    Clear {
+        generation: u64,
+        acknowledged: tokio::sync::oneshot::Sender<bool>,
+    },
 }
 
 fn control_socket_arg() -> anyhow::Result<PathBuf> {
@@ -121,31 +127,61 @@ async fn read_output_frame(stdin: &mut tokio::io::Stdin) -> anyhow::Result<Optio
     Ok(Some((generation, payload)))
 }
 
+async fn read_local_audio(output: mpsc::Sender<OutputCommand>) -> anyhow::Result<()> {
+    let mut stdin = tokio::io::stdin();
+    while let Some((generation, bytes)) = read_output_frame(&mut stdin).await? {
+        output
+            .send(OutputCommand::Frame { generation, bytes })
+            .await
+            .context("output audio queue closed")?;
+    }
+    Ok(())
+}
+
 async fn pump_local_audio(
-    output: Arc<Mutex<OutputState>>,
+    source: NativeAudioSource,
+    mut output: mpsc::Receiver<OutputCommand>,
     frame_diagnostic: bool,
 ) -> anyhow::Result<()> {
-    let mut stdin = tokio::io::stdin();
+    let mut generation = 0_u64;
     let mut first_frame = true;
-    while let Some((generation, bytes)) = read_output_frame(&mut stdin).await? {
-        let mut frame = AudioFrame::new(SAMPLE_RATE, CHANNELS, (bytes.len() / 2) as u32);
-        for (sample, chunk) in frame.data.to_mut().iter_mut().zip(bytes.chunks_exact(2)) {
-            *sample = i16::from_le_bytes([chunk[0], chunk[1]]);
-        }
-        let state = output.lock().await;
-        if generation == state.generation {
-            if first_frame && frame_diagnostic {
-                eprintln!(
-                    "matrix_rtc_media_output_frame_nonzero={}",
-                    bytes.iter().any(|byte| *byte != 0)
-                );
+    while let Some(command) = output.recv().await {
+        match command {
+            OutputCommand::Frame {
+                generation: frame_generation,
+                bytes,
+            } => {
+                if frame_generation != generation {
+                    continue;
+                }
+                let mut frame = AudioFrame::new(SAMPLE_RATE, CHANNELS, FRAME_SAMPLES as u32);
+                for (sample, chunk) in frame.data.to_mut().iter_mut().zip(bytes.chunks_exact(2)) {
+                    *sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+                }
+                if first_frame && frame_diagnostic {
+                    eprintln!(
+                        "matrix_rtc_media_output_frame_nonzero={}",
+                        bytes.iter().any(|byte| *byte != 0)
+                    );
+                }
+                source.capture_frame(&frame).await?;
+                if first_frame && frame_diagnostic {
+                    eprintln!("matrix_rtc_media_output_frame_captured=true");
+                }
+                first_frame = false;
             }
-            state.source.capture_frame(&frame).await?;
-            if first_frame && frame_diagnostic {
-                eprintln!("matrix_rtc_media_output_frame_captured=true");
+            OutputCommand::Clear {
+                generation: next_generation,
+                acknowledged,
+            } => {
+                let accepted = next_generation > generation;
+                if accepted {
+                    generation = next_generation;
+                    source.clear_buffer();
+                }
+                let _ = acknowledged.send(accepted);
             }
         }
-        first_frame = false;
     }
     Ok(())
 }
@@ -209,12 +245,10 @@ async fn run_started_session(
     send_event(&writer, ControlEvent::Connected).await?;
     let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
     let (fatal_tx, mut fatal_rx) = mpsc::channel::<()>(1);
-    let output = Arc::new(Mutex::new(OutputState {
-        generation: 0,
-        source,
-    }));
+    let (output_tx, output_rx) = mpsc::channel::<OutputCommand>(4);
     let frame_diagnostic = env::var_os("OPENCLAW_MATRIX_RTC_FRAME_DIAGNOSTIC").is_some();
-    let mut local_audio = tokio::spawn(pump_local_audio(output.clone(), frame_diagnostic));
+    let mut local_reader = tokio::spawn(read_local_audio(output_tx.clone()));
+    let mut local_audio = tokio::spawn(pump_local_audio(source, output_rx, frame_diagnostic));
 
     loop {
         tokio::select! {
@@ -223,11 +257,12 @@ async fn run_started_session(
                     install_key(&key_provider, decode_key(participant_identity, index, key_base64)?)?;
                 }
                 ControlMessage::ClearOutput { generation } => {
-                    let mut state = output.lock().await;
-                    ensure!(generation > state.generation, "output generation must increase");
-                    state.generation = generation;
-                    state.source.clear_buffer();
-                    drop(state);
+                    let (acknowledged_tx, acknowledged_rx) = tokio::sync::oneshot::channel();
+                    output_tx.send(OutputCommand::Clear {
+                        generation,
+                        acknowledged: acknowledged_tx,
+                    }).await.context("output audio queue closed")?;
+                    ensure!(acknowledged_rx.await?, "output generation must increase");
                     send_event(&writer, ControlEvent::OutputCleared { generation }).await?;
                 }
                 ControlMessage::Stop {} => break,
@@ -267,11 +302,18 @@ async fn run_started_session(
                     _ => anyhow::bail!("local audio stream failed"),
                 }
             },
+            result = &mut local_reader => {
+                match result {
+                    Ok(Ok(())) => break,
+                    _ => anyhow::bail!("local audio input failed"),
+                }
+            },
             _ = fatal_rx.recv() => anyhow::bail!("remote audio stream failed"),
         }
     }
 
     local_audio.abort();
+    local_reader.abort();
     room.close().await?;
     send_event(&writer, ControlEvent::Stopped).await?;
     Ok(())
