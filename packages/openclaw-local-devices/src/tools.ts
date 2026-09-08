@@ -5,7 +5,7 @@ import { GoveeLanBackend, GoveeLanStatusCoordinator, readGoveeStatuses } from ".
 import type { DeviceAction, DeviceBackend, DeviceStatus, LocalDevicesConfig } from "./types.js";
 import { LocalDeviceError } from "./types.js";
 
-const statusSchema = {
+export const statusSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -17,7 +17,7 @@ const statusSchema = {
   },
 } satisfies AnyAgentTool["parameters"];
 
-const controlSchema = {
+export const controlSchema = {
   type: "object",
   additionalProperties: false,
   required: ["device", "action"],

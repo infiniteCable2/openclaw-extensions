@@ -6,6 +6,7 @@
     "onStartup": false,
     "onConfigPaths": ["plugins.entries.local-devices.config"]
   },
+  "version": "0.1.0",
   "contracts": {
     "tools": ["local_device_status", "local_device_control"]
   },
