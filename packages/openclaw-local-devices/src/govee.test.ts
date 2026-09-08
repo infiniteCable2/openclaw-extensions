@@ -3,6 +3,8 @@ import type { Socket } from "node:dgram";
 import { describe, expect, it, vi } from "vitest";
 import {
   encodeGoveeAction,
+  encodeGoveeH6072SceneFrame,
+  encodeGoveePtRealPayload,
   GoveeLanBackend,
   GoveeLanStatusCoordinator,
   parseGoveeStatus,
@@ -12,6 +14,24 @@ import {
 const device = { id: "living_light", name: "Living light", address: "192.168.1.25" };
 
 describe("Govee LAN protocol", () => {
+  it("encodes the published H6072 scene fixture without sending it", () => {
+    const frame = encodeGoveeH6072SceneFrame(10191);
+
+    expect(frame.toString("hex")).toBe("330504cf270000000000000000000000000000da");
+    expect(frame.toString("base64")).toBe("MwUEzycAAAAAAAAAAAAAAAAAANo=");
+    expect(JSON.parse(encodeGoveePtRealPayload([frame]).toString())).toEqual({
+      msg: { cmd: "ptReal", data: { command: ["MwUEzycAAAAAAAAAAAAAAAAAANo="] } },
+    });
+  });
+
+  it("rejects invalid scene codes, frame sizes, and checksums", () => {
+    expect(() => encodeGoveeH6072SceneFrame(65_536)).toThrow(/16-bit/);
+    expect(() => encodeGoveePtRealPayload([Buffer.alloc(19)])).toThrow(/20 bytes/);
+    const invalidChecksum = Buffer.alloc(20);
+    invalidChecksum[0] = 1;
+    expect(() => encodeGoveePtRealPayload([invalidChecksum])).toThrow(/checksum/);
+  });
+
   it("encodes only the fixed LAN command shapes", () => {
     expect(JSON.parse(encodeGoveeAction({ type: "turn_on" }).toString())).toEqual({
       msg: { cmd: "turn", data: { value: 1 } },

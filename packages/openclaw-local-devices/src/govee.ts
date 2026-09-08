@@ -6,6 +6,8 @@ const GOVEE_RESPONSE_PORT = 4002;
 const GOVEE_CONTROL_PORT = 4003;
 const MAX_DATAGRAM_BYTES = 8192;
 const MAX_QUEUED_STATUS_OPERATIONS = 8;
+const GOVEE_BLE_FRAME_BYTES = 20;
+const GOVEE_BLE_PAYLOAD_BYTES = GOVEE_BLE_FRAME_BYTES - 1;
 
 type GoveeSocketFactory = () => Socket;
 
@@ -29,6 +31,44 @@ function commandPayload(command: string, data: Record<string, unknown>): Buffer 
     throw new LocalDeviceError("invalid_request", "Govee command exceeds its size limit");
   }
   return payload;
+}
+
+export function encodeGoveeH6072SceneFrame(sceneCode: number): Buffer {
+  if (!Number.isSafeInteger(sceneCode) || sceneCode < 0 || sceneCode > 0xffff) {
+    throw new LocalDeviceError("invalid_request", "Govee H6072 scene code must be a 16-bit integer");
+  }
+  const frame = Buffer.alloc(GOVEE_BLE_FRAME_BYTES);
+  frame[0] = 0x33;
+  frame[1] = 0x05;
+  frame[2] = 0x04;
+  frame[3] = sceneCode & 0xff;
+  frame[4] = (sceneCode >>> 8) & 0xff;
+  let checksum = 0;
+  for (let index = 0; index < GOVEE_BLE_PAYLOAD_BYTES; index += 1) {
+    checksum ^= frame[index] ?? 0;
+  }
+  frame[GOVEE_BLE_PAYLOAD_BYTES] = checksum;
+  return frame;
+}
+
+export function encodeGoveePtRealPayload(frames: readonly Buffer[]): Buffer {
+  if (frames.length < 1 || frames.length > 16) {
+    throw new LocalDeviceError("invalid_request", "Govee ptReal requires between 1 and 16 frames");
+  }
+  const commands = frames.map((frame) => {
+    if (frame.length !== GOVEE_BLE_FRAME_BYTES) {
+      throw new LocalDeviceError("invalid_request", "Govee ptReal frames must contain 20 bytes");
+    }
+    let checksum = 0;
+    for (let index = 0; index < GOVEE_BLE_PAYLOAD_BYTES; index += 1) {
+      checksum ^= frame[index] ?? 0;
+    }
+    if (frame[GOVEE_BLE_PAYLOAD_BYTES] !== checksum) {
+      throw new LocalDeviceError("invalid_request", "Govee ptReal frame checksum is invalid");
+    }
+    return frame.toString("base64");
+  });
+  return commandPayload("ptReal", { command: commands });
 }
 
 export function encodeGoveeAction(action: DeviceAction): Buffer {
