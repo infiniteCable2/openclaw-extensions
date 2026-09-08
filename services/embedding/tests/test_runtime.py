@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from openclaw_accelerator import AcceleratorDemandUnavailable
 from openclaw_local_embedding.runtime import EmbeddingRuntimeError, OllamaEmbeddingRuntime
 
 
@@ -23,3 +24,14 @@ def test_gpu_residency_is_fail_closed(entry: dict[str, object], ok: bool) -> Non
     else:
         with pytest.raises(EmbeddingRuntimeError):
             runtime._verify_gpu_residency()
+
+
+def test_accelerator_failure_is_a_typed_service_error() -> None:
+    class FailedLease:
+        def activity(self):
+            raise AcceleratorDemandUnavailable("unavailable")
+
+    runtime = object.__new__(OllamaEmbeddingRuntime)
+    runtime._lease = FailedLease()
+    with pytest.raises(EmbeddingRuntimeError, match="accelerator demand"):
+        runtime.embed(["synthetic"])
