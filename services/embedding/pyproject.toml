@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openclaw-local-embedding"
+version = "0.1.0"
+description = "Fail-closed Ollama embedding gateway with accelerator demand leases"
+requires-python = ">=3.13,<3.14"
+dependencies = ["openclaw-accelerator-runner==0.1.0"]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.2"]
+
+[project.scripts]
+openclaw-local-embedding = "openclaw_local_embedding.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openclaw_local_embedding"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
