@@ -24,6 +24,7 @@ class OllamaEmbeddingRuntime:
         model: str,
         dimensions: int,
         ollama_base_url: str,
+        accelerator_id: str,
         socket_path: Path,
         idle_release_seconds: float,
         request_timeout_seconds: float,
@@ -33,6 +34,8 @@ class OllamaEmbeddingRuntime:
     ) -> None:
         if not model or any(ch.isspace() for ch in model):
             raise ValueError("model identifier is invalid")
+        if not accelerator_id:
+            raise ValueError("accelerator identifier is required")
         if not 1 <= dimensions <= 65_536:
             raise ValueError("embedding dimensions are outside the allowed range")
         if ollama_base_url not in {"http://127.0.0.1:11434", "http://localhost:11434"}:
@@ -49,7 +52,7 @@ class OllamaEmbeddingRuntime:
         self.minimum_vram_ratio = float(minimum_vram_ratio)
         self._stop = threading.Event()
         self._lease = demand_lease_factory(
-            accelerator_id="gpu0",
+            accelerator_id=accelerator_id,
             consumer="openclaw-embedding",
             socket_path=socket_path,
             ttl_seconds=90,

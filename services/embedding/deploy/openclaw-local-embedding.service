@@ -9,7 +9,7 @@ User=openclaw
 Group=openclaw
 SupplementaryGroups=openclaw-accelerator
 Environment=PYTHONPATH=/srv/openclaw-extensions/embedding-current/services/accelerator/src:/srv/openclaw-extensions/embedding-current/services/embedding/src
-ExecStart=/usr/bin/python3.13 -m openclaw_local_embedding.cli --host 127.0.0.1 --port 11436 --model qwen3-embedding:0.6b --dimensions 1024 --idle-release-seconds 120
+ExecStart=/usr/bin/python3.13 -m openclaw_local_embedding.cli --host 127.0.0.1 --port 11436 --model qwen3-embedding:0.6b --dimensions 1024 --idle-release-seconds 120 --accelerator-id gpu0
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

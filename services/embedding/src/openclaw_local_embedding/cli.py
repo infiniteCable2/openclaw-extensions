@@ -15,6 +15,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=11436)
     parser.add_argument("--model", default="qwen3-embedding:0.6b")
     parser.add_argument("--dimensions", type=int, default=1024)
+    parser.add_argument("--accelerator-id", required=True)
     parser.add_argument("--accelerator-socket", type=Path, default=Path("/run/openclaw-accelerator/broker.sock"))
     parser.add_argument("--idle-release-seconds", type=float, default=120)
     args = parser.parse_args()
@@ -22,6 +23,7 @@ def main() -> None:
         model=args.model,
         dimensions=args.dimensions,
         ollama_base_url="http://127.0.0.1:11434",
+        accelerator_id=args.accelerator_id,
         socket_path=args.accelerator_socket,
         idle_release_seconds=args.idle_release_seconds,
         request_timeout_seconds=60,
