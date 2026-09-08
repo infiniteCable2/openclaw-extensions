@@ -6,6 +6,11 @@ dependency-free packages with the system Python 3.13. Run the service as the
 `openclaw` account with membership in the accelerator socket group and bind
 only to `127.0.0.1`.
 
+The shipped unit contains the non-host-specific example accelerator id `gpu0`.
+Production installation must replace it with the sole validated id from the
+root-owned broker configuration, preferably through a root-owned systemd
+drop-in. Never infer the id from an agent request.
+
 Configure OpenClaw with a dedicated model provider whose API is `ollama` and
 whose base URL is the embedding service loopback origin. Then set
 `memory.search.provider` to that provider, select the exact model, set fallback
