@@ -1,9 +1,10 @@
 # Embedding installation
 
-Install the reviewed accelerator and embedding packages together into a
-dedicated Python 3.13 virtual environment. Run the service as the `openclaw`
-account with membership in the accelerator socket group and bind only to
-`127.0.0.1`.
+Select a reviewed immutable source release through the dedicated
+`/srv/openclaw-extensions/embedding-current` symlink. The unit runs the two
+dependency-free packages with the system Python 3.13. Run the service as the
+`openclaw` account with membership in the accelerator socket group and bind
+only to `127.0.0.1`.
 
 Configure OpenClaw with a dedicated model provider whose API is `ollama` and
 whose base URL is the embedding service loopback origin. Then set
