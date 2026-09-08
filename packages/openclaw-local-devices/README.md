@@ -25,7 +25,7 @@ pnpm --filter @infinitecable2/openclaw-local-devices build
 ## OpenClaw configuration
 
 Use stable logical device IDs. Keep transport addresses, FRITZ! unit IDs, and credentials out of
-agent prompts and workspaces. This example uses an environment SecretRef; do not put the password
+agent prompts and workspaces. This example uses a protected store SecretRef; do not put the password
 directly in `openclaw.json`.
 
 ```json5
@@ -46,7 +46,7 @@ directly in `openclaw.json`.
             baseUrl: "http://fritz.box",
             username: "openclaw-smarthome",
             password: {
-              source: "env",
+              source: "store",
               provider: "default",
               id: "FRITZ_SMARTHOME_PASSWORD",
             },
@@ -66,8 +66,9 @@ them to `bodo`, `ops`, or a global/default allowlist. The plugin-side `allowedAg
 independent gate; both gates must permit the tool.
 
 Create a dedicated FRITZ!Box user with only the Smart Home permission needed for this integration.
-Supply `FRITZ_SMARTHOME_PASSWORD` through the root-owned OpenClaw service environment, validate
-configuration while the Gateway is stopped, and run `openclaw secrets audit --check` after setup.
+Enter `FRITZ_SMARTHOME_PASSWORD` as a protected value through OpenClaw's masked Secrets UI or
+`openclaw secrets store`; never place it in shell history or chat. Validate configuration while the
+Gateway is stopped, and run `openclaw secrets audit --check` after setup.
 
 ## Operational boundaries
 
