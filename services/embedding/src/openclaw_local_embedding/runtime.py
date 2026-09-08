@@ -8,7 +8,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from openclaw_accelerator import AcceleratorDemandLease
+from openclaw_accelerator import AcceleratorDemandLease, AcceleratorDemandUnavailable
 
 
 class EmbeddingRuntimeError(RuntimeError):
@@ -86,17 +86,20 @@ class OllamaEmbeddingRuntime:
         return value
 
     def embed(self, inputs: list[str]) -> list[list[float]]:
-        with self._lease.activity():
-            response = self._request_json(
-                "POST",
-                "/api/embed",
-                {
-                    "model": self.model,
-                    "input": inputs,
-                    "keep_alive": f"{self.request_keep_alive_seconds:g}s",
-                },
-            )
-            self._verify_gpu_residency()
+        try:
+            with self._lease.activity():
+                response = self._request_json(
+                    "POST",
+                    "/api/embed",
+                    {
+                        "model": self.model,
+                        "input": inputs,
+                        "keep_alive": f"{self.request_keep_alive_seconds:g}s",
+                    },
+                )
+                self._verify_gpu_residency()
+        except AcceleratorDemandUnavailable as exc:
+            raise EmbeddingRuntimeError("accelerator demand is unavailable") from exc
         embeddings = response.get("embeddings")
         if not isinstance(embeddings, list) or len(embeddings) != len(inputs):
             raise EmbeddingRuntimeError("Ollama returned the wrong embedding count")
