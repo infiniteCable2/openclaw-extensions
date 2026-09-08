@@ -1,0 +1,152 @@
+{
+  "id": "local-devices",
+  "name": "Local Devices",
+  "description": "Bounded local control of configured Govee and FRITZ! Smart Home devices.",
+  "activation": {
+    "onStartup": false,
+    "onConfigPaths": ["plugins.entries.local-devices.config"]
+  },
+  "contracts": {
+    "tools": ["local_device_status", "local_device_control"]
+  },
+  "toolMetadata": {
+    "local_device_status": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false,
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.local-devices.config",
+          "required": ["allowedAgentIds"]
+        }
+      ]
+    },
+    "local_device_control": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true,
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.local-devices.config",
+          "required": ["allowedAgentIds"]
+        }
+      ]
+    }
+  },
+  "configContracts": {
+    "secretInputs": {
+      "paths": [
+        {
+          "path": "fritz.password",
+          "expected": "string",
+          "ownerKind": "capability"
+        }
+      ]
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["allowedAgentIds"],
+    "properties": {
+      "allowedAgentIds": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        }
+      },
+      "requestTimeoutMs": {
+        "type": "integer",
+        "minimum": 500,
+        "maximum": 15000,
+        "default": 5000
+      },
+      "govee": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["devices"],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "address"],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "address": {
+                  "type": "string",
+                  "format": "ipv4"
+                }
+              }
+            }
+          }
+        }
+      },
+      "fritz": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["username", "password", "devices"],
+        "properties": {
+          "baseUrl": {
+            "type": "string",
+            "default": "http://fritz.box"
+          },
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1
+          },
+          "devices": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "uid"],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "uid": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "anyOf": [
+      { "required": ["govee"] },
+      { "required": ["fritz"] }
+    ]
+  }
+}

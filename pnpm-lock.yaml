@@ -8,6 +8,21 @@ importers:
 
   .: {}
 
+  packages/openclaw-local-devices:
+    devDependencies:
+      '@types/node':
+        specifier: 26.3.0
+        version: 26.3.0
+      openclaw:
+        specifier: 2026.8.1
+        version: 2026.8.1
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@26.3.0)(vite@8.2.2(@types/node@26.3.0)(jiti@2.7.0)(yaml@2.9.0))
+
   packages/openclaw-local-media:
     devDependencies:
       '@types/node':
