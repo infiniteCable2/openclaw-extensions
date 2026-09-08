@@ -26,6 +26,7 @@ def main() -> None:
         idle_release_seconds=args.idle_release_seconds,
         request_timeout_seconds=60,
         request_keep_alive_seconds=max(5, args.idle_release_seconds + 30),
+        minimum_vram_ratio=0.95,
     )
     server = EmbeddingServer(
         (args.host, args.port),

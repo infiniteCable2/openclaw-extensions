@@ -11,6 +11,7 @@ The provider is intentionally narrow:
 - bounded request size, batch size, queue, and concurrency;
 - no cloud endpoint or CPU fallback;
 - accelerator readiness before each request;
+- explicit Ollama process-inventory proof that at least 95% of the model is in VRAM;
 - native Ollama unload and an empty `/api/ps` before lease release;
 - no logging of text, vectors, identities, or lease credentials.
 

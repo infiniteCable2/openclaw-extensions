@@ -28,6 +28,7 @@ class OllamaEmbeddingRuntime:
         idle_release_seconds: float,
         request_timeout_seconds: float,
         request_keep_alive_seconds: float,
+        minimum_vram_ratio: float = 0.95,
         demand_lease_factory: Any = AcceleratorDemandLease,
     ) -> None:
         if not model or any(ch.isspace() for ch in model):
@@ -38,11 +39,14 @@ class OllamaEmbeddingRuntime:
             raise ValueError("Ollama must use the dedicated loopback endpoint")
         if not 1 <= request_timeout_seconds <= 300:
             raise ValueError("request timeout is outside the allowed range")
+        if not 0 < minimum_vram_ratio <= 1:
+            raise ValueError("minimum VRAM ratio is outside the allowed range")
         self.model = model
         self.dimensions = dimensions
         self.base_url = ollama_base_url.rstrip("/")
         self.request_timeout_seconds = float(request_timeout_seconds)
         self.request_keep_alive_seconds = float(request_keep_alive_seconds)
+        self.minimum_vram_ratio = float(minimum_vram_ratio)
         self._stop = threading.Event()
         self._lease = demand_lease_factory(
             accelerator_id="gpu0",
@@ -92,6 +96,7 @@ class OllamaEmbeddingRuntime:
                     "keep_alive": f"{self.request_keep_alive_seconds:g}s",
                 },
             )
+            self._verify_gpu_residency()
         embeddings = response.get("embeddings")
         if not isinstance(embeddings, list) or len(embeddings) != len(inputs):
             raise EmbeddingRuntimeError("Ollama returned the wrong embedding count")
@@ -113,6 +118,27 @@ class OllamaEmbeddingRuntime:
                 raise EmbeddingRuntimeError("Ollama returned a zero embedding")
             validated.append(normalized)
         return validated
+
+    def _verify_gpu_residency(self) -> None:
+        models = self._request_json("GET", "/api/ps").get("models")
+        if not isinstance(models, list):
+            raise EmbeddingRuntimeError("Ollama process inventory is invalid")
+        for entry in models:
+            if not isinstance(entry, dict) or self.model not in {entry.get("name"), entry.get("model")}:
+                continue
+            size = entry.get("size")
+            size_vram = entry.get("size_vram")
+            if (
+                isinstance(size, bool)
+                or not isinstance(size, (int, float))
+                or isinstance(size_vram, bool)
+                or not isinstance(size_vram, (int, float))
+                or size <= 0
+                or size_vram / size < self.minimum_vram_ratio
+            ):
+                raise EmbeddingRuntimeError("Ollama did not prove GPU residency")
+            return
+        raise EmbeddingRuntimeError("Ollama did not report the embedding model as resident")
 
     def _unload_and_verify(self) -> None:
         self._request_json(
