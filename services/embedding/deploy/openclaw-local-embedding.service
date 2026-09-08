@@ -1,0 +1,29 @@
+[Unit]
+Description=OpenClaw local embedding provider
+After=network.target ollama.service openclaw-accelerator.socket
+Requires=ollama.service openclaw-accelerator.socket
+
+[Service]
+Type=simple
+User=openclaw
+Group=openclaw
+SupplementaryGroups=openclaw-accelerator
+ExecStart=/opt/openclaw/venvs/embedding/bin/openclaw-local-embedding --host 127.0.0.1 --port 11436 --model qwen3-embedding:0.6b --dimensions 1024 --idle-release-seconds 120
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
