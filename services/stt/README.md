@@ -7,6 +7,14 @@ The process loads the model before opening its HTTP listener. `/ready` therefore
 becomes reachable only after CUDA and the configured offline model are usable.
 There is no CPU, cloud, alternate-model, or network-download fallback.
 
+This CUDA requirement applies to Whisper transcription. Faster-Whisper's optional
+Silero VAD is separate preprocessing within the same worker: its ONNX model runs
+on the CPU, even when Whisper uses CUDA. The worker enables that filter by default.
+Pass `--no-vad-filter` when CPU neural inference is not allowed or when the caller
+already provides reliably speech-segmented audio. Disabling the filter does not
+move VAD onto CUDA; the upstream capture pipeline must still reject noise and
+silence. No separate VAD service is started.
+
 ## Runtime contract
 
 - `GET /live`: process liveness.
