@@ -6,6 +6,26 @@ import { DEFAULT_STT_MODEL, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { requireLoopbackBaseUrl } from "./local-url.js";
 
 type AcquireLocalService = OpenClawPluginApi["runtime"]["llm"]["acquireLocalService"];
+type DiagnosticLogger = Pick<OpenClawPluginApi["logger"], "info">;
+type UtteranceOutcome =
+  | "transcribed"
+  | "empty"
+  | "too_short"
+  | "queue_overflow"
+  | "cancelled"
+  | "timeout"
+  | "failed";
+type UtteranceTimings = {
+  endpointAt: number;
+  endpointSilenceWallMs: number;
+  trailingSilenceAudioMs: number;
+  utteranceAudioMs: number;
+  queueWaitMs: number | null;
+  acquireMs: number | null;
+  httpMs: number | null;
+  timedOut: boolean;
+  reported: boolean;
+};
 type RealtimeTranscriptionProviderConfig = Record<string, unknown>;
 type RealtimeTranscriptionSessionCreateRequest = Parameters<
   RealtimeTranscriptionProviderPlugin["createSession"]
@@ -14,6 +34,7 @@ type RealtimeTranscriptionSession = ReturnType<
   RealtimeTranscriptionProviderPlugin["createSession"]
 >;
 type LocalRealtimeTranscriptionProvider = RealtimeTranscriptionProviderPlugin & {
+  readonly transcriptGranularity: "utterance";
   prepareSession(request: {
     providerConfig: RealtimeTranscriptionProviderConfig;
     signal?: AbortSignal;
@@ -36,7 +57,29 @@ type LocalRealtimeConfig = {
 
 const INPUT_SAMPLE_RATE = 8_000;
 const INPUT_BYTES_PER_MS = INPUT_SAMPLE_RATE / 1_000;
+const ANALYSIS_FRAME_MS = 20;
+const ANALYSIS_FRAME_BYTES = INPUT_BYTES_PER_MS * ANALYSIS_FRAME_MS;
 const MAX_RESPONSE_BYTES = 256 * 1024;
+
+function boundedAdd(value: number, increment: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, value + increment);
+}
+
+function elapsedMs(start: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.round(performance.now() - start)));
+}
+
+function logDiagnostic(
+  logger: DiagnosticLogger | undefined,
+  event: "local_media_stt_utterance" | "local_media_stt_input_summary",
+  fields: Record<string, string | number | null>,
+): void {
+  try {
+    logger?.info(JSON.stringify({ event, ...fields }));
+  } catch {
+    // Diagnostics must not interrupt media delivery or lease cleanup.
+  }
+}
 
 function decodeMulawByte(encoded: number): number {
   const value = ~encoded & 0xff;
@@ -131,14 +174,28 @@ async function transcribeUtterance(params: {
   audio: Buffer;
   config: LocalRealtimeConfig;
   acquireLocalService: AcquireLocalService;
+  signal: AbortSignal;
+  timings: UtteranceTimings;
 }): Promise<string> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), params.config.requestTimeoutMs);
-  const lease = await params.acquireLocalService(
-    { providerId: LOCAL_MEDIA_PROVIDER_ID, baseUrl: params.config.baseUrl },
-    controller.signal,
-  );
+  const signal = AbortSignal.any([params.signal, controller.signal]);
+  const timer = setTimeout(() => {
+    params.timings.timedOut = true;
+    controller.abort();
+  }, params.config.requestTimeoutMs);
+  let lease: Awaited<ReturnType<AcquireLocalService>>;
   try {
+    signal.throwIfAborted();
+    const acquireStarted = performance.now();
+    try {
+      lease = await params.acquireLocalService(
+        { providerId: LOCAL_MEDIA_PROVIDER_ID, baseUrl: params.config.baseUrl },
+        signal,
+      );
+    } finally {
+      params.timings.acquireMs = elapsedMs(acquireStarted);
+    }
+    signal.throwIfAborted();
     const form = new FormData();
     const wav = pcm16Wav(mulawToPcm(params.audio));
     form.set(
@@ -151,15 +208,21 @@ async function transcribeUtterance(params: {
       form.set("language", params.config.language);
     }
     const endpoint = `${params.config.baseUrl.replace(/\/+$/, "")}/audio/transcriptions`;
-    const response = await fetch(endpoint, {
-      method: "POST",
-      body: form,
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      throw new Error(`Local media realtime transcription failed with HTTP ${response.status}`);
+    const httpStarted = performance.now();
+    let body: unknown;
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        body: form,
+        signal,
+      });
+      if (!response.ok) {
+        throw new Error(`Local media realtime transcription failed with HTTP ${response.status}`);
+      }
+      body = await readBoundedJson(response);
+    } finally {
+      params.timings.httpMs = elapsedMs(httpStarted);
     }
-    const body = await readBoundedJson(response);
     if (
       !body ||
       typeof body !== "object" ||
@@ -170,15 +233,17 @@ async function transcribeUtterance(params: {
     return (body as { text: string }).text.trim();
   } finally {
     clearTimeout(timer);
-    lease?.release();
+    await lease?.release();
   }
 }
 
 function createSession(
   request: RealtimeTranscriptionSessionCreateRequest,
   acquireLocalService: AcquireLocalService,
+  logger?: DiagnosticLogger,
 ): RealtimeTranscriptionSession {
   const config = normalizeConfig(request.providerConfig);
+  const sessionController = new AbortController();
   let connected = false;
   let closed = false;
   let speaking = false;
@@ -191,6 +256,74 @@ function createSession(
   let utteranceBytes = 0;
   let queued = 0;
   let serial = Promise.resolve();
+  let inputFrame = Buffer.alloc(ANALYSIS_FRAME_BYTES);
+  let inputFrameBytes = 0;
+  let connectedAt: number | undefined;
+  let lastInputAt: number | undefined;
+  let lastLoudAt: number | undefined;
+  let summaryReported = false;
+  let consecutiveLoudMs = 0;
+  const input = {
+    count: 0,
+    audioMs: 0,
+    maxPacketAudioMs: 0,
+    maxInputGapMs: 0,
+    frames: 0,
+    loudFrames: 0,
+    maxConsecutiveLoudMs: 0,
+    speechStarts: 0,
+    endpoints: 0,
+    completed: 0,
+    dropped: 0,
+  };
+
+  const captureTimings = (): UtteranceTimings => ({
+    endpointAt: performance.now(),
+    endpointSilenceWallMs: lastLoudAt === undefined ? 0 : elapsedMs(lastLoudAt),
+    trailingSilenceAudioMs: quietMs,
+    utteranceAudioMs: utteranceBytes / INPUT_BYTES_PER_MS,
+    queueWaitMs: null,
+    acquireMs: null,
+    httpMs: null,
+    timedOut: false,
+    reported: false,
+  });
+
+  const reportUtterance = (timings: UtteranceTimings, outcome: UtteranceOutcome) => {
+    if (timings.reported) {
+      return;
+    }
+    timings.reported = true;
+    if (outcome === "transcribed" || outcome === "empty") {
+      input.completed = boundedAdd(input.completed, 1);
+    } else {
+      input.dropped = boundedAdd(input.dropped, 1);
+    }
+    logDiagnostic(logger, "local_media_stt_utterance", {
+      outcome,
+      queueWaitMs: timings.queueWaitMs,
+      acquireMs: timings.acquireMs,
+      httpMs: timings.httpMs,
+      endpointToTranscriptMs: outcome === "transcribed" ? elapsedMs(timings.endpointAt) : null,
+      endpointSilenceWallMs: timings.endpointSilenceWallMs,
+      trailingSilenceAudioMs: timings.trailingSilenceAudioMs,
+      utteranceAudioMs: timings.utteranceAudioMs,
+    });
+  };
+
+  const reportInput = () => {
+    if (summaryReported) {
+      return;
+    }
+    summaryReported = true;
+    logDiagnostic(logger, "local_media_stt_input_summary", {
+      ...input,
+      elapsedMs: connectedAt === undefined ? 0 : elapsedMs(connectedAt),
+      inputIdleMs: lastInputAt === undefined ? 0 : elapsedMs(lastInputAt),
+      pendingUtterances: queued,
+      partialFrameBytes: inputFrameBytes,
+    });
+  };
 
   const resetTurn = () => {
     speaking = false;
@@ -201,28 +334,64 @@ function createSession(
     utteranceBytes = 0;
   };
 
+  const discardInput = () => {
+    if (speaking) {
+      reportUtterance(captureTimings(), "cancelled");
+    }
+    reportInput();
+    resetTurn();
+    preRoll = [];
+    preRollBytes = 0;
+    inputFrame = Buffer.alloc(ANALYSIS_FRAME_BYTES);
+    inputFrameBytes = 0;
+  };
+
   const fail = (error: unknown) => {
     if (closed) {
       return;
     }
     closed = true;
     connected = false;
+    sessionController.abort();
+    discardInput();
     request.onError?.(
       error instanceof Error ? error : new Error("Local media transcription failed"),
     );
   };
 
-  const enqueue = (audio: Buffer) => {
+  const enqueue = (audio: Buffer, timings: UtteranceTimings) => {
     if (queued >= config.maxQueuedUtterances) {
+      reportUtterance(timings, "queue_overflow");
       fail(new Error("Local media realtime transcription queue limit exceeded"));
       return;
     }
     queued += 1;
     serial = serial
       .then(async () => {
-        const text = await transcribeUtterance({ audio, config, acquireLocalService });
-        if (!closed && text) {
-          request.onTranscript?.(text);
+        if (closed) {
+          reportUtterance(timings, "cancelled");
+          return;
+        }
+        timings.queueWaitMs = elapsedMs(timings.endpointAt);
+        try {
+          const text = await transcribeUtterance({
+            audio,
+            config,
+            acquireLocalService,
+            signal: sessionController.signal,
+            timings,
+          });
+          if (closed) {
+            reportUtterance(timings, "cancelled");
+          } else {
+            if (text) {
+              request.onTranscript?.(text);
+            }
+            reportUtterance(timings, text ? "transcribed" : "empty");
+          }
+        } catch (error) {
+          reportUtterance(timings, closed ? "cancelled" : timings.timedOut ? "timeout" : "failed");
+          throw error;
         }
       })
       .catch(fail)
@@ -232,11 +401,15 @@ function createSession(
   };
 
   const finishTurn = () => {
+    const timings = captureTimings();
+    input.endpoints = boundedAdd(input.endpoints, 1);
     const audio = Buffer.concat(utterance, utteranceBytes);
     const shouldTranscribe = speechMs >= config.minSpeechMs && audio.byteLength > 0;
     resetTurn();
     if (shouldTranscribe) {
-      enqueue(audio);
+      enqueue(audio, timings);
+    } else {
+      reportUtterance(timings, "too_short");
     }
   };
 
@@ -255,54 +428,87 @@ function createSession(
     }
   };
 
+  const analyzeFrame = (chunk: Buffer) => {
+    const durationMs = ANALYSIS_FRAME_MS;
+    const loud = calculateMulawRms(chunk) >= config.speechRmsThreshold;
+    input.frames = boundedAdd(input.frames, 1);
+    consecutiveLoudMs = loud ? boundedAdd(consecutiveLoudMs, durationMs) : 0;
+    input.maxConsecutiveLoudMs = Math.max(input.maxConsecutiveLoudMs, consecutiveLoudMs);
+    if (loud) {
+      input.loudFrames = boundedAdd(input.loudFrames, 1);
+      lastLoudAt = performance.now();
+    }
+
+    if (!speaking) {
+      retainPreRoll(chunk);
+      onsetMs = loud ? onsetMs + durationMs : 0;
+      if (onsetMs < config.speechOnsetMs) {
+        return;
+      }
+      speaking = true;
+      input.speechStarts = boundedAdd(input.speechStarts, 1);
+      speechMs = onsetMs;
+      utterance = preRoll;
+      utteranceBytes = preRollBytes;
+      preRoll = [];
+      preRollBytes = 0;
+      request.onSpeechStart?.();
+    } else {
+      utterance.push(chunk);
+      utteranceBytes += chunk.byteLength;
+      if (loud) {
+        speechMs += durationMs;
+      }
+    }
+
+    quietMs = loud ? 0 : quietMs + durationMs;
+    const utteranceMs = utteranceBytes / INPUT_BYTES_PER_MS;
+    if (quietMs >= config.silenceMs || utteranceMs >= config.maxUtteranceMs) {
+      finishTurn();
+    }
+  };
+
   return {
     async connect() {
       if (closed) {
         throw new Error("Local media realtime transcription session is closed");
       }
       connected = true;
+      connectedAt ??= performance.now();
     },
     sendAudio(audio) {
       if (!connected || closed || audio.byteLength === 0) {
         return;
       }
-      const chunk = Buffer.from(audio);
-      const durationMs = chunk.byteLength / INPUT_BYTES_PER_MS;
-      const loud = calculateMulawRms(chunk) >= config.speechRmsThreshold;
-
-      if (!speaking) {
-        retainPreRoll(chunk);
-        onsetMs = loud ? onsetMs + durationMs : 0;
-        if (onsetMs < config.speechOnsetMs) {
-          return;
-        }
-        speaking = true;
-        speechMs = onsetMs;
-        utterance = preRoll;
-        utteranceBytes = preRollBytes;
-        preRoll = [];
-        preRollBytes = 0;
-        request.onSpeechStart?.();
-      } else {
-        utterance.push(chunk);
-        utteranceBytes += chunk.byteLength;
-        if (loud) {
-          speechMs += durationMs;
-        }
+      input.count = boundedAdd(input.count, 1);
+      const packetAudioMs = audio.byteLength / INPUT_BYTES_PER_MS;
+      input.audioMs = boundedAdd(input.audioMs, packetAudioMs);
+      input.maxPacketAudioMs = Math.max(input.maxPacketAudioMs, packetAudioMs);
+      if (lastInputAt !== undefined) {
+        input.maxInputGapMs = Math.max(input.maxInputGapMs, elapsedMs(lastInputAt));
       }
-
-      quietMs = loud ? 0 : quietMs + durationMs;
-      const utteranceMs = utteranceBytes / INPUT_BYTES_PER_MS;
-      if (quietMs >= config.silenceMs || utteranceMs >= config.maxUtteranceMs) {
-        finishTurn();
+      lastInputAt = performance.now();
+      // Transport packet boundaries are not speech-analysis boundaries. Keep
+      // at most one incomplete 20-ms frame, including for bytewise delivery.
+      let offset = 0;
+      while (offset < audio.byteLength && !closed) {
+        const count = Math.min(ANALYSIS_FRAME_BYTES - inputFrameBytes, audio.byteLength - offset);
+        inputFrame.set(audio.subarray(offset, offset + count), inputFrameBytes);
+        inputFrameBytes += count;
+        offset += count;
+        if (inputFrameBytes === ANALYSIS_FRAME_BYTES) {
+          const frame = inputFrame;
+          inputFrame = Buffer.alloc(ANALYSIS_FRAME_BYTES);
+          inputFrameBytes = 0;
+          analyzeFrame(frame);
+        }
       }
     },
     close() {
       closed = true;
       connected = false;
-      resetTurn();
-      preRoll = [];
-      preRollBytes = 0;
+      sessionController.abort();
+      discardInput();
     },
     isConnected() {
       return connected && !closed;
@@ -312,10 +518,12 @@ function createSession(
 
 export function buildLocalRealtimeTranscriptionProvider(
   acquireLocalService: AcquireLocalService,
+  logger?: DiagnosticLogger,
 ): LocalRealtimeTranscriptionProvider {
   return {
     id: LOCAL_MEDIA_PROVIDER_ID,
     label: "Local Media",
+    transcriptGranularity: "utterance",
     defaultModel: DEFAULT_STT_MODEL,
     models: [DEFAULT_STT_MODEL],
     resolveConfig: ({ rawConfig }) => normalizeConfig(rawConfig),
@@ -334,6 +542,6 @@ export function buildLocalRealtimeTranscriptionProvider(
         signal,
       );
     },
-    createSession: (request) => createSession(request, acquireLocalService),
+    createSession: (request) => createSession(request, acquireLocalService, logger),
   };
 }
