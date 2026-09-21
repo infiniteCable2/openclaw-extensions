@@ -124,22 +124,43 @@ text reply plus a synthesized voice note.
 
 Live meeting transports can select `local-media` as their realtime
 transcription provider. The adapter accepts OpenClaw's 8 kHz G.711 mu-law
-meeting stream, detects bounded utterances, converts each utterance to a WAV in
+meeting stream, detects speech endpoints, converts bounded audio batches to WAV in
 memory, and submits it to the same local `/v1/audio/transcriptions` endpoint.
-It keeps at most two utterances queued and fails closed on overflow. Sensible
+It keeps at most two audio batches queued and fails closed on overflow. Sensible
 defaults are provided; a meeting integration may override `baseUrl`, `model`,
 `language`, `speechRmsThreshold`, `speechOnsetMs`, `silenceMs`, `preRollMs`,
 `minSpeechMs`, `maxUtteranceMs`, `requestTimeoutMs`, and
 `maxQueuedUtterances` in its realtime provider configuration. `baseUrl` remains
 mandatory and loopback-only.
 
+`maxUtteranceMs` bounds each audio batch sent to STT, not the user's speaking
+turn. Continuous speech crossing that limit keeps the same speech onset and
+accumulates batch transcripts in FIFO order. `onPartial`, when provided,
+receives the cumulative text; only an actual silence endpoint delivers one
+`onTranscript` and its processing lifecycle. An audio-size boundary alone
+never dispatches an agent turn or starts waiting audio. A silence-only final
+batch still finalizes text recognized in earlier batches.
+
+`minSpeechMs` gates the completed turn, not individual size-limited batches.
+When that minimum exceeds the batch cap, initial audio still reaches STT in
+bounded batches; partial callbacks wait until the minimum is reached. A turn
+ending below the minimum discards collected text and any late batch results.
+
+Audio queue limits and per-request deadlines remain unchanged. Accumulated
+text is limited to the same 256 KiB UTF-8 budget as one STT response; overflow
+fails visibly rather than dispatching a truncated turn. Close or any failed
+batch discards unfinished text. Batch text is joined in order with spaces,
+without overlap reconstruction or another VAD pass.
+
 With OpenClaw's optional realtime `onProcessing` callback, the adapter requests
 `stream=true` with `Accept: text/event-stream`. It reports a session-local
 utterance ID at the accepted endpoint before queueing or acquiring a lease.
 Only the STT service's positive neural-VAD `speech.confirmed` event can trigger
 early processing feedback; RMS onset alone never confirms speech. Confirmations
-from older speech generations or maximum-duration chunks without a silence
-endpoint are suppressed. The final transcript carries that ID and precedes its
+from older speech generations are suppressed. A positive confirmation from an
+earlier size-limited batch is retained for the same turn, but published only
+after its actual silence endpoint while processing is still pending. The final
+transcript carries that ID and precedes its
 terminal processing notification. Empty, failed, and cancelled jobs also settle
 exactly once; closing cancels all pending IDs synchronously.
 
@@ -154,7 +175,8 @@ OpenClaw public SDK exposing `onProcessing` and transcript metadata; the origina
 Realtime transcription emits content-free JSON timing summaries through the
 existing OpenClaw plugin logger at info level; no global debug mode or extra
 provider configuration is needed. `local_media_stt_utterance` is emitted once
-per completed, discarded, or failed utterance. It separates `queueWaitMs`,
+per completed, discarded, or failed audio batch. A `partial` outcome denotes a
+completed size-limited batch, not a completed user turn. It separates `queueWaitMs`,
 `acquireMs`, and `httpMs` (including response-body parsing), and reports
 `endpointToTranscriptMs` only when a transcript is delivered. Unreached phases
 are `null`. `endpointSilenceWallMs` is measured on a monotonic clock;
