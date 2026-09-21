@@ -13,7 +13,7 @@ export default definePluginEntry({
       buildLocalMediaUnderstandingProvider(api.runtime.llm.acquireLocalService),
     );
     api.registerRealtimeTranscriptionProvider(
-      buildLocalRealtimeTranscriptionProvider(api.runtime.llm.acquireLocalService),
+      buildLocalRealtimeTranscriptionProvider(api.runtime.llm.acquireLocalService, api.logger),
     );
     api.registerSpeechProvider(buildLocalMediaSpeechProvider());
   },

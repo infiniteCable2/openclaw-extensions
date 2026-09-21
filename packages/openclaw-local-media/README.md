@@ -133,6 +133,26 @@ defaults are provided; a meeting integration may override `baseUrl`, `model`,
 `maxQueuedUtterances` in its realtime provider configuration. `baseUrl` remains
 mandatory and loopback-only.
 
+Realtime transcription emits content-free JSON timing summaries through the
+existing OpenClaw plugin logger at info level; no global debug mode or extra
+provider configuration is needed. `local_media_stt_utterance` is emitted once
+per completed, discarded, or failed utterance. It separates `queueWaitMs`,
+`acquireMs`, and `httpMs` (including response-body parsing), and reports
+`endpointToTranscriptMs` only when a transcript is delivered. Unreached phases
+are `null`. `endpointSilenceWallMs` is measured on a monotonic clock;
+`trailingSilenceAudioMs` and `utteranceAudioMs` are audio durations. An input
+pause alone does not end an utterance: the existing silence endpoint advances
+when audio frames arrive, not when a wall-clock timer expires.
+
+One `local_media_stt_input_summary` at close/failure aggregates packet count,
+audio duration, largest packet and input gap, frame/loud-frame counts, longest
+loud run, speech starts, endpoints, completed/dropped work, and outstanding
+work at that instant. `elapsedMs` and `inputIdleMs` expose missing input even
+when no utterance reached STT. Pending cancellation records may settle after
+this closing snapshot. Counters are bounded and do not retain per-frame data.
+Neither event contains audio, transcript text, URLs, exception messages, model
+or participant identifiers. Logger failures never interrupt media handling.
+
 Before an admitted incoming call is answered, OpenClaw can prepare the realtime
 transcription provider and the exact agent-scoped TTS persona. The plugin uses
 the same host-owned local-service leases for this readiness phase, so model
