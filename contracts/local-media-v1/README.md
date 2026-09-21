@@ -25,3 +25,32 @@ after the model is loaded on the requested GPU backend. When an accelerator
 lease is required, the lease-owning supervisor starts the worker only after
 acquisition and terminates it on lease loss; media workers do not infer or
 duplicate accelerator state.
+
+## Optional transcription progress
+
+`POST /v1/audio/transcriptions` keeps its JSON response by default. The optional
+multipart field `stream=true` selects `text/event-stream`; `false` or omission
+keeps JSON. Other field values are invalid. Request validation and bounded
+admission happen before a streaming 200 response. This is not a separate VAD
+service and does not change inference or filtering defaults.
+
+Each SSE event is one `data: <JSON>` record followed by a blank line:
+
+- `{ "type": "speech.confirmed" }` appears at most once, only after the
+  enabled backend VAD retained a finite positive audio duration. Preparation,
+  including any language detection, has already run; lazy text decoding has
+  not started. This is a VAD decision, not a guarantee of a nonempty transcript.
+- `{ "type": "transcript.done", "text": "...", "model": "..." }` is the
+  sole successful terminal record, including when `text` is empty.
+- An inference failure in the opened stream produces the sole terminal record
+  `{ "type": "error", "error": { "code": "inference_failed", "message":
+"STT inference failed", "retryable": true } }`. HTTP status cannot be
+  changed after streaming starts. Error details remain private.
+
+A completed stream ends immediately after its terminal record. EOF without a
+terminal record is cancellation or failure, never successful empty output.
+Upload and admission ownership last until completion/disconnect, including an
+unstarted response being closed. A synchronous model operation already running
+may still finish before WSGI observes the disconnect; there is no background
+inference thread or additional queue. Clients that do not request streaming
+retain the original JSON/error-status behavior.

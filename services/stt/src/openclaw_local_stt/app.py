@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import tempfile
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Iterator
 
@@ -108,6 +109,10 @@ def _validate_optional_text(name: str, value: str | None, max_length: int) -> st
     return normalized
 
 
+def _sse_event(event: dict[str, object]) -> bytes:
+    return ("data: " + json.dumps(event, separators=(",", ":")) + "\n\n").encode("utf-8")
+
+
 def _store_bounded_upload(*, max_audio_bytes: int) -> Path:
     upload = request.files.get("file")
     if upload is None:
@@ -195,6 +200,47 @@ def create_app(
     def status() -> Response:
         return jsonify(readiness())
 
+    def streaming_response(
+        audio_path: Path, *, language: str | None, prompt: str | None
+    ) -> Response:
+        # Reserve before returning HTTP 200. threading.Lock is not owner-thread
+        # bound; ExitStack retains the same bounded admission through WSGI close.
+        resources = ExitStack()
+        resources.callback(audio_path.unlink, missing_ok=True)
+        try:
+            resources.enter_context(state.admit())
+            events = backend.transcribe_stream(audio_path, language=language, prompt=prompt)
+            resources.callback(events.close)
+
+            def generate() -> Iterator[bytes]:
+                try:
+                    for event in events:
+                        yield _sse_event(event)
+                except Exception:
+                    # Headers may already be sent. Never expose upstream error
+                    # text or pretend that a failed stream completed normally.
+                    yield _sse_event({
+                        "type": "error",
+                        "error": {
+                            "code": "inference_failed",
+                            "message": "STT inference failed",
+                            "retryable": True,
+                        },
+                    })
+                finally:
+                    resources.close()
+
+            response = Response(
+                generate(), mimetype="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+            # A generator's finally does not run if it was never started.
+            response.call_on_close(resources.close)
+            return response
+        except BaseException:
+            resources.close()
+            raise
+
     @app.post("/v1/audio/transcriptions")
     def transcribe() -> tuple[Response, int] | Response:
         audio_path: Path | None = None
@@ -206,7 +252,16 @@ def create_app(
                 raise ServiceError("model_unavailable", "requested model is unavailable", 400, retryable=False)
             language = _validate_optional_text("language", request.form.get("language"), 35)
             prompt = _validate_optional_text("prompt", request.form.get("prompt"), 4096)
+            stream = request.form.get("stream")
+            if stream not in {None, "false", "true"}:
+                raise ServiceError(
+                    "invalid_request", "stream must be true or false", 400, retryable=False
+                )
             audio_path = _store_bounded_upload(max_audio_bytes=max_audio_bytes)
+            if stream == "true":
+                response = streaming_response(audio_path, language=language, prompt=prompt)
+                audio_path = None  # The response owns upload/admission cleanup.
+                return response
             with state.admit():
                 text = backend.transcribe(audio_path, language=language, prompt=prompt)
             return jsonify(text=text, model=backend.model_id)

@@ -71,6 +71,12 @@ paths:
                 prompt:
                   type: string
                   maxLength: 4096
+                stream:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Multipart value must be the literal true or false. True
+                    selects the optional SSE response; omitted/false preserves JSON.
       responses:
         "200":
           description: Successful transcription.
@@ -78,12 +84,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Transcription"
+            text/event-stream:
+              schema:
+                type: string
+              description: >-
+                UTF-8 SSE with data-only JSON records described by
+                TranscriptionStreamEvent. At most one speech.confirmed event
+                precedes exactly one transcript.done or error terminal event,
+                then EOF. No confirmation is emitted with disabled VAD or
+                zero/nonfinite retained audio. Disconnect may terminate before
+                a terminal event; clients must not interpret that as success.
+              x-event-schema:
+                $ref: "#/components/schemas/TranscriptionStreamEvent"
         "400":
           $ref: "#/components/responses/BadRequest"
         "413":
           $ref: "#/components/responses/TooLarge"
         "429":
           $ref: "#/components/responses/Overloaded"
+        "500":
+          description: Inference failed before a JSON response or stream was opened.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           $ref: "#/components/responses/Unavailable"
   /v1/audio/speech:
@@ -190,6 +214,42 @@ components:
         model:
           type: string
           maxLength: 128
+    TranscriptionStreamEvent:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type]
+          properties:
+            type:
+              const: speech.confirmed
+        - type: object
+          additionalProperties: false
+          required: [type, text, model]
+          properties:
+            type:
+              const: transcript.done
+            text:
+              type: string
+            model:
+              type: string
+              maxLength: 128
+        - type: object
+          additionalProperties: false
+          required: [type, error]
+          properties:
+            type:
+              const: error
+            error:
+              type: object
+              additionalProperties: false
+              required: [code, message, retryable]
+              properties:
+                code:
+                  const: inference_failed
+                message:
+                  const: STT inference failed
+                retryable:
+                  const: true
     SpeechRequest:
       type: object
       additionalProperties: false

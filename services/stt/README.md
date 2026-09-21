@@ -25,6 +25,42 @@ silence. No separate VAD service is started.
 The service accepts at most one active inference plus a bounded number of
 waiting requests. It never logs audio or transcript content.
 
+Each Faster-Whisper request emits one content-free info record with event
+`local_media_stt_backend` through the existing service logger. `durationMs`
+and `durationAfterVadMs` report the library's input and retained-audio durations;
+`segmentCount` counts yielded decoder segments, including empty ones. Together
+with `vadEnabled` and the `transcribed`/`empty`/`failed` outcome, these distinguish
+audio removed by VAD from retained audio that produced no transcript. Invalid
+or unavailable duration metadata is `null`.
+
+`prepareMs` measures the synchronous `WhisperModel.transcribe` call, including
+audio loading, VAD, feature preparation and any eager language/model work.
+`decodeMs` measures consuming its lazy segment iterator and collecting text.
+Neither is a pure VAD, CPU or GPU benchmark. `totalMs` covers both phases, but
+not HTTP admission or the service queue. All use a monotonic clock. No text,
+audio, paths, model IDs or exception values are included; diagnostics are
+best-effort and do not change the JSON response or inference failure handling.
+
+Realtime callers may send multipart `stream=true` to the same transcription
+endpoint. It responds with data-only SSE JSON: an optional `speech.confirmed`
+after enabled Faster-Whisper VAD retained finite positive audio, followed by
+one `transcript.done` (also for empty text) or a fixed `error` event, then EOF.
+Preparation includes feature extraction and possible language detection;
+confirmation is before consuming the lazy text decoder, not an immediate
+low-cost callback directly inside VAD. Disabled VAD never claims confirmation.
+This lets a caller begin waiting audio while text decoding is still pending.
+
+JSON and SSE share one inference implementation. Admission remains bounded and
+held through stream completion/close. Closing an unstarted response also
+releases its upload and admission. Disconnect does not preempt synchronous
+GPU work already in progress; cleanup follows when the WSGI iterator closes.
+Cancelled streams report diagnostic outcome `cancelled`, with `decodeMs=null`
+when decoding never started. `totalMs` can include streaming backpressure and
+is not pure model runtime. The optional wire contract is specified in
+`contracts/local-media-v1`; omitted/false `stream` preserves JSON and its error
+statuses. No VAD thresholds, default settings, worker threads or model calls
+are added by this transport option.
+
 ## Development
 
 ```bash
