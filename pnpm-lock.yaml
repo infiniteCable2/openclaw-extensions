@@ -29,8 +29,8 @@ importers:
         specifier: 26.3.0
         version: 26.3.0
       openclaw:
-        specifier: 2026.8.1
-        version: 2026.8.1
+        specifier: link:../../../openclaw
+        version: link:../../../openclaw
       typescript:
         specifier: 6.0.3
         version: 6.0.3

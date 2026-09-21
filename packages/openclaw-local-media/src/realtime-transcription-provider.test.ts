@@ -481,6 +481,8 @@ describe("local media realtime transcription provider", () => {
     expect(wav.subarray(0, 4).toString("ascii")).toBe("RIFF");
     expect(wav.readUInt32LE(24)).toBe(8_000);
     expect(form.get("model")).toBe("faster-whisper");
+    expect(form.get("stream")).toBeNull();
+    expect(new Headers(init.headers).has("accept")).toBe(false);
     expect(release).toHaveBeenCalledOnce();
   });
 
