@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_STT_MODEL, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { requireLoopbackBaseUrl } from "./local-url.js";
+import { readTranscriptionEvents } from "./transcription-events.js";
 
 type AcquireLocalService = OpenClawPluginApi["runtime"]["llm"]["acquireLocalService"];
 type DiagnosticLogger = Pick<OpenClawPluginApi["logger"], "info">;
@@ -33,6 +34,9 @@ type RealtimeTranscriptionSessionCreateRequest = Parameters<
 type RealtimeTranscriptionSession = ReturnType<
   RealtimeTranscriptionProviderPlugin["createSession"]
 >;
+type ProcessingState = Parameters<
+  NonNullable<RealtimeTranscriptionSessionCreateRequest["onProcessing"]>
+>[0]["state"];
 type LocalRealtimeTranscriptionProvider = RealtimeTranscriptionProviderPlugin & {
   readonly transcriptGranularity: "utterance";
   prepareSession(request: {
@@ -176,6 +180,7 @@ async function transcribeUtterance(params: {
   acquireLocalService: AcquireLocalService;
   signal: AbortSignal;
   timings: UtteranceTimings;
+  onSpeechConfirmed?: () => void;
 }): Promise<string> {
   const controller = new AbortController();
   const signal = AbortSignal.any([params.signal, controller.signal]);
@@ -204,6 +209,9 @@ async function transcribeUtterance(params: {
       "utterance.wav",
     );
     form.set("model", params.config.model);
+    if (params.onSpeechConfirmed) {
+      form.set("stream", "true");
+    }
     if (params.config.language) {
       form.set("language", params.config.language);
     }
@@ -215,11 +223,19 @@ async function transcribeUtterance(params: {
         method: "POST",
         body: form,
         signal,
+        ...(params.onSpeechConfirmed ? { headers: { accept: "text/event-stream" } } : {}),
       });
       if (!response.ok) {
+        void response.body?.cancel().catch(() => {});
         throw new Error(`Local media realtime transcription failed with HTTP ${response.status}`);
       }
+      if (params.onSpeechConfirmed) {
+        return await readTranscriptionEvents(response, signal, params.onSpeechConfirmed);
+      }
       body = await readBoundedJson(response);
+    } catch {
+      // Network/parser failures can carry response text or local endpoint details.
+      throw new Error("Local media realtime transcription request failed");
     } finally {
       params.timings.httpMs = elapsedMs(httpStarted);
     }
@@ -263,6 +279,26 @@ function createSession(
   let lastLoudAt: number | undefined;
   let summaryReported = false;
   let consecutiveLoudMs = 0;
+  let utteranceSequence = 0n;
+  let speechGeneration = 0;
+  const pendingUtterances = new Set<string>();
+
+  const notifyProcessing = (utteranceId: string, state: ProcessingState) => {
+    try {
+      request.onProcessing?.({ utteranceId, state });
+    } catch {
+      // Notifications must not prevent cancellation or release of media resources.
+    }
+  };
+  const settleProcessing = (
+    utteranceId: string,
+    state: Extract<ProcessingState, "transcribed" | "empty" | "failed" | "cancelled">,
+  ) => {
+    if (pendingUtterances.delete(utteranceId)) notifyProcessing(utteranceId, state);
+  };
+  const cancelPending = () => {
+    for (const id of pendingUtterances) settleProcessing(id, "cancelled");
+  };
   const input = {
     count: 0,
     audioMs: 0,
@@ -353,19 +389,25 @@ function createSession(
     closed = true;
     connected = false;
     sessionController.abort();
+    cancelPending();
     discardInput();
     request.onError?.(
       error instanceof Error ? error : new Error("Local media transcription failed"),
     );
   };
 
-  const enqueue = (audio: Buffer, timings: UtteranceTimings) => {
+  const enqueue = (audio: Buffer, timings: UtteranceTimings, silenceEndpoint: boolean) => {
     if (queued >= config.maxQueuedUtterances) {
       reportUtterance(timings, "queue_overflow");
       fail(new Error("Local media realtime transcription queue limit exceeded"));
       return;
     }
+    const utteranceId = `utterance-${++utteranceSequence}`;
+    const generation = speechGeneration;
+    pendingUtterances.add(utteranceId);
     queued += 1;
+    // Publish ownership at the endpoint, not after asynchronous queue/lease waits.
+    notifyProcessing(utteranceId, "started");
     serial = serial
       .then(async () => {
         if (closed) {
@@ -380,16 +422,37 @@ function createSession(
             acquireLocalService,
             signal: sessionController.signal,
             timings,
+            ...(request.onProcessing
+              ? {
+                  onSpeechConfirmed: () => {
+                    if (
+                      !closed &&
+                      silenceEndpoint &&
+                      !speaking &&
+                      generation === speechGeneration &&
+                      pendingUtterances.has(utteranceId)
+                    ) {
+                      notifyProcessing(utteranceId, "speech-confirmed");
+                    }
+                  },
+                }
+              : {}),
           });
           if (closed) {
             reportUtterance(timings, "cancelled");
           } else {
             if (text) {
-              request.onTranscript?.(text);
+              if (request.onProcessing) {
+                request.onTranscript?.(text, { utteranceId });
+              } else {
+                request.onTranscript?.(text);
+              }
             }
+            settleProcessing(utteranceId, text ? "transcribed" : "empty");
             reportUtterance(timings, text ? "transcribed" : "empty");
           }
         } catch (error) {
+          settleProcessing(utteranceId, closed ? "cancelled" : "failed");
           reportUtterance(timings, closed ? "cancelled" : timings.timedOut ? "timeout" : "failed");
           throw error;
         }
@@ -405,9 +468,10 @@ function createSession(
     input.endpoints = boundedAdd(input.endpoints, 1);
     const audio = Buffer.concat(utterance, utteranceBytes);
     const shouldTranscribe = speechMs >= config.minSpeechMs && audio.byteLength > 0;
+    const silenceEndpoint = quietMs >= config.silenceMs;
     resetTurn();
     if (shouldTranscribe) {
-      enqueue(audio, timings);
+      enqueue(audio, timings, silenceEndpoint);
     } else {
       reportUtterance(timings, "too_short");
     }
@@ -446,6 +510,7 @@ function createSession(
         return;
       }
       speaking = true;
+      speechGeneration += 1;
       input.speechStarts = boundedAdd(input.speechStarts, 1);
       speechMs = onsetMs;
       utterance = preRoll;
@@ -508,6 +573,7 @@ function createSession(
       closed = true;
       connected = false;
       sessionController.abort();
+      cancelPending();
       discardInput();
     },
     isConnected() {
