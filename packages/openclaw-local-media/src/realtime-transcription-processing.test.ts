@@ -90,8 +90,13 @@ describe("realtime transcription processing lifecycle", () => {
       await f.writer.write(new TextEncoder().encode(confirmation + transcript()));
       await f.writer.close();
       await vi.advanceTimersByTimeAsync(0);
-      expect(f.events.map((event) => event.state)).toEqual(["started", "transcribed"]);
-      expect(f.onTranscript).toHaveBeenCalledOnce();
+      if (mode === "duration cap") {
+        expect(f.events).toEqual([]);
+        expect(f.onTranscript).not.toHaveBeenCalled();
+      } else {
+        expect(f.events.map((event) => event.state)).toEqual(["started", "transcribed"]);
+        expect(f.onTranscript).toHaveBeenCalledOnce();
+      }
       f.session.close();
     },
   );

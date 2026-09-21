@@ -10,6 +10,7 @@ type AcquireLocalService = OpenClawPluginApi["runtime"]["llm"]["acquireLocalServ
 type DiagnosticLogger = Pick<OpenClawPluginApi["logger"], "info">;
 type UtteranceOutcome =
   | "transcribed"
+  | "partial"
   | "empty"
   | "too_short"
   | "queue_overflow"
@@ -57,6 +58,16 @@ type LocalRealtimeConfig = {
   maxUtteranceMs: number;
   requestTimeoutMs: number;
   maxQueuedUtterances: number;
+};
+
+type TranscriptTurn = {
+  text: string;
+  generation: number;
+  utteranceId?: string;
+  speechConfirmed?: boolean;
+  confirmationPublished?: boolean;
+  minimumSpeechReached?: boolean;
+  discarded?: boolean;
 };
 
 const INPUT_SAMPLE_RATE = 8_000;
@@ -281,6 +292,8 @@ function createSession(
   let consecutiveLoudMs = 0;
   let utteranceSequence = 0n;
   let speechGeneration = 0;
+  let currentTurn: TranscriptTurn = { text: "", generation: 0 };
+  const transcriptTurns = new Set<TranscriptTurn>();
   const pendingUtterances = new Set<string>();
 
   const notifyProcessing = (utteranceId: string, state: ProcessingState) => {
@@ -298,6 +311,26 @@ function createSession(
   };
   const cancelPending = () => {
     for (const id of pendingUtterances) settleProcessing(id, "cancelled");
+    for (const turn of transcriptTurns) {
+      turn.text = "";
+      turn.discarded = true;
+    }
+    transcriptTurns.clear();
+  };
+  const confirmProcessing = (turn: TranscriptTurn) => {
+    if (
+      !closed &&
+      !turn.discarded &&
+      !speaking &&
+      turn.generation === speechGeneration &&
+      turn.utteranceId &&
+      pendingUtterances.has(turn.utteranceId) &&
+      turn.speechConfirmed &&
+      !turn.confirmationPublished
+    ) {
+      turn.confirmationPublished = true;
+      notifyProcessing(turn.utteranceId, "speech-confirmed");
+    }
   };
   const input = {
     count: 0,
@@ -330,7 +363,7 @@ function createSession(
       return;
     }
     timings.reported = true;
-    if (outcome === "transcribed" || outcome === "empty") {
+    if (outcome === "transcribed" || outcome === "partial" || outcome === "empty") {
       input.completed = boundedAdd(input.completed, 1);
     } else {
       input.dropped = boundedAdd(input.dropped, 1);
@@ -396,22 +429,37 @@ function createSession(
     );
   };
 
-  const enqueue = (audio: Buffer, timings: UtteranceTimings, silenceEndpoint: boolean) => {
+  const enqueue = (
+    audio: Buffer,
+    timings: UtteranceTimings,
+    silenceEndpoint: boolean,
+    turn: TranscriptTurn,
+  ) => {
     if (queued >= config.maxQueuedUtterances) {
       reportUtterance(timings, "queue_overflow");
       fail(new Error("Local media realtime transcription queue limit exceeded"));
       return;
     }
-    const utteranceId = `utterance-${++utteranceSequence}`;
-    const generation = speechGeneration;
-    pendingUtterances.add(utteranceId);
+    // Audio caps bound STT work, not user turns. Only silence admits a final turn.
+    const utteranceId = silenceEndpoint ? `utterance-${++utteranceSequence}` : undefined;
+    if (utteranceId) {
+      turn.utteranceId = utteranceId;
+      pendingUtterances.add(utteranceId);
+    }
     queued += 1;
     // Publish ownership at the endpoint, not after asynchronous queue/lease waits.
-    notifyProcessing(utteranceId, "started");
+    if (utteranceId) {
+      notifyProcessing(utteranceId, "started");
+      confirmProcessing(turn);
+    }
     serial = serial
       .then(async () => {
         if (closed) {
           reportUtterance(timings, "cancelled");
+          return;
+        }
+        if (turn.discarded) {
+          reportUtterance(timings, "too_short");
           return;
         }
         timings.queueWaitMs = elapsedMs(timings.endpointAt);
@@ -425,34 +473,44 @@ function createSession(
             ...(request.onProcessing
               ? {
                   onSpeechConfirmed: () => {
-                    if (
-                      !closed &&
-                      silenceEndpoint &&
-                      !speaking &&
-                      generation === speechGeneration &&
-                      pendingUtterances.has(utteranceId)
-                    ) {
-                      notifyProcessing(utteranceId, "speech-confirmed");
-                    }
+                    turn.speechConfirmed = true;
+                    confirmProcessing(turn);
                   },
                 }
               : {}),
           });
           if (closed) {
             reportUtterance(timings, "cancelled");
+          } else if (turn.discarded) {
+            reportUtterance(timings, "too_short");
           } else {
             if (text) {
-              if (request.onProcessing) {
-                request.onTranscript?.(text, { utteranceId });
-              } else {
-                request.onTranscript?.(text);
+              const combined = turn.text ? `${turn.text} ${text}` : text;
+              if (Buffer.byteLength(combined, "utf8") > MAX_RESPONSE_BYTES) {
+                throw new Error("Local media realtime transcription turn exceeded the text limit");
               }
+              turn.text = combined;
             }
-            settleProcessing(utteranceId, text ? "transcribed" : "empty");
-            reportUtterance(timings, text ? "transcribed" : "empty");
+            if (utteranceId) {
+              const finalText = turn.text;
+              if (finalText) {
+                if (request.onProcessing) request.onTranscript?.(finalText, { utteranceId });
+                else request.onTranscript?.(finalText);
+              }
+              settleProcessing(utteranceId, finalText ? "transcribed" : "empty");
+              reportUtterance(timings, finalText ? "transcribed" : "empty");
+              turn.text = "";
+              transcriptTurns.delete(turn);
+            } else {
+              // Cumulative partials never enter the host's final-turn dispatch path.
+              if (text && turn.minimumSpeechReached) request.onPartial?.(turn.text);
+              reportUtterance(timings, text ? "partial" : "empty");
+            }
           }
         } catch (error) {
-          settleProcessing(utteranceId, closed ? "cancelled" : "failed");
+          if (turn.utteranceId) {
+            settleProcessing(turn.utteranceId, closed ? "cancelled" : "failed");
+          }
           reportUtterance(timings, closed ? "cancelled" : timings.timedOut ? "timeout" : "failed");
           throw error;
         }
@@ -467,13 +525,27 @@ function createSession(
     const timings = captureTimings();
     input.endpoints = boundedAdd(input.endpoints, 1);
     const audio = Buffer.concat(utterance, utteranceBytes);
-    const shouldTranscribe = speechMs >= config.minSpeechMs && audio.byteLength > 0;
     const silenceEndpoint = quietMs >= config.silenceMs;
-    resetTurn();
+    const turn = currentTurn;
+    turn.minimumSpeechReached ||= speechMs >= config.minSpeechMs;
+    const shouldTranscribe =
+      (!silenceEndpoint || turn.minimumSpeechReached) && audio.byteLength > 0;
+    if (silenceEndpoint) {
+      resetTurn();
+    } else {
+      // Preserve onset and silence accounting across the bounded audio batch.
+      utterance = [];
+      utteranceBytes = 0;
+    }
     if (shouldTranscribe) {
-      enqueue(audio, timings, silenceEndpoint);
+      enqueue(audio, timings, silenceEndpoint, turn);
     } else {
       reportUtterance(timings, "too_short");
+      if (silenceEndpoint) {
+        turn.discarded = true;
+        turn.text = "";
+        transcriptTurns.delete(turn);
+      }
     }
   };
 
@@ -511,6 +583,8 @@ function createSession(
       }
       speaking = true;
       speechGeneration += 1;
+      currentTurn = { text: "", generation: speechGeneration };
+      transcriptTurns.add(currentTurn);
       input.speechStarts = boundedAdd(input.speechStarts, 1);
       speechMs = onsetMs;
       utterance = preRoll;
@@ -522,7 +596,7 @@ function createSession(
       utterance.push(chunk);
       utteranceBytes += chunk.byteLength;
       if (loud) {
-        speechMs += durationMs;
+        speechMs = boundedAdd(speechMs, durationMs);
       }
     }
 
