@@ -27,6 +27,7 @@ function setup(overrides: Record<string, unknown> = {}) {
   );
   vi.stubGlobal("fetch", fetch);
   const events: Array<{ utteranceId: string; state: string }> = [];
+  const activity: Array<{ utteranceId: string; state: string }> = [];
   const onTranscript = vi.fn();
   const onError = vi.fn();
   const request = {
@@ -41,14 +42,41 @@ function setup(overrides: Record<string, unknown> = {}) {
       ...overrides,
     },
     onProcessing: (event: { utteranceId: string; state: string }) => events.push(event),
+    onSpeechActivity: (event: { utteranceId: string; state: string }) => activity.push(event),
     onTranscript,
     onError,
   };
   const session = buildLocalRealtimeTranscriptionProvider(acquire).createSession(request);
-  return { session, events, onTranscript, onError, acquire, release, fetch, writer };
+  return { session, events, activity, onTranscript, onError, acquire, release, fetch, writer };
 }
 
 describe("realtime transcription processing lifecycle", () => {
+  it("marks short acoustic activity reversible without admitting a transcription job", async () => {
+    const f = setup({ speechOnsetMs: 80, minSpeechMs: 200 });
+    await f.session.connect();
+    f.session.sendAudio(voiced(4));
+    expect(f.activity).toEqual([{ utteranceId: "utterance-1", state: "candidate" }]);
+    f.session.sendAudio(quiet());
+    expect(f.activity).toEqual([
+      { utteranceId: "utterance-1", state: "candidate" },
+      { utteranceId: "utterance-1", state: "rejected" },
+    ]);
+    expect(f.events).toEqual([]);
+    expect(f.fetch).not.toHaveBeenCalled();
+    f.session.close();
+  });
+
+  it("emits sustained activity before the endpoint and STT confirmation", async () => {
+    const f = setup({ speechOnsetMs: 80, minSpeechMs: 160 });
+    await f.session.connect();
+    f.session.sendAudio(voiced(8));
+    expect(f.activity).toEqual([
+      { utteranceId: "utterance-1", state: "candidate" },
+      { utteranceId: "utterance-1", state: "sustained" },
+    ]);
+    expect(f.events).toEqual([]);
+    f.session.close();
+  });
   it("reports endpoint before queue/acquire and VAD confirmation before a fragmented UTF-8 transcript", async () => {
     const f = setup();
     await f.session.connect();
