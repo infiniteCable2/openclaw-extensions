@@ -66,6 +66,42 @@ def test_openai_compatible_transcription(service) -> None:
     assert backend.calls == [(b"audio-bytes", "de", "Eigennamen", ".ogg")]
 
 
+def test_only_agent_speech_uses_frontend(tmp_path) -> None:
+    backend = FakeBackend()
+    calls: list[bytes] = []
+
+    def frontend(source: Path) -> Path:
+        calls.append(source.read_bytes())
+        processed = tmp_path / "processed.wav"
+        processed.write_bytes(b"enhanced")
+        return processed
+
+    app = create_app(backend, speech_frontend=frontend)
+    app.config.update(TESTING=True)
+    client = app.test_client()
+    data = lambda: {
+        "file": (BytesIO(b"original"), "voice.ogg", "audio/ogg"),
+        "model": "faster-whisper",
+    }
+    assert client.post("/v1/audio/transcriptions", data=data()).status_code == 200
+    assert calls == []
+    assert backend.calls[-1][0] == b"original"
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data=data(),
+        headers={"X-OpenClaw-Speech-Input": "agent-speech"},
+    )
+    assert response.status_code == 200
+    assert calls == [b"original"]
+    assert backend.calls[-1][0] == b"enhanced"
+    assert not (tmp_path / "processed.wav").exists()
+    assert client.post(
+        "/v1/audio/transcriptions",
+        data=data(),
+        headers={"X-OpenClaw-Speech-Input": "relay"},
+    ).status_code == 400
+
+
 @pytest.mark.parametrize(
     ("filename", "content_type", "expected_suffix"),
     [

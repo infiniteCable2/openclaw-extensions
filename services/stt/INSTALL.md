@@ -65,6 +65,16 @@ lock. Acceptance requires a CUDA observation, a successful bounded
 transcription, worker termination after idle, lease release, and
 broker-confirmed standby.
 
+For realtime agent-directed speech, set the local-media realtime provider's
+`speechProcessorPython` to
+`/srv/openclaw/workers/venvs/stt-faster-whisper-py313/bin/python`.
+The plugin verifies this pinned WebRTC audio processor during call preparation
+and starts an isolated process for each admitted conversation. This processor
+is CPU-light signal processing, not a second STT model and not a GPU lease;
+the normal STT worker still owns model readiness and inference. Leave the
+setting absent until the revised OpenClaw SDK and plugin release are installed
+and a rollback is prepared.
+
 If STT and TTS cannot coexist in GPU memory, configure a very short positive
 `idleStopMs` for both local services. A value of `0` means no idle stop in the
 current OpenClaw lifecycle implementation and must not be used for that policy.

@@ -7,6 +7,7 @@ from waitress import serve
 
 from .app import create_app
 from .backend import FasterWhisperBackend
+from .speech_frontend import require_speech_frontend
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,6 +27,7 @@ def main() -> None:
     args = build_parser().parse_args()
     if not 1 <= args.port <= 65535:
         raise SystemExit("port is outside its allowed range")
+    require_speech_frontend()
     backend = FasterWhisperBackend(
         model_path=args.model_path,
         model_id=args.model_id,

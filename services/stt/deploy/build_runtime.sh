@@ -51,6 +51,6 @@ VENV_PYTHON="${VENV_DIR}/bin/python"
   --no-deps \
   "${SERVICE_ROOT}"
 "${VENV_PYTHON}" -m pip check
-"${VENV_PYTHON}" -c 'import ctranslate2; from faster_whisper import WhisperModel; import openclaw_local_stt'
+"${VENV_PYTHON}" -c 'import ctranslate2; import pywebrtc_audio; from faster_whisper import WhisperModel; import openclaw_local_stt'
 
 echo "OpenClaw STT runtime installed in ${VENV_DIR}"
