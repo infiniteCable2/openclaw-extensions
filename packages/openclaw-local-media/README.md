@@ -176,6 +176,11 @@ without overlap reconstruction or another VAD pass.
 With OpenClaw's optional realtime `onProcessing` callback, the adapter requests
 `stream=true` with `Accept: text/event-stream`. It reports a session-local
 utterance ID at the accepted endpoint before queueing or acquiring a lease.
+The ID is allocated at acoustic onset so the optional `onSpeechActivity`
+callback can first report `candidate`, then `sustained` after `minSpeechMs`,
+or `rejected` if the candidate ends too soon. These reversible hints only
+control live output ducking/pausing; they never confirm speech or dispatch a
+model turn. The accepted endpoint retains the same ID.
 Only the STT service's positive neural-VAD `speech.confirmed` event can trigger
 early processing feedback; RMS onset alone never confirms speech. Confirmations
 from older speech generations are suppressed. A positive confirmation from an

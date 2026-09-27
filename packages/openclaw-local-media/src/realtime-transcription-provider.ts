@@ -32,7 +32,13 @@ type UtteranceTimings = {
 type RealtimeTranscriptionProviderConfig = Record<string, unknown>;
 type RealtimeTranscriptionSessionCreateRequest = Parameters<
   RealtimeTranscriptionProviderPlugin["createSession"]
->[0];
+>[0] & {
+  // The linked OpenClaw SDK declarations may lag local source until its build.
+  onSpeechActivity?: (event: {
+    utteranceId: string;
+    state: "candidate" | "sustained" | "rejected";
+  }) => void;
+};
 type RealtimeTranscriptionSession = ReturnType<
   RealtimeTranscriptionProviderPlugin["createSession"]
 >;
@@ -69,6 +75,7 @@ type TranscriptTurn = {
   speechConfirmed?: boolean;
   confirmationPublished?: boolean;
   minimumSpeechReached?: boolean;
+  activitySustained?: boolean;
   discarded?: boolean;
 };
 
@@ -333,6 +340,13 @@ function createSession(
       // Notifications must not prevent cancellation or release of media resources.
     }
   };
+  const notifyActivity = (utteranceId: string, state: "candidate" | "sustained" | "rejected") => {
+    try {
+      request.onSpeechActivity?.({ utteranceId, state });
+    } catch {
+      // Acoustic hints must not interrupt capture or transcription.
+    }
+  };
   const settleProcessing = (
     utteranceId: string,
     state: Extract<ProcessingState, "transcribed" | "empty" | "failed" | "cancelled">,
@@ -500,7 +514,7 @@ function createSession(
       return;
     }
     // Audio caps bound STT work, not user turns. Only silence admits a final turn.
-    const utteranceId = silenceEndpoint ? `utterance-${++utteranceSequence}` : undefined;
+    const utteranceId = silenceEndpoint ? turn.utteranceId : undefined;
     if (utteranceId) {
       turn.utteranceId = utteranceId;
       pendingUtterances.add(utteranceId);
@@ -603,6 +617,7 @@ function createSession(
     } else {
       reportUtterance(timings, "too_short");
       if (silenceEndpoint) {
+        if (turn.utteranceId) notifyActivity(turn.utteranceId, "rejected");
         turn.discarded = true;
         turn.text = "";
         transcriptTurns.delete(turn);
@@ -646,7 +661,11 @@ function createSession(
       }
       speaking = true;
       speechGeneration += 1;
-      currentTurn = { text: "", generation: speechGeneration };
+      currentTurn = {
+        text: "",
+        generation: speechGeneration,
+        utteranceId: `utterance-${++utteranceSequence}`,
+      };
       transcriptTurns.add(currentTurn);
       input.speechStarts = boundedAdd(input.speechStarts, 1);
       speechMs = onsetMs;
@@ -655,12 +674,18 @@ function createSession(
       preRoll = [];
       preRollBytes = 0;
       request.onSpeechStart?.();
+      notifyActivity(currentTurn.utteranceId!, "candidate");
     } else {
       utterance.push(chunk);
       utteranceBytes += chunk.byteLength;
       if (loud) {
         speechMs = boundedAdd(speechMs, durationMs);
       }
+    }
+
+    if (!currentTurn.activitySustained && speechMs >= config.minSpeechMs) {
+      currentTurn.activitySustained = true;
+      notifyActivity(currentTurn.utteranceId!, "sustained");
     }
 
     quietMs = loud ? 0 : quietMs + durationMs;
