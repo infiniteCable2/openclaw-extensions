@@ -44,6 +44,29 @@ describe("local media understanding provider", () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it("marks only agent-directed speech for enhancement", async () => {
+    const acquire = vi.fn().mockResolvedValue({ release: vi.fn() });
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(
+        async () => new Response(JSON.stringify({ text: "verstanden" }), { status: 200 }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = buildLocalMediaUnderstandingProvider(acquire);
+    const request = transcriptionRequest("http://127.0.0.1:8010/v1");
+
+    await provider.transcribeAudio?.({
+      ...request,
+      headers: { "X-OpenClaw-Speech-Input": "agent-speech" },
+    });
+    await provider.transcribeAudio?.({ ...request, speechInput: true });
+
+    const firstHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    const secondHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
+    expect(firstHeaders.has("x-openclaw-speech-input")).toBe(false);
+    expect(secondHeaders.get("x-openclaw-speech-input")).toBe("agent-speech");
+  });
+
   it("releases the service lease after an upstream failure", async () => {
     const release = vi.fn();
     const acquire = vi.fn().mockResolvedValue({ release });

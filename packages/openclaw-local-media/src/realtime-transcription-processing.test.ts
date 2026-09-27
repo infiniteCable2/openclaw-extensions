@@ -59,6 +59,7 @@ describe("realtime transcription processing lifecycle", () => {
     const init = f.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
     expect((init?.body as FormData).get("stream")).toBe("true");
     expect(new Headers(init?.headers).get("accept")).toBe("text/event-stream");
+    expect(new Headers(init?.headers).get("x-openclaw-speech-input")).toBe("agent-speech");
     await f.writer.write(new TextEncoder().encode(confirmation));
     await vi.advanceTimersByTimeAsync(0);
     expect(f.events.at(-1)).toEqual({ utteranceId: "utterance-1", state: "speech-confirmed" });

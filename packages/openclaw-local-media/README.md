@@ -133,6 +133,27 @@ defaults are provided; a meeting integration may override `baseUrl`, `model`,
 `maxQueuedUtterances` in its realtime provider configuration. `baseUrl` remains
 mandatory and loopback-only.
 
+For agent-directed live speech, configure `speechProcessorPython` to the
+absolute Python executable in the installed STT runtime (for example,
+`/absolute/stt-venv/bin/python`) under
+`channels.matrix.rtc.providers["local-media"]`. The provider then requests 16 kHz PCM from
+OpenClaw's meeting bridge, starts one stateful WebRTC Audio Processing Module
+per call, and feeds its enhanced frames into the speech-onset gate and STT.
+Readiness preparation verifies the processor before the call is answered.
+Older realtime callers that supply 8 kHz mu-law are accepted through a
+stateful 16 kHz upsampler before the same front end. If the processor cannot
+start or falls behind by two seconds, the call fails visibly rather than
+silently reverting to raw input. The existing configuration without this
+setting retains its original realtime path. Echo cancellation remains off
+until a synchronized far-end reference is available; noise suppression,
+high-pass filtering, and bounded automatic gain are active. The processor is
+scoped to transcription sessions, never to recording or media relay.
+
+Batch audio enhancement is independently selected by OpenClaw's
+`speechInput` intent. Matrix voice messages set it; ordinary audio files do
+not. The STT service then applies the same APM family before Faster-Whisper.
+Live audio already enhanced before VAD is not enhanced a second time.
+
 `maxUtteranceMs` bounds each audio batch sent to STT, not the user's speaking
 turn. Continuous speech crossing that limit keeps the same speech onset and
 accumulates batch transcripts in FIFO order. `onPartial`, when provided,
@@ -190,6 +211,9 @@ loud run, speech starts, endpoints, completed/dropped work, and outstanding
 work at that instant. `elapsedMs` and `inputIdleMs` expose missing input even
 when no utterance reached STT. Pending cancellation records may settle after
 this closing snapshot. Counters are bounded and do not retain per-frame data.
+When the live front end is enabled, this summary also includes aggregate
+`frontEndInputRms` and `frontEndOutputRms` for gain tuning; neither is an SNR
+estimate or a recording of speech content.
 Neither event contains audio, transcript text, URLs, exception messages, model
 or participant identifiers. Logger failures never interrupt media handling.
 

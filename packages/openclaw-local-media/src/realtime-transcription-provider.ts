@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_STT_MODEL, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { requireLoopbackBaseUrl } from "./local-url.js";
+import { createLiveSpeechProcessor } from "./live-speech-processor.js";
 import { readTranscriptionEvents } from "./transcription-events.js";
 
 type AcquireLocalService = OpenClawPluginApi["runtime"]["llm"]["acquireLocalService"];
@@ -58,6 +59,7 @@ type LocalRealtimeConfig = {
   maxUtteranceMs: number;
   requestTimeoutMs: number;
   maxQueuedUtterances: number;
+  speechProcessorPython?: string;
 };
 
 type TranscriptTurn = {
@@ -70,10 +72,7 @@ type TranscriptTurn = {
   discarded?: boolean;
 };
 
-const INPUT_SAMPLE_RATE = 8_000;
-const INPUT_BYTES_PER_MS = INPUT_SAMPLE_RATE / 1_000;
 const ANALYSIS_FRAME_MS = 20;
-const ANALYSIS_FRAME_BYTES = INPUT_BYTES_PER_MS * ANALYSIS_FRAME_MS;
 const MAX_RESPONSE_BYTES = 256 * 1024;
 
 function boundedAdd(value: number, increment: number): number {
@@ -125,6 +124,16 @@ function calculateMulawRms(audio: Buffer): number {
   return Math.sqrt(sumSquares / audio.byteLength);
 }
 
+function calculatePcmRms(audio: Buffer): number {
+  if (audio.byteLength === 0) return 0;
+  let squares = 0;
+  for (let offset = 0; offset < audio.byteLength; offset += 2) {
+    const value = audio.readInt16LE(offset) / 32_768;
+    squares += value * value;
+  }
+  return Math.sqrt(squares / (audio.byteLength / 2));
+}
+
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -153,10 +162,11 @@ function normalizeConfig(raw: RealtimeTranscriptionProviderConfig): LocalRealtim
     maxUtteranceMs: boundedNumber(raw.maxUtteranceMs, 30_000, 1_000, 120_000),
     requestTimeoutMs: boundedNumber(raw.requestTimeoutMs, 300_000, 1_000, 600_000),
     maxQueuedUtterances: Math.floor(boundedNumber(raw.maxQueuedUtterances, 2, 1, 8)),
+    speechProcessorPython: optionalString(raw.speechProcessorPython),
   };
 }
 
-function pcm16Wav(pcm: Buffer): Buffer {
+function pcm16Wav(pcm: Buffer, sampleRate: number): Buffer {
   const header = Buffer.alloc(44);
   header.write("RIFF", 0, "ascii");
   header.writeUInt32LE(36 + pcm.byteLength, 4);
@@ -164,8 +174,8 @@ function pcm16Wav(pcm: Buffer): Buffer {
   header.writeUInt32LE(16, 16);
   header.writeUInt16LE(1, 20);
   header.writeUInt16LE(1, 22);
-  header.writeUInt32LE(INPUT_SAMPLE_RATE, 24);
-  header.writeUInt32LE(INPUT_SAMPLE_RATE * 2, 28);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
   header.writeUInt16LE(2, 32);
   header.writeUInt16LE(16, 34);
   header.write("data", 36, "ascii");
@@ -187,6 +197,8 @@ async function readBoundedJson(response: Response): Promise<unknown> {
 
 async function transcribeUtterance(params: {
   audio: Buffer;
+  sampleRate: number;
+  alreadyEnhanced: boolean;
   config: LocalRealtimeConfig;
   acquireLocalService: AcquireLocalService;
   signal: AbortSignal;
@@ -213,7 +225,10 @@ async function transcribeUtterance(params: {
     }
     signal.throwIfAborted();
     const form = new FormData();
-    const wav = pcm16Wav(mulawToPcm(params.audio));
+    const wav = pcm16Wav(
+      params.sampleRate === 16_000 ? params.audio : mulawToPcm(params.audio),
+      params.sampleRate,
+    );
     form.set(
       "file",
       new Blob([Uint8Array.from(wav).buffer], { type: "audio/wav" }),
@@ -234,7 +249,10 @@ async function transcribeUtterance(params: {
         method: "POST",
         body: form,
         signal,
-        ...(params.onSpeechConfirmed ? { headers: { accept: "text/event-stream" } } : {}),
+        headers: {
+          ...(!params.alreadyEnhanced ? { "x-openclaw-speech-input": "agent-speech" } : {}),
+          ...(params.onSpeechConfirmed ? { accept: "text/event-stream" } : {}),
+        },
       });
       if (!response.ok) {
         void response.body?.cancel().catch(() => {});
@@ -270,6 +288,13 @@ function createSession(
   logger?: DiagnosticLogger,
 ): RealtimeTranscriptionSession {
   const config = normalizeConfig(request.providerConfig);
+  const enhancedLive = Boolean(config.speechProcessorPython);
+  if (request.inputAudioFormat === "pcm16-16khz" && !enhancedLive) {
+    throw new Error("Live speech enhancement requires speechProcessorPython");
+  }
+  const inputSampleRate = enhancedLive ? 16_000 : 8_000;
+  const inputBytesPerMs = enhancedLive ? 32 : 8;
+  const analysisFrameBytes = inputBytesPerMs * ANALYSIS_FRAME_MS;
   const sessionController = new AbortController();
   let connected = false;
   let closed = false;
@@ -283,8 +308,13 @@ function createSession(
   let utteranceBytes = 0;
   let queued = 0;
   let serial = Promise.resolve();
-  let inputFrame = Buffer.alloc(ANALYSIS_FRAME_BYTES);
+  let inputFrame = Buffer.alloc(analysisFrameBytes);
   let inputFrameBytes = 0;
+  let previousMulawSample = 0;
+  let frontEndInputSquares = 0;
+  let frontEndInputSamples = 0;
+  let frontEndOutputSquares = 0;
+  let frontEndOutputSamples = 0;
   let connectedAt: number | undefined;
   let lastInputAt: number | undefined;
   let lastLoudAt: number | undefined;
@@ -350,7 +380,7 @@ function createSession(
     endpointAt: performance.now(),
     endpointSilenceWallMs: lastLoudAt === undefined ? 0 : elapsedMs(lastLoudAt),
     trailingSilenceAudioMs: quietMs,
-    utteranceAudioMs: utteranceBytes / INPUT_BYTES_PER_MS,
+    utteranceAudioMs: utteranceBytes / inputBytesPerMs,
     queueWaitMs: null,
     acquireMs: null,
     httpMs: null,
@@ -391,7 +421,35 @@ function createSession(
       inputIdleMs: lastInputAt === undefined ? 0 : elapsedMs(lastInputAt),
       pendingUtterances: queued,
       partialFrameBytes: inputFrameBytes,
+      ...(enhancedLive
+        ? {
+            frontEndInputRms:
+              frontEndInputSamples > 0
+                ? Math.sqrt(frontEndInputSquares / frontEndInputSamples)
+                : null,
+            frontEndOutputRms:
+              frontEndOutputSamples > 0
+                ? Math.sqrt(frontEndOutputSquares / frontEndOutputSamples)
+                : null,
+          }
+        : {}),
     });
+  };
+
+  const recordFrontEndRms = (audio: Buffer, output: boolean) => {
+    let squares = 0;
+    const completeBytes = audio.byteLength - (audio.byteLength % 2);
+    for (let offset = 0; offset < completeBytes; offset += 2) {
+      const sample = audio.readInt16LE(offset) / 32_768;
+      squares += sample * sample;
+    }
+    if (output) {
+      frontEndOutputSquares += squares;
+      frontEndOutputSamples += completeBytes / 2;
+    } else {
+      frontEndInputSquares += squares;
+      frontEndInputSamples += completeBytes / 2;
+    }
   };
 
   const resetTurn = () => {
@@ -411,7 +469,7 @@ function createSession(
     resetTurn();
     preRoll = [];
     preRollBytes = 0;
-    inputFrame = Buffer.alloc(ANALYSIS_FRAME_BYTES);
+    inputFrame = Buffer.alloc(analysisFrameBytes);
     inputFrameBytes = 0;
   };
 
@@ -421,6 +479,7 @@ function createSession(
     }
     closed = true;
     connected = false;
+    processor?.close();
     sessionController.abort();
     cancelPending();
     discardInput();
@@ -466,6 +525,8 @@ function createSession(
         try {
           const text = await transcribeUtterance({
             audio,
+            sampleRate: inputSampleRate,
+            alreadyEnhanced: enhancedLive,
             config,
             acquireLocalService,
             signal: sessionController.signal,
@@ -550,7 +611,7 @@ function createSession(
   };
 
   const retainPreRoll = (audio: Buffer) => {
-    const limit = Math.floor(config.preRollMs * INPUT_BYTES_PER_MS);
+    const limit = Math.floor(config.preRollMs * inputBytesPerMs);
     if (limit <= 0) {
       preRoll = [];
       preRollBytes = 0;
@@ -566,7 +627,9 @@ function createSession(
 
   const analyzeFrame = (chunk: Buffer) => {
     const durationMs = ANALYSIS_FRAME_MS;
-    const loud = calculateMulawRms(chunk) >= config.speechRmsThreshold;
+    const loud =
+      (enhancedLive ? calculatePcmRms(chunk) : calculateMulawRms(chunk)) >=
+      config.speechRmsThreshold;
     input.frames = boundedAdd(input.frames, 1);
     consecutiveLoudMs = loud ? boundedAdd(consecutiveLoudMs, durationMs) : 0;
     input.maxConsecutiveLoudMs = Math.max(input.maxConsecutiveLoudMs, consecutiveLoudMs);
@@ -601,51 +664,84 @@ function createSession(
     }
 
     quietMs = loud ? 0 : quietMs + durationMs;
-    const utteranceMs = utteranceBytes / INPUT_BYTES_PER_MS;
+    const utteranceMs = utteranceBytes / inputBytesPerMs;
     if (quietMs >= config.silenceMs || utteranceMs >= config.maxUtteranceMs) {
       finishTurn();
     }
   };
+
+  const acceptAudio = (audio: Buffer) => {
+    if (!connected || closed || audio.byteLength === 0) {
+      return;
+    }
+    input.count = boundedAdd(input.count, 1);
+    const packetAudioMs = audio.byteLength / inputBytesPerMs;
+    input.audioMs = boundedAdd(input.audioMs, packetAudioMs);
+    input.maxPacketAudioMs = Math.max(input.maxPacketAudioMs, packetAudioMs);
+    if (lastInputAt !== undefined) {
+      input.maxInputGapMs = Math.max(input.maxInputGapMs, elapsedMs(lastInputAt));
+    }
+    lastInputAt = performance.now();
+    // Transport packet boundaries are not speech-analysis boundaries. Keep
+    // at most one incomplete 20-ms frame, including for bytewise delivery.
+    let offset = 0;
+    while (offset < audio.byteLength && !closed) {
+      const count = Math.min(analysisFrameBytes - inputFrameBytes, audio.byteLength - offset);
+      inputFrame.set(audio.subarray(offset, offset + count), inputFrameBytes);
+      inputFrameBytes += count;
+      offset += count;
+      if (inputFrameBytes === analysisFrameBytes) {
+        const frame = inputFrame;
+        inputFrame = Buffer.alloc(analysisFrameBytes);
+        inputFrameBytes = 0;
+        analyzeFrame(frame);
+      }
+    }
+  };
+  const processor = config.speechProcessorPython
+    ? createLiveSpeechProcessor({
+        python: config.speechProcessorPython,
+        onFrame: (audio) => {
+          recordFrontEndRms(audio, true);
+          acceptAudio(audio);
+        },
+        onError: fail,
+      })
+    : undefined;
 
   return {
     async connect() {
       if (closed) {
         throw new Error("Local media realtime transcription session is closed");
       }
+      await processor?.connect();
       connected = true;
       connectedAt ??= performance.now();
     },
     sendAudio(audio) {
-      if (!connected || closed || audio.byteLength === 0) {
-        return;
-      }
-      input.count = boundedAdd(input.count, 1);
-      const packetAudioMs = audio.byteLength / INPUT_BYTES_PER_MS;
-      input.audioMs = boundedAdd(input.audioMs, packetAudioMs);
-      input.maxPacketAudioMs = Math.max(input.maxPacketAudioMs, packetAudioMs);
-      if (lastInputAt !== undefined) {
-        input.maxInputGapMs = Math.max(input.maxInputGapMs, elapsedMs(lastInputAt));
-      }
-      lastInputAt = performance.now();
-      // Transport packet boundaries are not speech-analysis boundaries. Keep
-      // at most one incomplete 20-ms frame, including for bytewise delivery.
-      let offset = 0;
-      while (offset < audio.byteLength && !closed) {
-        const count = Math.min(ANALYSIS_FRAME_BYTES - inputFrameBytes, audio.byteLength - offset);
-        inputFrame.set(audio.subarray(offset, offset + count), inputFrameBytes);
-        inputFrameBytes += count;
-        offset += count;
-        if (inputFrameBytes === ANALYSIS_FRAME_BYTES) {
-          const frame = inputFrame;
-          inputFrame = Buffer.alloc(ANALYSIS_FRAME_BYTES);
-          inputFrameBytes = 0;
-          analyzeFrame(frame);
+      if (processor) {
+        if (request.inputAudioFormat === "pcm16-16khz") {
+          recordFrontEndRms(audio, false);
+          processor.send(audio);
+        } else {
+          const upsampled = Buffer.allocUnsafe(audio.byteLength * 4);
+          for (let index = 0; index < audio.byteLength; index += 1) {
+            const current = decodeMulawByte(audio[index] ?? 0);
+            upsampled.writeInt16LE(Math.round((previousMulawSample + current) / 2), index * 4);
+            upsampled.writeInt16LE(current, index * 4 + 2);
+            previousMulawSample = current;
+          }
+          recordFrontEndRms(upsampled, false);
+          processor.send(upsampled);
         }
+      } else {
+        acceptAudio(audio);
       }
     },
     close() {
       closed = true;
       connected = false;
+      processor?.close();
       sessionController.abort();
       cancelPending();
       discardInput();
@@ -666,6 +762,8 @@ export function buildLocalRealtimeTranscriptionProvider(
     transcriptGranularity: "utterance",
     defaultModel: DEFAULT_STT_MODEL,
     models: [DEFAULT_STT_MODEL],
+    resolveInputAudioFormat: (providerConfig) =>
+      normalizeConfig(providerConfig).speechProcessorPython ? "pcm16-16khz" : "g711-ulaw-8khz",
     resolveConfig: ({ rawConfig }) => normalizeConfig(rawConfig),
     isConfigured: ({ providerConfig }) => {
       try {
@@ -677,10 +775,31 @@ export function buildLocalRealtimeTranscriptionProvider(
     },
     prepareSession: async ({ providerConfig, signal }) => {
       const config = normalizeConfig(providerConfig);
-      return await acquireLocalService(
+      const lease = await acquireLocalService(
         { providerId: LOCAL_MEDIA_PROVIDER_ID, baseUrl: config.baseUrl },
         signal,
       );
+      if (!config.speechProcessorPython) return lease;
+      let probe: ReturnType<typeof createLiveSpeechProcessor> | undefined;
+      const abortProbe = () => probe?.close();
+      try {
+        probe = createLiveSpeechProcessor({
+          python: config.speechProcessorPython,
+          onFrame: () => undefined,
+          onError: () => undefined,
+        });
+        signal?.addEventListener("abort", abortProbe, { once: true });
+        signal?.throwIfAborted();
+        await probe.connect();
+        signal?.throwIfAborted();
+        return lease;
+      } catch (error) {
+        await lease?.release();
+        throw error;
+      } finally {
+        signal?.removeEventListener("abort", abortProbe);
+        probe?.close();
+      }
     },
     createSession: (request) => createSession(request, acquireLocalService, logger),
   };
