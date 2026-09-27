@@ -14,6 +14,14 @@ pub const MAX_OUTPUT_FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 const MAX_JWT_BYTES: usize = 16 * 1024;
 const MAX_IDENTITY_BYTES: usize = 512;
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputGate {
+    Normal,
+    Duck,
+    Paused,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlMessage {
@@ -31,6 +39,9 @@ pub enum ControlMessage {
     },
     ClearOutput {
         generation: u64,
+    },
+    SetOutputGate {
+        gate: OutputGate,
     },
     Stop {},
 }
@@ -62,9 +73,10 @@ pub struct DecodedKey {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlEvent<'a> {
-    Ready,
+    Ready { output_gate: bool },
     Connected,
     OutputCleared { generation: u64 },
+    OutputGateSet { gate: OutputGate },
     Stopped,
     Fatal { code: &'a str },
 }
@@ -246,6 +258,31 @@ mod tests {
         assert!(validate_start(parsed).is_err());
         assert!(
             serde_json::from_str::<ControlMessage>(r#"{"type":"stop","unexpected":true}"#).is_err()
+        );
+    }
+
+    #[test]
+    fn output_gate_accepts_only_known_modes() {
+        assert_eq!(
+            serde_json::to_string(&ControlEvent::Ready { output_gate: true }).unwrap(),
+            r#"{"type":"ready","output_gate":true}"#
+        );
+        for gate in ["normal", "duck", "paused"] {
+            let message: ControlMessage =
+                serde_json::from_str(&format!(r#"{{"type":"set_output_gate","gate":"{gate}"}}"#))
+                    .unwrap();
+            assert!(matches!(message, ControlMessage::SetOutputGate { .. }));
+        }
+        assert!(
+            serde_json::from_str::<ControlMessage>(r#"{"type":"set_output_gate","gate":"muted"}"#)
+                .is_err()
+        );
+        assert_eq!(
+            serde_json::to_string(&ControlEvent::OutputGateSet {
+                gate: OutputGate::Paused,
+            })
+            .unwrap(),
+            r#"{"type":"output_gate_set","gate":"paused"}"#
         );
     }
 }

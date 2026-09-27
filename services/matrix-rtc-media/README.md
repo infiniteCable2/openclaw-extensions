@@ -23,6 +23,18 @@ flushes LiveKit's short source queue. Frames from older generations are then
 discarded, which gives OpenClaw a real Barge-in boundary without reconnecting
 the call.
 
+`set_output_gate` accepts `normal`, `duck`, or `paused` and acknowledges with
+`output_gate_set`. The early acoustic candidate ducks output to one quarter
+amplitude; sustained activity pauses the current TTS generation without
+discarding its stdin frames. A rejected candidate resumes that generation.
+Only confirmed speech discards the TTS generation with `clear_output`. The bridge clears
+LiveKit's already-buffered source audio when entering duck or pause, so the
+change is audible promptly; audio already queued inside LiveKit may be lost
+at that boundary. Control and PCM frame queues are separate so `clear_output`
+still completes while playout is paused.
+The initial `ready` event advertises `output_gate: true`; an OpenClaw host
+requiring this protocol rejects an older bridge before the call connects.
+
 The first control message must be `start`. Exactly one remote participant is
 accepted. An unexpected participant or track is fatal and closes the media
 session. Tokens and keys are never accepted on the command line or written to
