@@ -25,6 +25,23 @@ silence. No separate VAD service is started.
 The service accepts at most one active inference plus a bounded number of
 waiting requests. It never logs audio or transcript content.
 
+Requests explicitly marked `X-OpenClaw-Speech-Input: agent-speech` run a
+conservative WebRTC Audio Processing Module pass (high-pass, noise suppression,
+and gain limiting) after admission and before Faster-Whisper. Ordinary audio
+files and media relays are not marked or altered. Acoustic echo cancellation is
+disabled here: the server does not have a synchronized speaker reference from
+the caller's device. Device-side capture should own AEC. The service requires
+the pinned WebRTC binding at startup; a missing processor never silently falls
+back to unprocessed agent speech.
+
+The same installed runtime also exposes an internal per-call module,
+`python -m openclaw_local_stt.speech_stream`, for realtime clients. Its binary
+protocol is an `APM1` readiness marker followed by ordered 20 ms mono PCM16
+frames at 16 kHz; each input frame yields exactly one output frame. The caller
+owns process lifetime and a bounded input queue. This module is not a network
+endpoint, is not shared between callers, and must never be placed on a
+recording or media-relay path.
+
 Each Faster-Whisper request emits one content-free info record with event
 `local_media_stt_backend` through the existing service logger. `durationMs`
 and `durationAfterVadMs` report the library's input and retained-audio durations;

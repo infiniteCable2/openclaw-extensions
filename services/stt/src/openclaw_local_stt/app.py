@@ -6,12 +6,13 @@ import tempfile
 import threading
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from .backend import TranscriptionBackend
+from .speech_frontend import enhance_speech_file
 
 _ALLOWED_AUDIO_TYPES = {
     "application/octet-stream",
@@ -154,6 +155,7 @@ def create_app(
     *,
     max_audio_bytes: int = 20 * 1024 * 1024,
     max_queued_requests: int = 2,
+    speech_frontend: Callable[[Path], Path] = enhance_speech_file,
 ) -> Flask:
     if max_audio_bytes < 1024:
         raise ValueError("max_audio_bytes must be at least 1024")
@@ -201,7 +203,8 @@ def create_app(
         return jsonify(readiness())
 
     def streaming_response(
-        audio_path: Path, *, language: str | None, prompt: str | None
+        audio_path: Path, *, language: str | None, prompt: str | None,
+        speech_input: bool,
     ) -> Response:
         # Reserve before returning HTTP 200. threading.Lock is not owner-thread
         # bound; ExitStack retains the same bounded admission through WSGI close.
@@ -209,6 +212,9 @@ def create_app(
         resources.callback(audio_path.unlink, missing_ok=True)
         try:
             resources.enter_context(state.admit())
+            if speech_input:
+                audio_path = speech_frontend(audio_path)
+                resources.callback(audio_path.unlink, missing_ok=True)
             events = backend.transcribe_stream(audio_path, language=language, prompt=prompt)
             resources.callback(events.close)
 
@@ -257,12 +263,24 @@ def create_app(
                 raise ServiceError(
                     "invalid_request", "stream must be true or false", 400, retryable=False
                 )
+            speech_input_header = request.headers.get("X-OpenClaw-Speech-Input")
+            if speech_input_header not in {None, "agent-speech"}:
+                raise ServiceError(
+                    "invalid_request", "speech input purpose is invalid", 400, retryable=False
+                )
+            speech_input = speech_input_header == "agent-speech"
             audio_path = _store_bounded_upload(max_audio_bytes=max_audio_bytes)
             if stream == "true":
-                response = streaming_response(audio_path, language=language, prompt=prompt)
+                response = streaming_response(
+                    audio_path, language=language, prompt=prompt, speech_input=speech_input
+                )
                 audio_path = None  # The response owns upload/admission cleanup.
                 return response
             with state.admit():
+                if speech_input:
+                    processed_path = speech_frontend(audio_path)
+                    audio_path.unlink(missing_ok=True)
+                    audio_path = processed_path
                 text = backend.transcribe(audio_path, language=language, prompt=prompt)
             return jsonify(text=text, model=backend.model_id)
         except ServiceError as error:

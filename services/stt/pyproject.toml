@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 cuda = [
   "faster-whisper==1.2.1",
+  "pywebrtc-audio==0.2.0",
   "nvidia-cublas-cu12==12.4.5.8",
   "nvidia-cudnn-cu12==9.1.0.70",
 ]

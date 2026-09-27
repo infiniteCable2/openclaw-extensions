@@ -89,6 +89,29 @@ def test_confirmation_precedes_decode_and_holds_admission_until_stream_closes(mo
     assert list(tmp_path.glob("openclaw-stt-*")) == []
 
 
+def test_streamed_agent_speech_frontend_is_owned_until_close(tmp_path):
+    backend = StreamingBackend()
+    processed = tmp_path / "processed.wav"
+
+    def frontend(source):
+        assert source.read_bytes() == b"audio"
+        processed.write_bytes(b"enhanced")
+        return processed
+
+    app = create_app(backend, speech_frontend=frontend)
+    app.config.update(TESTING=True)
+    response = app.test_client().post(
+        "/v1/audio/transcriptions",
+        data=request_data(),
+        headers={"X-OpenClaw-Speech-Input": "agent-speech"},
+        buffered=False,
+    )
+    assert processed.exists()
+    assert decode_event(next(response.response)) == {"type": "speech.confirmed"}
+    response.close()
+    assert not processed.exists()
+
+
 @pytest.mark.parametrize("confirmed", [True, False])
 @pytest.mark.parametrize("fail", [True, False])
 def test_terminal_empty_or_error_event_is_emitted_once(monkeypatch, tmp_path, confirmed, fail):
