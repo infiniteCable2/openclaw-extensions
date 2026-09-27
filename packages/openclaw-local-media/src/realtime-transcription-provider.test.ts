@@ -483,6 +483,7 @@ describe("local media realtime transcription provider", () => {
     expect(form.get("model")).toBe("faster-whisper");
     expect(form.get("stream")).toBeNull();
     expect(new Headers(init.headers).has("accept")).toBe(false);
+    expect(new Headers(init.headers).get("x-openclaw-speech-input")).toBe("agent-speech");
     expect(release).toHaveBeenCalledOnce();
   });
 
