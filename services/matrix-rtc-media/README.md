@@ -32,8 +32,12 @@ LiveKit's already-buffered source audio when entering duck or pause, so the
 change is audible promptly; audio already queued inside LiveKit may be lost
 at that boundary. Control and PCM frame queues are separate so `clear_output`
 still completes while playout is paused.
-The initial `ready` event advertises `output_gate: true`; an OpenClaw host
-requiring this protocol rejects an older bridge before the call connects.
+The initial `ready` event advertises `output_gate: true` and
+`remote_audio_ready: true`. After an allowed remote audio track is subscribed,
+the bridge emits `remote_audio_ready` separately. OpenClaw can wait for this
+event before playing a precomputed greeting; it must not infer remote media
+readiness from LiveKit connection or local-track publication alone. A host
+requiring either capability rejects an older bridge before the call connects.
 
 The first control message must be `start`. Exactly one remote participant is
 accepted. An unexpected participant or track is fatal and closes the media

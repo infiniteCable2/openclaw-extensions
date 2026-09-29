@@ -73,12 +73,22 @@ pub struct DecodedKey {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlEvent<'a> {
-    Ready { output_gate: bool },
+    Ready {
+        output_gate: bool,
+        remote_audio_ready: bool,
+    },
     Connected,
-    OutputCleared { generation: u64 },
-    OutputGateSet { gate: OutputGate },
+    RemoteAudioReady,
+    OutputCleared {
+        generation: u64,
+    },
+    OutputGateSet {
+        gate: OutputGate,
+    },
     Stopped,
-    Fatal { code: &'a str },
+    Fatal {
+        code: &'a str,
+    },
 }
 
 fn validate_identity(value: String) -> anyhow::Result<String> {
@@ -264,8 +274,16 @@ mod tests {
     #[test]
     fn output_gate_accepts_only_known_modes() {
         assert_eq!(
-            serde_json::to_string(&ControlEvent::Ready { output_gate: true }).unwrap(),
-            r#"{"type":"ready","output_gate":true}"#
+            serde_json::to_string(&ControlEvent::Ready {
+                output_gate: true,
+                remote_audio_ready: true
+            })
+            .unwrap(),
+            r#"{"type":"ready","output_gate":true,"remote_audio_ready":true}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ControlEvent::RemoteAudioReady).unwrap(),
+            r#"{"type":"remote_audio_ready"}"#
         );
         for gate in ["normal", "duck", "paused"] {
             let message: ControlMessage =
