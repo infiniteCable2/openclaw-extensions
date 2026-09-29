@@ -275,6 +275,7 @@ async fn run_started_session(
         frame_diagnostic,
     ));
 
+    let mut remote_audio_ready = false;
     loop {
         tokio::select! {
             message = read_control_line(&mut control) => match message? {
@@ -316,6 +317,10 @@ async fn run_started_session(
                     }
                     match track {
                         RemoteTrack::Audio(track) => {
+                            if !remote_audio_ready {
+                                send_event(&writer, ControlEvent::RemoteAudioReady).await?;
+                                remote_audio_ready = true;
+                            }
                             let stdout = stdout.clone();
                             let fatal_tx = fatal_tx.clone();
                             tokio::spawn(async move {
@@ -357,7 +362,14 @@ async fn run_session(stream: UnixStream) -> anyhow::Result<()> {
     let (read_half, write_half) = stream.into_split();
     let control = BufReader::new(read_half);
     let writer = Arc::new(Mutex::new(write_half));
-    send_event(&writer, ControlEvent::Ready { output_gate: true }).await?;
+    send_event(
+        &writer,
+        ControlEvent::Ready {
+            output_gate: true,
+            remote_audio_ready: true,
+        },
+    )
+    .await?;
 
     let result = run_started_session(control, writer.clone()).await;
     if result.is_err() {
