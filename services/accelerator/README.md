@@ -4,6 +4,22 @@ Optional narrow broker for hosts where ordinary worker reaping does not provide
 the required power savings. It owns only device allowlisting, renewable leases,
 hardware readiness, cooldown, recovery, and broker-confirmed standby.
 
+An optional root-owned `standby_schedule` in each accelerator profile advises
+participants when unloading is desired. For example,
+`{"timezone":"Europe/Berlin","start":"23:00","end":"07:00"}` requests
+unloading overnight. Acquire, renew, and status responses include
+`unload_requested` and a bounded `policy_valid_until_epoch`; lease expiry is
+separate and never shortened at a schedule boundary. Without a schedule, the
+broker retains its original always-request-unload behavior. During the daytime
+window, automatic hardware standby is disabled even when all leases are gone.
+Participants may still unload for their own resource needs.
+
+For OpenClaw-owned STT/TTS processes, configure `localService.idleStopCheck`
+to run `openclaw-accelerator-idle-check --socket-path <socket>
+--accelerator-id <id>`. OpenClaw retains its `idleStopMs` delay; this check
+only decides whether stopping is currently wanted. The embedding service reads
+the same policy from its renewable lease and retains its own idle delay.
+
 It is an activatable host resource service, not an OpenClaw model provider and
 not an agent-callable tool. Workers use it only when explicitly configured in
 `required` mode. If no broker is configured, the feature is disabled. If a

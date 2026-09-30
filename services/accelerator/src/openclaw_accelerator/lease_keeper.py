@@ -123,6 +123,17 @@ class AcceleratorLeaseKeeper:
         with self._lock:
             return self._healthy
 
+    def unload_requested(self) -> bool:
+        with self._lock:
+            lease = self._lease
+            return (
+                not self._healthy
+                or lease is None
+                or self._monotonic() - self._last_success > self.renew_interval_seconds * 2
+                or time.time() >= lease.policy_valid_until_epoch
+                or lease.unload_requested
+            )
+
     def close(self) -> None:
         self._stop.set()
         with self._lock:

@@ -97,7 +97,11 @@ class OllamaEmbeddingRuntime:
                     {
                         "model": self.model,
                         "input": inputs,
-                        "keep_alive": f"{self.request_keep_alive_seconds:g}s",
+                        "keep_alive": (
+                            f"{self.request_keep_alive_seconds:g}s"
+                            if self._lease.unload_requested()
+                            else -1
+                        ),
                     },
                 )
                 self._verify_gpu_residency()

@@ -65,6 +65,12 @@ lock. Acceptance requires a CUDA observation, a successful bounded
 transcription, worker termination after idle, lease release, and
 broker-confirmed standby.
 
+When scheduled accelerator standby is enabled, keep the existing positive
+`idleStopMs` and add `localService.idleStopCheck` with the absolute
+`openclaw-accelerator-idle-check` executable and fixed `--socket-path` and
+`--accelerator-id` arguments. The broker's unload wish gates the stop only
+after OpenClaw's existing idle interval. Apply the same setting to TTS.
+
 For realtime agent-directed speech, set the local-media realtime provider's
 `speechProcessorPython` to
 `/srv/openclaw/workers/venvs/stt-faster-whisper-py313/bin/python`.

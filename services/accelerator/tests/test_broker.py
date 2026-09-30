@@ -831,6 +831,123 @@ def test_idle_poweroff_requires_zero_leases_guard_and_timeout() -> None:
     assert manager.status()["state"] == "off"
 
 
+def test_schedule_advises_unload_at_night_and_gates_poweroff_by_local_time() -> None:
+    broker = _broker_module()
+    profile = _profile(automatic=True)
+    profile["standby_schedule"] = {
+        "timezone": "Europe/Berlin",
+        "start": "23:00",
+        "end": "07:00",
+    }
+    config = broker.AcceleratorConfig.from_dict("primary_cuda", profile)
+    monotonic = _Clock()
+    epoch = _Clock()
+    epoch.value = broker.datetime(2026, 9, 30, 22, 59, 50, tzinfo=broker.ZoneInfo("Europe/Berlin")).timestamp()
+    backend = _Backend(broker)
+    manager = broker.AcceleratorManager(
+        config, backend, start_monitor=False, monotonic=monotonic, epoch=epoch
+    )
+    acquired = manager.acquire(owner_uid=1000, consumer="stt", ttl_sec=60)
+    assert acquired["unload_requested"] is False
+    assert acquired["policy_valid_until_epoch"] == epoch.value + 10
+    manager.release(owner_uid=1000, token=acquired["lease_id"])
+    monotonic.advance(11)
+    epoch.advance(11)
+    assert manager.tick() is True
+    assert backend.off_count == 1
+    assert manager.status()["unload_requested"] is True
+
+
+def test_schedule_keeps_idle_hardware_attached_during_day() -> None:
+    broker = _broker_module()
+    profile = _profile(automatic=True)
+    profile["standby_schedule"] = {
+        "timezone": "Europe/Berlin",
+        "start": "23:00",
+        "end": "07:00",
+    }
+    config = broker.AcceleratorConfig.from_dict("primary_cuda", profile)
+    clock = _Clock()
+    epoch = _Clock()
+    epoch.value = broker.datetime(2026, 9, 30, 12, tzinfo=broker.ZoneInfo("Europe/Berlin")).timestamp()
+    backend = _Backend(broker)
+    manager = broker.AcceleratorManager(
+        config, backend, start_monitor=False, monotonic=clock, epoch=epoch
+    )
+    clock.advance(3600)
+    assert manager.tick() is False
+    assert backend.off_count == 0
+    assert manager.status()["unload_requested"] is False
+
+
+def test_disabled_power_management_does_not_expire_policy_at_schedule_boundary() -> None:
+    broker = _broker_module()
+    profile = _profile(automatic=False)
+    profile["standby_schedule"] = {
+        "timezone": "Europe/Berlin",
+        "start": "23:00",
+        "end": "07:00",
+    }
+    config = broker.AcceleratorConfig.from_dict("primary_cuda", profile)
+    epoch = _Clock()
+    epoch.value = broker.datetime(2026, 9, 30, 22, 59, 50, tzinfo=broker.ZoneInfo("Europe/Berlin")).timestamp()
+    manager = broker.AcceleratorManager(
+        config, _Backend(broker), start_monitor=False, monotonic=_Clock(), epoch=epoch
+    )
+
+    status = manager.status()
+    assert status["unload_requested"] is False
+    assert status["policy_valid_until_epoch"] == epoch.value + 60
+
+
+def test_schedule_change_does_not_expire_an_active_lease() -> None:
+    broker = _broker_module()
+    profile = _profile(automatic=True)
+    profile["standby_schedule"] = {
+        "timezone": "Europe/Berlin",
+        "start": "23:00",
+        "end": "07:00",
+    }
+    config = broker.AcceleratorConfig.from_dict("primary_cuda", profile)
+    monotonic = _Clock()
+    epoch = _Clock()
+    epoch.value = broker.datetime(2026, 9, 30, 22, 59, 50, tzinfo=broker.ZoneInfo("Europe/Berlin")).timestamp()
+    backend = _Backend(broker)
+    manager = broker.AcceleratorManager(
+        config, backend, start_monitor=False, monotonic=monotonic, epoch=epoch
+    )
+    acquired = manager.acquire(owner_uid=1000, consumer="tts", ttl_sec=60)
+    monotonic.advance(11)
+    epoch.advance(11)
+    renewed = manager.renew(owner_uid=1000, token=acquired["lease_id"], ttl_sec=60)
+    assert renewed["unload_requested"] is True
+    assert manager.tick() is False
+    assert manager.status()["lease_count"] == 1
+    manager.release(owner_uid=1000, token=acquired["lease_id"])
+    monotonic.advance(10)
+    epoch.advance(10)
+    assert manager.tick() is True
+
+
+def test_schedule_rejects_invalid_timezone_and_matching_boundaries() -> None:
+    broker = _broker_module()
+    profile = _profile()
+    profile["standby_schedule"] = {
+        "timezone": "invalid/timezone",
+        "start": "23:00",
+        "end": "07:00",
+    }
+    with pytest.raises(broker.AcceleratorConfigError, match="timezone"):
+        broker.AcceleratorConfig.from_dict("primary_cuda", profile)
+    profile["standby_schedule"] = {
+        "timezone": "Europe/Berlin",
+        "start": "07:00",
+        "end": "07:00",
+    }
+    with pytest.raises(broker.AcceleratorConfigError, match="distinct"):
+        broker.AcceleratorConfig.from_dict("primary_cuda", profile)
+
+
 def test_expired_lease_becomes_idle_but_open_client_blocks_poweroff() -> None:
     broker = _broker_module()
     config = broker.AcceleratorConfig.from_dict("primary_cuda", _profile(automatic=True))
@@ -893,6 +1010,8 @@ def test_generic_client_lease_renews_and_releases_idempotently() -> None:
                     "state": "ready",
                     "lease_id": "opaque-lease-token",
                     "expires_at_epoch": 4_000_000_000.0,
+                    "unload_requested": True,
+                    "policy_valid_until_epoch": 4_000_000_000.0,
                 }
             return {"ok": True, "version": 1, "released": True}
 
@@ -903,9 +1022,12 @@ def test_generic_client_lease_renews_and_releases_idempotently() -> None:
         lease_id="opaque-lease-token",
         ttl_seconds=60,
         expires_at_epoch=4_000_000_000.0,
+        unload_requested=False,
+        policy_valid_until_epoch=4_000_000_000.0,
     )
 
     assert lease.renew() == 4_000_000_000.0
+    assert lease.unload_requested is True
     lease.release()
     lease.release()
     assert [request["action"] for request in client.requests] == ["renew", "release"]

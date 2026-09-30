@@ -33,6 +33,14 @@ def _required_number(response: dict[str, Any], name: str) -> float:
     return number
 
 
+def _required_policy(response: dict[str, Any]) -> tuple[bool, float]:
+    requested = response.get("unload_requested")
+    if not isinstance(requested, bool):
+        raise BrokerError("broker_response_invalid", retryable=True)
+    valid_until = _required_number(response, "policy_valid_until_epoch")
+    return requested, valid_until
+
+
 @dataclass
 class AcceleratorLease:
     client: "AcceleratorClient"
@@ -40,6 +48,8 @@ class AcceleratorLease:
     lease_id: str
     ttl_seconds: float
     expires_at_epoch: float
+    unload_requested: bool
+    policy_valid_until_epoch: float
     released: bool = False
 
     def renew(self) -> float:
@@ -56,9 +66,13 @@ class AcceleratorLease:
             raise BrokerError("broker_response_invalid", retryable=True)
         if response.get("state") != "ready":
             raise BrokerError("accelerator_not_ready", retryable=True)
-        self.expires_at_epoch = _required_number(response, "expires_at_epoch")
-        if self.expires_at_epoch <= time.time():
+        expires_at = _required_number(response, "expires_at_epoch")
+        if expires_at <= time.time():
             raise BrokerError("lease_expired", retryable=False)
+        unload_requested, policy_valid_until = _required_policy(response)
+        self.expires_at_epoch = expires_at
+        self.unload_requested = unload_requested
+        self.policy_valid_until_epoch = policy_valid_until
         return self.expires_at_epoch
 
     def release(self) -> None:
@@ -149,6 +163,7 @@ class AcceleratorClient:
         )
         lease_id = response.get("lease_id")
         expires_at = _required_number(response, "expires_at_epoch")
+        unload_requested, policy_valid_until = _required_policy(response)
         if (
             response.get("state") != "ready"
             or response.get("accelerator_id") != accelerator_id
@@ -164,4 +179,20 @@ class AcceleratorClient:
             lease_id=lease_id,
             ttl_seconds=float(ttl_seconds),
             expires_at_epoch=expires_at,
+            unload_requested=unload_requested,
+            policy_valid_until_epoch=policy_valid_until,
         )
+
+    def standby_policy(self, accelerator_id: str) -> tuple[bool, float]:
+        if not _ID_RE.fullmatch(accelerator_id):
+            raise ValueError("accelerator id must use the safe id format")
+        response = self.request(
+            {
+                "version": PROTOCOL_VERSION,
+                "action": "status",
+                "accelerator_id": accelerator_id,
+            }
+        )
+        if response.get("accelerator_id") != accelerator_id:
+            raise BrokerError("broker_response_invalid", retryable=True)
+        return _required_policy(response)

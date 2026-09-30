@@ -17,8 +17,10 @@ import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 DEFAULT_SOCKET_PATH = Path("/run/openclaw-accelerator/accelerator.sock")
@@ -38,6 +40,8 @@ _ID_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _BDF_RE = re.compile(r"^0000:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$")
 _HEX_ID_RE = re.compile(r"^0x[0-9a-f]{4}$")
 _UNIT_RE = re.compile(r"^[a-zA-Z0-9_.@-]+\.service$")
+_CLOCK_RE = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])$")
+POLICY_MAX_AGE_SEC = 60
 
 _SYSTEMCTL = "/usr/bin/systemctl"
 _MODPROBE = "/usr/sbin/modprobe"
@@ -88,6 +92,45 @@ class LeaseOwnershipError(AcceleratorError):
 
 
 @dataclass(frozen=True)
+class StandbySchedule:
+    timezone: ZoneInfo
+    start_minute: int
+    end_minute: int
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> "StandbySchedule":
+        if not isinstance(raw, dict) or set(raw) != {"timezone", "start", "end"}:
+            raise AcceleratorConfigError("standby_schedule fields are incomplete or unknown")
+        zone_name = raw["timezone"]
+        if not isinstance(zone_name, str) or not zone_name or len(zone_name) > 128:
+            raise AcceleratorConfigError("standby_schedule timezone is invalid")
+        try:
+            timezone = ZoneInfo(zone_name)
+        except (ZoneInfoNotFoundError, ValueError, KeyError) as exc:
+            raise AcceleratorConfigError("standby_schedule timezone is unavailable") from exc
+
+        def minute(field: str) -> int:
+            value = raw[field]
+            match = _CLOCK_RE.fullmatch(value) if isinstance(value, str) else None
+            if match is None:
+                raise AcceleratorConfigError(f"standby_schedule {field} is invalid")
+            return int(match[1]) * 60 + int(match[2])
+
+        start = minute("start")
+        end = minute("end")
+        if start == end:
+            raise AcceleratorConfigError("standby_schedule must have two distinct boundaries")
+        return cls(timezone=timezone, start_minute=start, end_minute=end)
+
+    def requested(self, epoch: float) -> bool:
+        local = datetime.fromtimestamp(epoch, self.timezone)
+        minute = local.hour * 60 + local.minute
+        if self.start_minute < self.end_minute:
+            return self.start_minute <= minute < self.end_minute
+        return minute >= self.start_minute or minute < self.end_minute
+
+
+@dataclass(frozen=True)
 class AcceleratorConfig:
     accelerator_id: str
     backend: str
@@ -113,6 +156,7 @@ class AcceleratorConfig:
     default_lease_ttl_sec: float
     max_lease_ttl_sec: float
     automatic_power_management: bool
+    standby_schedule: StandbySchedule | None
 
     @classmethod
     def from_dict(cls, accelerator_id: str, raw: dict[str, Any]) -> "AcceleratorConfig":
@@ -145,7 +189,7 @@ class AcceleratorConfig:
             "max_lease_ttl_sec",
             "automatic_power_management",
         }
-        if set(raw) != allowed:
+        if set(raw) - (allowed | {"standby_schedule"}) or allowed - set(raw):
             raise AcceleratorConfigError("accelerator profile fields are incomplete or unknown")
         if raw.get("backend") != "linux_pci_nvidia":
             raise AcceleratorConfigError("accelerator backend is unsupported")
@@ -225,6 +269,11 @@ class AcceleratorConfig:
             default_lease_ttl_sec=default_ttl,
             max_lease_ttl_sec=max_ttl,
             automatic_power_management=bool(raw["automatic_power_management"]),
+            standby_schedule=(
+                StandbySchedule.from_dict(raw["standby_schedule"])
+                if "standby_schedule" in raw
+                else None
+            ),
         )
 
 
@@ -832,6 +881,30 @@ class AcceleratorManager:
         if expired and not self._leases:
             self._idle_since = now
 
+    def _policy_locked(self, epoch: float) -> dict[str, Any]:
+        schedule = self.config.standby_schedule
+        requested = self.config.automatic_power_management and (
+            schedule.requested(epoch) if schedule else True
+        )
+        valid_until = math.floor(epoch) + POLICY_MAX_AGE_SEC
+        if schedule and self.config.automatic_power_management:
+            # The policy validity ends at the first UTC second where local
+            # schedule evaluation changes, including across DST transitions.
+            end = math.floor(epoch) + POLICY_MAX_AGE_SEC
+            if schedule.requested(end) != requested:
+                start = math.floor(epoch)
+                while end - start > 1:
+                    middle = (start + end) // 2
+                    if schedule.requested(middle) == requested:
+                        start = middle
+                    else:
+                        end = middle
+                valid_until = end
+        return {
+            "unload_requested": requested,
+            "policy_valid_until_epoch": float(valid_until),
+        }
+
     def acquire(self, *, owner_uid: int, consumer: str, ttl_sec: float | None) -> dict[str, Any]:
         if not _ID_RE.fullmatch(consumer):
             raise AcceleratorConfigError("consumer id is invalid")
@@ -872,6 +945,7 @@ class AcceleratorManager:
                 "expires_at_epoch": expires_epoch,
                 "state": self._state,
                 "hardware": probe.public_payload(),
+                **self._policy_locked(self._epoch()),
             }
 
     def renew(self, *, owner_uid: int, token: str, ttl_sec: float | None) -> dict[str, Any]:
@@ -892,7 +966,12 @@ class AcceleratorManager:
                 raise LeaseOwnershipError("lease belongs to another peer")
             lease.expires_monotonic = now + ttl
             lease.expires_epoch = self._epoch() + ttl
-            return {"lease_id": token, "expires_at_epoch": lease.expires_epoch, "state": self._state}
+            return {
+                "lease_id": token,
+                "expires_at_epoch": lease.expires_epoch,
+                "state": self._state,
+                **self._policy_locked(self._epoch()),
+            }
 
     def release(self, *, owner_uid: int, token: str) -> dict[str, Any]:
         with self._lock:
@@ -950,12 +1029,15 @@ class AcceleratorManager:
                     }
                 ),
                 "lease_ids_included": False,
+                **self._policy_locked(self._epoch()),
             }
 
     def tick(self) -> bool:
         with self._lock:
             now = self._monotonic()
             self._reap_locked(now)
+            if not self._policy_locked(self._epoch())["unload_requested"]:
+                return False
             if not self.config.automatic_power_management or self._leases:
                 return False
             if now - self._started_at < self.config.startup_guard_sec:

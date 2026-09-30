@@ -34,10 +34,13 @@ def test_acquire_requires_ready_lease_and_builds_bounded_request() -> None:
             "consumer": "openclaw-stt",
             "lease_id": "x" * 32,
             "expires_at_epoch": time.time() + 90,
+            "unload_requested": False,
+            "policy_valid_until_epoch": time.time() + 60,
         }
     )
     lease = client.acquire("gpu0", "openclaw-stt", ttl_seconds=90)
     assert lease.lease_id == "x" * 32
+    assert lease.unload_requested is False
     assert client.payloads == [
         {
             "version": 1,
@@ -92,3 +95,22 @@ def test_ids_and_socket_path_fail_closed() -> None:
     client = RecordingClient({})
     with pytest.raises(ValueError, match="safe id"):
         client.acquire("gpu 0", "openclaw-stt", ttl_seconds=90)
+
+
+def test_status_policy_requires_current_broker_wish() -> None:
+    client = RecordingClient(
+        {
+            "version": 1,
+            "ok": True,
+            "accelerator_id": "gpu0",
+            "unload_requested": True,
+            "policy_valid_until_epoch": time.time() + 60,
+        }
+    )
+    requested, valid_until = client.standby_policy("gpu0")
+    assert requested is True
+    assert valid_until > time.time()
+    assert client.payloads[0]["action"] == "status"
+    client.response["unload_requested"] = "true"
+    with pytest.raises(BrokerError, match="broker_response_invalid"):
+        client.standby_policy("gpu0")

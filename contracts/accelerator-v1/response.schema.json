@@ -29,7 +29,9 @@
           "minLength": 16,
           "maxLength": 512
         },
-        "expires_at_epoch": { "type": "number" }
+        "expires_at_epoch": { "type": "number" },
+        "unload_requested": { "type": "boolean" },
+        "policy_valid_until_epoch": { "type": "number" }
       }
     },
     "error": {
