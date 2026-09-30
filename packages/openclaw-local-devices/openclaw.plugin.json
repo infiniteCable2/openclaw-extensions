@@ -113,7 +113,7 @@
             "maxLength": 128
           },
           "password": {
-            "type": "string",
+            "type": ["string", "object"],
             "minLength": 1
           },
           "devices": {
