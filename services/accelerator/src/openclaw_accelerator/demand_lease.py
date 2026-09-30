@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
 
+from .client import BrokerError
 from .lease_keeper import AcceleratorLeaseKeeper
 
 
@@ -126,19 +127,28 @@ class AcceleratorDemandLease:
                 or self._transition != "ready"
                 or self._active != 0
                 or self._idle_since is None
-                or self._monotonic() - self._idle_since < self._idle_release_seconds
+                or (
+                    keeper.healthy()
+                    and self._monotonic() - self._idle_since < self._idle_release_seconds
+                )
+                or not keeper.unload_requested()
             ):
                 return False
             self._transition = "draining"
         try:
             self._quiesce()
-            keeper.close()
         except Exception:
             with self._condition:
                 self._transition = "ready"
                 self._idle_since = self._monotonic()
                 self._condition.notify_all()
             return False
+        try:
+            keeper.close()
+        except BrokerError:
+            # The model is proven unloaded. A broker outage may defer lease
+            # release until TTL expiry, but retaining a warm state is unsafe.
+            pass
         with self._condition:
             if self._keeper is keeper:
                 self._keeper = None
@@ -182,3 +192,7 @@ class AcceleratorDemandLease:
     def ready(self) -> bool:
         with self._condition:
             return self._transition == "ready" and self._keeper is not None and self._keeper.healthy()
+
+    def unload_requested(self) -> bool:
+        with self._condition:
+            return self._keeper is None or self._keeper.unload_requested()

@@ -21,6 +21,10 @@ through the `openclaw-accelerator` group.
 The host profile must exactly identify every PCI function in the configured
 branch, the NVIDIA device, its audio function, and the fixed persistence
 service. Do not infer or accept this topology from a client request.
+For a 23:00–07:00 local standby window, set `standby_schedule` to
+`{"timezone":"Europe/Berlin","start":"23:00","end":"07:00"}` and
+`idle_timeout_sec` to `10`. The latter is counted from the final lease release;
+the broker still checks that no GPU client is using the device before detach.
 
 ## Runner and OpenClaw
 
