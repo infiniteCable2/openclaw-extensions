@@ -240,7 +240,7 @@ export class FritzSmartHomeBackend implements DeviceBackend {
       {
         method,
         headers: {
-          Authorization: sid,
+          Authorization: `AVM-SID ${sid}`,
           ...(body ? { "Content-Type": "application/json" } : {}),
         },
         ...(body ? { body: JSON.stringify(body) } : {}),

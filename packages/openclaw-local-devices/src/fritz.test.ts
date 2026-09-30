@@ -71,7 +71,7 @@ describe("FRITZ! Smart Home REST client", () => {
       "http://fritz.box/api/v0/smarthome/overview/units/12345%206789012",
     );
     expect(new Headers(fetchImpl.mock.calls[2]?.[1]?.headers).get("Authorization")).toBe(
-      "abcdef0123456789",
+      "AVM-SID abcdef0123456789",
     );
   });
 
