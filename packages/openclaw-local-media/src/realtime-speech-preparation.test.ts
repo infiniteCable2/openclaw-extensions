@@ -55,7 +55,11 @@ describe("realtime speech readiness", () => {
     vi.mocked(createLiveSpeechProcessor).mockImplementation(({ onFrame }) => ({
       connect: vi.fn().mockResolvedValue(undefined),
       close: vi.fn(),
-      send: onFrame,
+      send: (audio) => onFrame({
+        audio,
+        speechProbability: audio.readInt16LE(0) === 0 ? 0.1 : 0.9,
+        gainDb: 0,
+      }),
     }));
     const fetchMock = vi
       .fn()
@@ -102,6 +106,45 @@ describe("realtime speech readiness", () => {
     session.sendAudio(Buffer.alloc(160, 0xff));
     expect(send).toHaveBeenCalledOnce();
     expect(send.mock.calls[0]?.[0]).toHaveLength(640);
+    session.close();
+  });
+
+  it("keeps amplified road noise and brief impacts out of a call turn", async () => {
+    let probability = 0.2;
+    let gainDb = 12;
+    vi.mocked(createLiveSpeechProcessor).mockImplementation(({ onFrame }) => ({
+      connect: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+      send: (audio) => onFrame({ audio, speechProbability: probability, gainDb }),
+    }));
+    const onSpeechStart = vi.fn();
+    const activity: string[] = [];
+    const session = buildLocalRealtimeTranscriptionProvider(vi.fn()).createSession({
+      providerConfig: { ...providerConfig, speechOnsetMs: 80, minSpeechMs: 80 },
+      inputAudioFormat: "pcm16-16khz",
+      onSpeechStart,
+      onSpeechActivity: ({ state }) => activity.push(state),
+    });
+    const frame = (sample: number) => {
+      const audio = Buffer.alloc(640);
+      for (let offset = 0; offset < audio.byteLength; offset += 2) {
+        audio.writeInt16LE(sample, offset);
+      }
+      session.sendAudio(audio);
+    };
+    await session.connect();
+    for (let index = 0; index < 50; index += 1) frame(1_000);
+    probability = 0.95;
+    frame(20_000);
+    frame(20_000);
+    probability = 0.1;
+    frame(0);
+    expect(onSpeechStart).not.toHaveBeenCalled();
+    probability = 0.9;
+    gainDb = 6;
+    for (let index = 0; index < 5; index += 1) frame(500);
+    expect(onSpeechStart).toHaveBeenCalledOnce();
+    expect(activity).toEqual(["candidate", "sustained"]);
     session.close();
   });
 });

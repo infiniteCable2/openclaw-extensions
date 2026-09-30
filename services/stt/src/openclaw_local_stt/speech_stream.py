@@ -11,6 +11,7 @@ import sys
 
 FRAME_SAMPLES = 320
 FRAME_BYTES = FRAME_SAMPLES * 2
+METADATA_BYTES = 8
 
 
 def main() -> int:
@@ -28,7 +29,7 @@ def main() -> int:
     )
     source = sys.stdin.buffer
     sink = sys.stdout.buffer
-    sink.write(b"APM1")
+    sink.write(b"APM2")
     sink.flush()
     while True:
         frame = source.read(FRAME_BYTES)
@@ -41,7 +42,12 @@ def main() -> int:
         if output.shape != (FRAME_SAMPLES,) or not np.isfinite(output).all():
             return 3
         encoded = (np.clip(output, -1.0, 1.0) * 32767.0).astype("<i2")
+        probability = float(processor.speech_probability)
+        gain_db = float(processor.gain_db)
+        if not np.isfinite(probability) or not 0.0 <= probability <= 1.0 or not np.isfinite(gain_db):
+            return 3
         sink.write(encoded.tobytes())
+        sink.write(np.asarray([probability, gain_db], dtype="<f4").tobytes())
         sink.flush()
 
 

@@ -3,6 +3,7 @@ import {
   type RealtimeTranscriptionProviderPlugin,
 } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_STT_MODEL, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
+import { createLiveSpeechGate, type LiveSpeechEvidence } from "./live-speech-gate.js";
 import { requireLoopbackBaseUrl } from "./local-url.js";
 import { createLiveSpeechProcessor } from "./live-speech-processor.js";
 import { readTranscriptionEvents } from "./transcription-events.js";
@@ -58,6 +59,8 @@ type LocalRealtimeConfig = {
   model: string;
   language?: string;
   speechRmsThreshold: number;
+  speechProbabilityThreshold: number;
+  speechNoiseMarginDb: number;
   speechOnsetMs: number;
   silenceMs: number;
   preRollMs: number;
@@ -162,6 +165,8 @@ function normalizeConfig(raw: RealtimeTranscriptionProviderConfig): LocalRealtim
     model: optionalString(raw.model) ?? DEFAULT_STT_MODEL,
     language: optionalString(raw.language),
     speechRmsThreshold: boundedNumber(raw.speechRmsThreshold, 0.015, 0.001, 0.5),
+    speechProbabilityThreshold: boundedNumber(raw.speechProbabilityThreshold, 0.6, 0.1, 0.95),
+    speechNoiseMarginDb: boundedNumber(raw.speechNoiseMarginDb, 3.5, 0, 12),
     speechOnsetMs: boundedNumber(raw.speechOnsetMs, 80, 20, 1_000),
     silenceMs: boundedNumber(raw.silenceMs, 700, 200, 5_000),
     preRollMs: boundedNumber(raw.preRollMs, 240, 0, 2_000),
@@ -296,6 +301,7 @@ function createSession(
 ): RealtimeTranscriptionSession {
   const config = normalizeConfig(request.providerConfig);
   const enhancedLive = Boolean(config.speechProcessorPython);
+  const liveSpeechGate = enhancedLive ? createLiveSpeechGate(config) : undefined;
   if (request.inputAudioFormat === "pcm16-16khz" && !enhancedLive) {
     throw new Error("Live speech enhancement requires speechProcessorPython");
   }
@@ -322,6 +328,8 @@ function createSession(
   let frontEndInputSamples = 0;
   let frontEndOutputSquares = 0;
   let frontEndOutputSamples = 0;
+  let frontEndMaxGainDb: number | null = null;
+  let frontEndHighProbabilityFrames = 0;
   let connectedAt: number | undefined;
   let lastInputAt: number | undefined;
   let lastLoudAt: number | undefined;
@@ -445,6 +453,8 @@ function createSession(
               frontEndOutputSamples > 0
                 ? Math.sqrt(frontEndOutputSquares / frontEndOutputSamples)
                 : null,
+            frontEndMaxGainDb,
+            frontEndHighProbabilityFrames,
           }
         : {}),
     });
@@ -640,11 +650,18 @@ function createSession(
     }
   };
 
-  const analyzeFrame = (chunk: Buffer) => {
+  const analyzeFrame = (chunk: Buffer, evidence?: LiveSpeechEvidence) => {
     const durationMs = ANALYSIS_FRAME_MS;
-    const loud =
-      (enhancedLive ? calculatePcmRms(chunk) : calculateMulawRms(chunk)) >=
-      config.speechRmsThreshold;
+    let loud: boolean;
+    if (liveSpeechGate) {
+      if (!evidence) {
+        fail(new Error("Live speech processor omitted speech evidence"));
+        return;
+      }
+      loud = liveSpeechGate.observe(evidence);
+    } else {
+      loud = calculateMulawRms(chunk) >= config.speechRmsThreshold;
+    }
     input.frames = boundedAdd(input.frames, 1);
     consecutiveLoudMs = loud ? boundedAdd(consecutiveLoudMs, durationMs) : 0;
     input.maxConsecutiveLoudMs = Math.max(input.maxConsecutiveLoudMs, consecutiveLoudMs);
@@ -695,7 +712,7 @@ function createSession(
     }
   };
 
-  const acceptAudio = (audio: Buffer) => {
+  const acceptAudio = (audio: Buffer, evidence?: Omit<LiveSpeechEvidence, "enhancedRms">) => {
     if (!connected || closed || audio.byteLength === 0) {
       return;
     }
@@ -719,16 +736,26 @@ function createSession(
         const frame = inputFrame;
         inputFrame = Buffer.alloc(analysisFrameBytes);
         inputFrameBytes = 0;
-        analyzeFrame(frame);
+        analyzeFrame(
+          frame,
+          evidence && { ...evidence, enhancedRms: calculatePcmRms(frame) },
+        );
       }
     }
   };
   const processor = config.speechProcessorPython
     ? createLiveSpeechProcessor({
         python: config.speechProcessorPython,
-        onFrame: (audio) => {
-          recordFrontEndRms(audio, true);
-          acceptAudio(audio);
+        onFrame: (frame) => {
+          recordFrontEndRms(frame.audio, true);
+          frontEndMaxGainDb = Math.max(frontEndMaxGainDb ?? frame.gainDb, frame.gainDb);
+          if (frame.speechProbability >= config.speechProbabilityThreshold) {
+            frontEndHighProbabilityFrames = boundedAdd(frontEndHighProbabilityFrames, 1);
+          }
+          acceptAudio(frame.audio, {
+            speechProbability: frame.speechProbability,
+            gainDb: frame.gainDb,
+          });
         },
         onError: fail,
       })

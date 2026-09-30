@@ -2,8 +2,16 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isAbsolute, posix } from "node:path";
 
 const FRAME_BYTES = 640; // 20 ms, mono PCM16 at 16 kHz.
+const METADATA_BYTES = 8; // Speech probability and applied AGC gain, float32 little-endian.
+const RESPONSE_BYTES = FRAME_BYTES + METADATA_BYTES;
 const MAX_PENDING_FRAMES = 100; // Bound latency and child-process input memory to 2 s.
-const READY_BYTES = Buffer.from("APM1");
+const READY_BYTES = Buffer.from("APM2");
+
+export type LiveSpeechFrame = {
+  audio: Buffer;
+  speechProbability: number;
+  gainDb: number;
+};
 
 export type LiveSpeechProcessor = {
   connect(): Promise<void>;
@@ -14,7 +22,7 @@ export type LiveSpeechProcessor = {
 /** One native APM state per conversational call; never share AGC state across callers. */
 export function createLiveSpeechProcessor(params: {
   python: string;
-  onFrame: (audio: Buffer) => void;
+  onFrame: (frame: LiveSpeechFrame) => void;
   onError: (error: Error) => void;
 }): LiveSpeechProcessor {
   if (!isAbsolute(params.python) && !posix.isAbsolute(params.python)) {
@@ -97,23 +105,33 @@ export function createLiveSpeechProcessor(params: {
           readyResolve = undefined;
           readyReject = undefined;
         }
-        while (incoming.byteLength >= FRAME_BYTES && !closed) {
+        while (incoming.byteLength >= RESPONSE_BYTES && !closed) {
           if (pending === 0) {
             reject(new Error("Live speech processor produced an unsolicited audio frame"));
             return;
           }
-          const frame = Buffer.from(incoming.subarray(0, FRAME_BYTES));
-          incoming = incoming.subarray(FRAME_BYTES);
+          const audio = Buffer.from(incoming.subarray(0, FRAME_BYTES));
+          const speechProbability = incoming.readFloatLE(FRAME_BYTES);
+          const gainDb = incoming.readFloatLE(FRAME_BYTES + 4);
+          incoming = incoming.subarray(RESPONSE_BYTES);
           pending -= 1;
+          if (
+            !Number.isFinite(speechProbability) ||
+            speechProbability < 0 ||
+            speechProbability > 1 ||
+            !Number.isFinite(gainDb) ||
+            gainDb < -60 ||
+            gainDb > 60
+          ) {
+            reject(new Error("Live speech processor returned invalid frame metadata"));
+            return;
+          }
           try {
-            params.onFrame(frame);
+            params.onFrame({ audio, speechProbability, gainDb });
           } catch {
             reject(new Error("Live speech processor frame handler failed"));
             return;
           }
-        }
-        if (incoming.byteLength > FRAME_BYTES) {
-          reject(new Error("Live speech processor response framing overflow"));
         }
       });
       // stderr can contain native diagnostics; never forward its contents into logs.
