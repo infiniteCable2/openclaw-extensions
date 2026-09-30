@@ -89,6 +89,66 @@ describe("FRITZ! Smart Home REST client", () => {
     );
   });
 
+  it("waits for a delayed FRITZ! state update without repeating the switch command", async () => {
+    vi.useFakeTimers();
+    try {
+      const unit = (active: boolean) =>
+        new Response(JSON.stringify({ isConnected: true, interfaces: { onOffInterface: { active } } }));
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response(
+            "<SessionInfo><SID>0000000000000000</SID><Challenge>12345678</Challenge></SessionInfo>",
+          ),
+        )
+        .mockResolvedValueOnce(new Response("<SessionInfo><SID>abcdef0123456789</SID></SessionInfo>"))
+        .mockResolvedValueOnce(unit(false))
+        .mockResolvedValueOnce(new Response(""))
+        .mockResolvedValueOnce(unit(false))
+        .mockResolvedValueOnce(unit(true));
+      const backend = new FritzSmartHomeBackend(
+        device,
+        "http://fritz.box",
+        "operator",
+        "password",
+        5000,
+        fetchImpl,
+      );
+
+      const result = backend.control({ type: "turn_on" });
+      await vi.runAllTimersAsync();
+      await expect(result).resolves.toMatchObject({ available: true, power: "on" });
+      expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not issue a redundant switch command when already in the requested state", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          "<SessionInfo><SID>0000000000000000</SID><Challenge>12345678</Challenge></SessionInfo>",
+        ),
+      )
+      .mockResolvedValueOnce(new Response("<SessionInfo><SID>abcdef0123456789</SID></SessionInfo>"))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ isConnected: true, interfaces: { onOffInterface: { active: true } } })),
+      );
+    const backend = new FritzSmartHomeBackend(
+      device,
+      "http://fritz.box",
+      "operator",
+      "password",
+      5000,
+      fetchImpl,
+    );
+
+    await expect(backend.control({ type: "turn_on" })).resolves.toMatchObject({ power: "on" });
+    expect(fetchImpl.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(0);
+  });
+
   it("bounds a streamed response even when content-length is absent", async () => {
     const chunk = new Uint8Array(64 * 1024);
     const stream = new ReadableStream<Uint8Array>({

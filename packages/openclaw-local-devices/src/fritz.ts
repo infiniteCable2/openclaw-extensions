@@ -1,4 +1,5 @@
 import { createHash, pbkdf2 } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import type { DeviceAction, DeviceBackend, DeviceStatus, FritzDeviceConfig } from "./types.js";
 import { LocalDeviceError } from "./types.js";
@@ -6,6 +7,8 @@ import { LocalDeviceError } from "./types.js";
 const ZERO_SID = "0000000000000000";
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_PBKDF2_ITERATIONS = 1_000_000;
+const SWITCH_SETTLE_MS = 3000;
+const SWITCH_POLL_MS = 250;
 const pbkdf2Async = promisify(pbkdf2);
 
 type FetchImplementation = typeof fetch;
@@ -295,11 +298,32 @@ export class FritzSmartHomeBackend implements DeviceBackend {
     if (onOff?.isLockedDeviceApi === true || onOff?.isLockedDeviceLocal === true) {
       throw new LocalDeviceError("device_locked", "Configured FRITZ! device is locked against switching");
     }
+    const expectedPower = action.type === "turn_on" ? "on" : "off";
+    if (onOff.active === (action.type === "turn_on")) {
+      return parseUnitStatus(this.device, before);
+    }
     await this.apiRequest(
       "PUT",
       { interfaces: { onOffInterface: { active: action.type === "turn_on" } } },
       signal,
     );
-    return await this.status(signal);
+    const deadline = Date.now() + SWITCH_SETTLE_MS;
+    while (true) {
+      const status = await this.status(signal);
+      if (status.available && status.power === expectedPower) {
+        return status;
+      }
+      if (Date.now() >= deadline) {
+        throw new LocalDeviceError(
+          "fritz_state_unconfirmed",
+          "FRITZ! switch command was accepted, but its new state was not confirmed",
+        );
+      }
+      try {
+        await sleep(SWITCH_POLL_MS, undefined, { signal });
+      } catch {
+        throw new LocalDeviceError("cancelled", "FRITZ! request was cancelled");
+      }
+    }
   }
 }
