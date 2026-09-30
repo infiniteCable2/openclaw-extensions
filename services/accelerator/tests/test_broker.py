@@ -233,6 +233,80 @@ def test_first_acquire_reverifies_ready_hardware_after_broker_start() -> None:
     assert manager.status()["readiness_verified"] is True
 
 
+@pytest.mark.parametrize("failure_at", ["fd", "comm"])
+def test_proc_exit_during_client_scan_is_safe(monkeypatch, failure_at: str) -> None:
+    broker = _broker_module()
+    proc = broker.Path("/proc/4242")
+
+    def process_entries(path):
+        if path == broker.Path("/proc"):
+            return iter((proc,))
+        if path == proc / "fd":
+            if failure_at == "fd":
+                raise ProcessLookupError("process exited")
+            return iter((proc / "fd" / "3",))
+        raise AssertionError("unexpected proc path")
+
+    def process_name(path, **_kwargs):
+        assert path == proc / "comm"
+        raise ProcessLookupError("process exited")
+
+    monkeypatch.setattr(broker.Path, "iterdir", process_entries)
+    monkeypatch.setattr(broker.Path, "read_text", process_name)
+    monkeypatch.setattr(broker.os, "readlink", lambda _path: "/dev/nvidia0")
+
+    assert broker.LinuxPciNvidiaBackend._client_names() == (
+        () if failure_at == "fd" else ("unknown",)
+    )
+
+
+def test_idle_monitor_recovers_after_unexpected_probe_error() -> None:
+    broker = _broker_module()
+    config = broker.AcceleratorConfig.from_dict("primary_cuda", _profile(automatic=True))
+    clock = _Clock()
+    backend = _Backend(broker)
+    manager = broker.AcceleratorManager(
+        config,
+        backend,
+        start_monitor=False,
+        monotonic=clock,
+        epoch=clock,
+    )
+    original_tick = manager.tick
+    attempts = 0
+
+    def interrupted_tick():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ProcessLookupError("process exited")
+        status = manager.status()
+        assert status["state"] == "fault"
+        assert status["last_error_type"] == "ProcessLookupError"
+        assert status["last_error_stage"] == "idle_monitor"
+        return original_tick()
+
+    class TwoTicks:
+        def __init__(self) -> None:
+            self.waits: list[float] = []
+
+        def wait(self, seconds: float) -> bool:
+            self.waits.append(seconds)
+            clock.advance(seconds)
+            return len(self.waits) > 3
+
+    manager.tick = interrupted_tick
+    stop_event = TwoTicks()
+    manager._stop_event = stop_event
+    manager._monitor_loop()
+
+    assert attempts == 2
+    assert stop_event.waits == [1.0, broker.MONITOR_FAILURE_RETRY_SEC, 1.0, 1.0]
+    assert backend.off_count == 1
+    assert manager.status()["state"] == "off"
+    assert manager.status()["last_error_type"] == ""
+
+
 def test_repeated_root_port_rescan_covers_delayed_cold_enumeration(
     tmp_path, monkeypatch
 ) -> None:
