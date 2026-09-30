@@ -26,6 +26,7 @@ MAX_CONFIG_BYTES = 65_536
 MAX_REQUEST_BYTES = 16_384
 MAX_RESPONSE_BYTES = 65_536
 REQUEST_TIMEOUT_SEC = 5.0
+MONITOR_FAILURE_RETRY_SEC = 10.0
 MAX_REQUESTS_PER_MINUTE = 120
 MAX_LEASES_PER_UID = 32
 NVIDIA_READINESS_ATTEMPT_TIMEOUT_SEC = 10.0
@@ -375,7 +376,7 @@ class LinuxPciNvidiaBackend:
                 continue
             try:
                 descriptors = list((proc / "fd").iterdir())
-            except (FileNotFoundError, PermissionError):
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
                 continue
             matched = False
             for descriptor in descriptors:
@@ -390,7 +391,7 @@ class LinuxPciNvidiaBackend:
                 continue
             try:
                 name = (proc / "comm").read_text(encoding="utf-8", errors="replace").strip()
-            except (FileNotFoundError, PermissionError):
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
                 name = "unknown"
             names.add((name or "unknown")[:64])
             if len(names) >= 64:
@@ -994,7 +995,17 @@ class AcceleratorManager:
 
     def _monitor_loop(self) -> None:
         while not self._stop_event.wait(1.0):
-            self.tick()
+            try:
+                self.tick()
+            except Exception as exc:
+                # A failed observation must leave the device attached, but it
+                # must not permanently kill the only idle-standby monitor.
+                with self._lock:
+                    self._state = "fault"
+                    self._readiness_verified = False
+                    self._last_error = type(exc).__name__
+                    self._last_error_stage = "idle_monitor"
+                self._stop_event.wait(MONITOR_FAILURE_RETRY_SEC)
 
 
 class BrokerRuntime:
