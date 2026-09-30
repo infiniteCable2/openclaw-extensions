@@ -36,8 +36,9 @@ back to unprocessed agent speech.
 
 The same installed runtime also exposes an internal per-call module,
 `python -m openclaw_local_stt.speech_stream`, for realtime clients. Its binary
-protocol is an `APM1` readiness marker followed by ordered 20 ms mono PCM16
-frames at 16 kHz; each input frame yields exactly one output frame. The caller
+protocol is an `APM2` readiness marker followed by ordered 20 ms mono PCM16
+frames at 16 kHz; each input frame yields one output frame followed by two
+little-endian float32 values: speech probability and applied AGC gain in dB. The caller
 owns process lifetime and a bounded input queue. This module is not a network
 endpoint, is not shared between callers, and must never be placed on a
 recording or media-relay path.

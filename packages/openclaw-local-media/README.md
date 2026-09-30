@@ -128,7 +128,8 @@ meeting stream, detects speech endpoints, converts bounded audio batches to WAV 
 memory, and submits it to the same local `/v1/audio/transcriptions` endpoint.
 It keeps at most two audio batches queued and fails closed on overflow. Sensible
 defaults are provided; a meeting integration may override `baseUrl`, `model`,
-`language`, `speechRmsThreshold`, `speechOnsetMs`, `silenceMs`, `preRollMs`,
+`language`, `speechRmsThreshold`, `speechProbabilityThreshold`,
+`speechNoiseMarginDb`, `speechOnsetMs`, `silenceMs`, `preRollMs`,
 `minSpeechMs`, `maxUtteranceMs`, `requestTimeoutMs`, and
 `maxQueuedUtterances` in its realtime provider configuration. `baseUrl` remains
 mandatory and loopback-only.
@@ -148,6 +149,17 @@ setting retains its original realtime path. Echo cancellation remains off
 until a synchronized far-end reference is available; noise suppression,
 high-pass filtering, and bounded automatic gain are active. The processor is
 scoped to transcription sessions, never to recording or media relay.
+
+The processor also reports speech probability and applied gain on each live
+frame. For enhanced calls, onset requires that probability (default `0.6`),
+nontrivial output energy, and either an adaptive margin over the per-call
+background estimate (default `3.5` dB) or strong speech evidence. The background
+estimate uses a gain-referenced signal, so AGC growth alone does not count as
+speech. Half of `speechRmsThreshold` is the absolute energy guard on enhanced
+calls; the full value remains the sole gate on legacy non-enhanced realtime
+streams. Existing onset, minimum speech,
+pre-roll, and silence timings remain unchanged. The per-call summary logs only
+aggregate levels, maximum gain and high-probability frame count, never audio.
 
 Batch audio enhancement is independently selected by OpenClaw's
 `speechInput` intent. Matrix voice messages set it; ordinary audio files do

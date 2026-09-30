@@ -20,7 +20,7 @@ function mockChild() {
 describe("live speech processor", () => {
   it("waits for readiness and preserves ordered 20 ms frames", async () => {
     const child = mockChild();
-    const frames: Buffer[] = [];
+    const frames: Array<{ audio: Buffer; speechProbability: number; gainDb: number }> = [];
     const onError = vi.fn();
     const processor = createLiveSpeechProcessor({
       python: "/opt/stt/bin/python",
@@ -34,14 +34,26 @@ describe("live speech processor", () => {
       expect.objectContaining({ windowsHide: true }),
     );
     child.stdout.write(Buffer.from("AP"));
-    child.stdout.write(Buffer.from("M1"));
+    child.stdout.write(Buffer.from("M2"));
     await connected;
     const frame = Buffer.alloc(640, 17);
-    child.stdin.on("data", (input) => child.stdout.write(input));
+    child.stdin.on("data", (input: Buffer) => {
+      const metadata = Buffer.alloc(8);
+      metadata.writeFloatLE(0.8, 0);
+      metadata.writeFloatLE(6, 4);
+      for (let offset = 0; offset < input.byteLength; offset += 640) {
+        child.stdout.write(input.subarray(offset, offset + 640));
+        child.stdout.write(metadata);
+      }
+    });
     processor.send(Buffer.concat([frame, frame]));
     expect(frames).toHaveLength(2);
-    expect(frames[0]).toEqual(frame);
-    expect(frames[1]).toEqual(frame);
+    expect(frames.map(({ audio, gainDb }) => ({ audio, gainDb }))).toEqual([
+      { audio: frame, gainDb: 6 },
+      { audio: frame, gainDb: 6 },
+    ]);
+    expect(frames[0]?.speechProbability).toBeCloseTo(0.8);
+    expect(frames[1]?.speechProbability).toBeCloseTo(0.8);
     expect(onError).not.toHaveBeenCalled();
     processor.close();
     expect(child.kill).toHaveBeenCalledOnce();
@@ -56,9 +68,31 @@ describe("live speech processor", () => {
       onError,
     });
     const connected = processor.connect();
-    child.stdout.write(Buffer.from("APM1"));
+    child.stdout.write(Buffer.from("APM2"));
     await connected;
     processor.send(Buffer.alloc(640 * 101));
+    expect(onError).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed on invalid speech evidence instead of falling back to RMS", async () => {
+    const child = mockChild();
+    const onError = vi.fn();
+    const onFrame = vi.fn();
+    const processor = createLiveSpeechProcessor({
+      python: "/opt/stt/bin/python",
+      onFrame,
+      onError,
+    });
+    const connected = processor.connect();
+    child.stdout.write(Buffer.from("APM2"));
+    await connected;
+    processor.send(Buffer.alloc(640));
+    const response = Buffer.alloc(648);
+    response.writeFloatLE(Number.NaN, 640);
+    response.writeFloatLE(0, 644);
+    child.stdout.write(response);
+    expect(onFrame).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledOnce();
     expect(child.kill).toHaveBeenCalledOnce();
   });
