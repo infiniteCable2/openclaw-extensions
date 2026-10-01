@@ -233,6 +233,8 @@ components:
             model:
               type: string
               maxLength: 128
+            recognition:
+              $ref: "#/components/schemas/RecognitionEvidence"
         - type: object
           additionalProperties: false
           required: [type, error]
@@ -250,6 +252,45 @@ components:
                   const: STT inference failed
                 retryable:
                   const: true
+    RecognitionEvidence:
+      type: object
+      additionalProperties: false
+      required: [audioDurationMs, speechDurationMs, segmentCount, signals]
+      description: >-
+        Optional recognition observations, not calibrated confidence and not
+        instructions to change input gain. Missing backend data is null or omitted
+        from signals; no media, transcript, or caller identity is included.
+      properties:
+        audioDurationMs:
+          type: [integer, "null"]
+          minimum: 0
+        speechDurationMs:
+          type: [integer, "null"]
+          minimum: 0
+        segmentCount:
+          type: integer
+          minimum: 0
+          maximum: 2147483647
+        signals:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, mean, samples]
+            properties:
+              name:
+                type: string
+                minLength: 1
+                maxLength: 64
+                description: Backend-scoped metric name with backend-defined semantics.
+              mean:
+                type: number
+                description: Finite arithmetic mean of accepted segment observations.
+              samples:
+                type: integer
+                minimum: 1
+                maximum: 2147483647
     SpeechRequest:
       type: object
       additionalProperties: false

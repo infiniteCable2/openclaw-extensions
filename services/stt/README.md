@@ -63,6 +63,15 @@ Realtime callers may send multipart `stream=true` to the same transcription
 endpoint. It responds with data-only SSE JSON: an optional `speech.confirmed`
 after enabled Faster-Whisper VAD retained finite positive audio, followed by
 one `transcript.done` (also for empty text) or a fixed `error` event, then EOF.
+The terminal event additionally carries optional `recognition` observations:
+input and post-VAD duration, segment count, and up to eight finite, aggregated
+backend-scoped numeric signals. Faster-Whisper currently reports segment means
+for `avgLogProbability`, `noSpeechProbability`, and `compressionRatio` when
+available. These are decoder diagnostics, not calibrated confidence; no raw
+segments, text, or device identity are retained in this evidence object. Other
+STT backends may omit the object or report their own vetted numeric signals.
+The ordinary JSON response remains OpenAI-compatible and unchanged. No gain
+control is driven by these observations yet.
 Preparation includes feature extraction and possible language detection;
 confirmation is before consuming the lazy text decoder, not an immediate
 low-cost callback directly inside VAD. Disabled VAD never claims confirmation.
