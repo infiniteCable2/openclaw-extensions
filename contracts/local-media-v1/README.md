@@ -41,7 +41,11 @@ Each SSE event is one `data: <JSON>` record followed by a blank line:
   including any language detection, has already run; lazy text decoding has
   not started. This is a VAD decision, not a guarantee of a nonempty transcript.
 - `{ "type": "transcript.done", "text": "...", "model": "..." }` is the
-  sole successful terminal record, including when `text` is empty.
+  sole successful terminal record, including when `text` is empty. It may
+  include `recognition`, a bounded set of numeric observations. Durations and
+  segment count are backend-neutral; signal names are backend-scoped. They are
+  not calibrated confidence or a command to change capture gain. Consumers
+  must tolerate their absence and unknown signal names.
 - An inference failure in the opened stream produces the sole terminal record
   `{ "type": "error", "error": { "code": "inference_failed", "message":
 "STT inference failed", "retryable": true } }`. HTTP status cannot be

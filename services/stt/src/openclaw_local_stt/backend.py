@@ -8,6 +8,8 @@ from pathlib import Path
 from time import perf_counter
 from typing import Generator, Protocol
 
+from .recognition import RecognitionEvidence
+
 
 TranscriptionEvents = Generator[dict[str, object], None, None]
 
@@ -104,7 +106,7 @@ class FasterWhisperBackend:
         decode_finished: float | None = None
         info = None
         segments = None
-        segment_count = 0
+        evidence = RecognitionEvidence()
         outcome = "failed"
         try:
             try:
@@ -131,7 +133,19 @@ class FasterWhisperBackend:
             try:
                 texts: list[str] = []
                 for segment in segments:
-                    segment_count = min(segment_count + 1, 2**31 - 1)
+                    evidence.add_segment()
+                    evidence.add_signal(
+                        "fasterWhisper.avgLogProbability",
+                        getattr(segment, "avg_logprob", None), minimum=-100, maximum=0,
+                    )
+                    evidence.add_signal(
+                        "fasterWhisper.noSpeechProbability",
+                        getattr(segment, "no_speech_prob", None), minimum=0, maximum=1,
+                    )
+                    evidence.add_signal(
+                        "fasterWhisper.compressionRatio",
+                        getattr(segment, "compression_ratio", None), minimum=0, maximum=100,
+                    )
                     if text := str(getattr(segment, "text", "")).strip():
                         texts.append(text)
                 result = " ".join(texts).strip()
@@ -156,7 +170,7 @@ class FasterWhisperBackend:
                         "durationAfterVadMs": _duration_ms(
                             getattr(info, "duration_after_vad", None)
                         ),
-                        "segmentCount": segment_count,
+                        "segmentCount": evidence.segment_count,
                         "prepareMs": (
                             _duration_ms(prepare_finished - started)
                             if prepare_finished is not None else None
@@ -175,4 +189,13 @@ class FasterWhisperBackend:
                 # Diagnostics must neither fail successful inference nor mask
                 # the original inference exception when a logger is unavailable.
                 pass
-        yield {"type": "transcript.done", "text": result, "model": self.model_id}
+        yield {
+            "type": "transcript.done", "text": result, "model": self.model_id,
+            "recognition": evidence.result(
+                audio_duration_ms=_duration_ms(getattr(info, "duration", None)),
+                speech_duration_ms=(
+                    _duration_ms(getattr(info, "duration_after_vad", None))
+                    if self.vad_filter else None
+                ),
+            ),
+        }

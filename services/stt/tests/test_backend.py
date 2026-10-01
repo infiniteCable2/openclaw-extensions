@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sys
 from types import SimpleNamespace
 
@@ -182,9 +183,52 @@ def test_stream_confirms_only_retained_vad_audio_before_lazy_decode(
     if confirmed:
         assert next(events) == {"type": "speech.confirmed"}
         assert actions == ["prepared"]
-    assert next(events) == {"type": "transcript.done", "text": "result", "model": "PRIVATE_MODEL"}
+    expected_speech_ms = (
+        round(retained * 1000)
+        if vad_enabled and isinstance(retained, (int, float)) and math.isfinite(retained)
+        else None
+    )
+    assert next(events) == {
+        "type": "transcript.done", "text": "result", "model": "PRIVATE_MODEL",
+        "recognition": {
+            "audioDurationMs": 1200,
+            "speechDurationMs": expected_speech_ms,
+            "segmentCount": 1,
+            "signals": [],
+        },
+    }
     assert list(events) == []
     assert actions == ["prepared", "decoded"]
+
+
+def test_stream_reports_bounded_backend_scoped_observations(monkeypatch, tmp_path):
+    segments = iter([
+        SimpleNamespace(
+            text="first", avg_logprob=-0.5, no_speech_prob=0.2,
+            compression_ratio=1.5,
+        ),
+        SimpleNamespace(
+            text="second", avg_logprob=-0.3, no_speech_prob=float("nan"),
+            compression_ratio=1000,
+        ),
+    ])
+    backend = make_backend(
+        monkeypatch, tmp_path,
+        lambda *_args, **_kwargs: (
+            segments, SimpleNamespace(duration=2.0, duration_after_vad=1.5)
+        ),
+    )
+    events = list(backend.transcribe_stream(tmp_path / "input.wav", language=None, prompt=None))
+    assert events[-1]["recognition"] == {
+        "audioDurationMs": 2000,
+        "speechDurationMs": 1500,
+        "segmentCount": 2,
+        "signals": [
+            {"name": "fasterWhisper.avgLogProbability", "mean": -0.4, "samples": 2},
+            {"name": "fasterWhisper.compressionRatio", "mean": 1.5, "samples": 1},
+            {"name": "fasterWhisper.noSpeechProbability", "mean": 0.2, "samples": 1},
+        ],
+    }
 
 
 def test_closing_after_confirmation_closes_decoder_without_starting_it(
