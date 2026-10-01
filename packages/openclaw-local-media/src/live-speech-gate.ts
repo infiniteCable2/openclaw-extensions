@@ -13,6 +13,7 @@ export function createLiveSpeechGate(config: {
   const minimumOutputRms = config.speechRmsThreshold / 2;
   const noiseMargin = 10 ** (config.speechNoiseMarginDb / 20);
   let noiseRms = 0.001;
+  let learnedMinimumOutputRms = minimumOutputRms;
   return {
     observe(evidence: LiveSpeechEvidence): boolean {
       // APM noise suppression changes the waveform; de-gaining is only a stable
@@ -27,8 +28,43 @@ export function createLiveSpeechGate(config: {
       }
       return (
         evidence.speechProbability >= config.speechProbabilityThreshold &&
-        evidence.enhancedRms >= minimumOutputRms &&
+        evidence.enhancedRms >= learnedMinimumOutputRms &&
         (referenceRms >= noiseRms * noiseMargin || evidence.speechProbability >= 0.85)
+      );
+    },
+    acceptRecognizedSpeech(evidence: {
+      speechRms: number;
+      speechFrames: number;
+      speechDurationMs: number | null;
+      segmentCount: number;
+    }): void {
+      // An STT result can corroborate earlier high-probability speech. It may
+      // only relax the energy guard a little; probability and noise margin stay
+      // mandatory. No individual decoder score is treated as confidence.
+      if (
+        evidence.speechDurationMs === null ||
+        !Number.isSafeInteger(evidence.speechDurationMs) ||
+        evidence.speechDurationMs < 300 ||
+        !Number.isInteger(evidence.segmentCount) ||
+        evidence.segmentCount < 1 ||
+        evidence.segmentCount > 2_147_483_647 ||
+        !Number.isSafeInteger(evidence.speechFrames) ||
+        evidence.speechFrames < 10 ||
+        !Number.isFinite(evidence.speechRms) ||
+        evidence.speechRms <= 0 ||
+        evidence.speechRms > 1
+      ) return;
+      const desired = Math.max(
+        minimumOutputRms * 0.6,
+        Math.min(minimumOutputRms, evidence.speechRms * 0.4),
+      );
+      if (desired >= learnedMinimumOutputRms) return;
+      learnedMinimumOutputRms = Math.max(
+        minimumOutputRms * 0.6,
+        learnedMinimumOutputRms - Math.min(
+          minimumOutputRms * 0.08,
+          (learnedMinimumOutputRms - desired) * 0.2,
+        ),
       );
     },
   };

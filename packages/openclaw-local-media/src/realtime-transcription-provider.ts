@@ -6,7 +6,7 @@ import { DEFAULT_STT_MODEL, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { createLiveSpeechGate, type LiveSpeechEvidence } from "./live-speech-gate.js";
 import { requireLoopbackBaseUrl } from "./local-url.js";
 import { createLiveSpeechProcessor } from "./live-speech-processor.js";
-import { readTranscriptionEvents } from "./transcription-events.js";
+import { readTranscriptionEvents, type TranscriptionResult } from "./transcription-events.js";
 
 type AcquireLocalService = OpenClawPluginApi["runtime"]["llm"]["acquireLocalService"];
 type DiagnosticLogger = Pick<OpenClawPluginApi["logger"], "info">;
@@ -74,6 +74,8 @@ type LocalRealtimeConfig = {
 type TranscriptTurn = {
   text: string;
   generation: number;
+  trustedSpeechRmsSum: number;
+  trustedSpeechFrames: number;
   utteranceId?: string;
   speechConfirmed?: boolean;
   confirmationPublished?: boolean;
@@ -216,7 +218,7 @@ async function transcribeUtterance(params: {
   signal: AbortSignal;
   timings: UtteranceTimings;
   onSpeechConfirmed?: () => void;
-}): Promise<string> {
+}): Promise<TranscriptionResult> {
   const controller = new AbortController();
   const signal = AbortSignal.any([params.signal, controller.signal]);
   const timer = setTimeout(() => {
@@ -287,7 +289,7 @@ async function transcribeUtterance(params: {
     ) {
       throw new Error("Local media realtime transcription returned an invalid response");
     }
-    return (body as { text: string }).text.trim();
+    return { text: (body as { text: string }).text.trim() };
   } finally {
     clearTimeout(timer);
     await lease?.release();
@@ -337,7 +339,9 @@ function createSession(
   let consecutiveLoudMs = 0;
   let utteranceSequence = 0n;
   let speechGeneration = 0;
-  let currentTurn: TranscriptTurn = { text: "", generation: 0 };
+  let currentTurn: TranscriptTurn = {
+    text: "", generation: 0, trustedSpeechRmsSum: 0, trustedSpeechFrames: 0,
+  };
   const transcriptTurns = new Set<TranscriptTurn>();
   const pendingUtterances = new Set<string>();
 
@@ -547,7 +551,7 @@ function createSession(
         }
         timings.queueWaitMs = elapsedMs(timings.endpointAt);
         try {
-          const text = await transcribeUtterance({
+          const result = await transcribeUtterance({
             audio,
             sampleRate: inputSampleRate,
             alreadyEnhanced: enhancedLive,
@@ -564,6 +568,7 @@ function createSession(
                 }
               : {}),
           });
+          const text = result.text;
           if (closed) {
             reportUtterance(timings, "cancelled");
           } else if (turn.discarded) {
@@ -578,6 +583,14 @@ function createSession(
             }
             if (utteranceId) {
               const finalText = turn.text;
+              if (finalText && result.recognition && turn.trustedSpeechFrames > 0) {
+                liveSpeechGate?.acceptRecognizedSpeech({
+                  speechRms: turn.trustedSpeechRmsSum / turn.trustedSpeechFrames,
+                  speechFrames: turn.trustedSpeechFrames,
+                  speechDurationMs: result.recognition.speechDurationMs,
+                  segmentCount: result.recognition.segmentCount,
+                });
+              }
               if (finalText) {
                 if (request.onProcessing) request.onTranscript?.(finalText, { utteranceId });
                 else request.onTranscript?.(finalText);
@@ -681,6 +694,8 @@ function createSession(
       currentTurn = {
         text: "",
         generation: speechGeneration,
+        trustedSpeechRmsSum: 0,
+        trustedSpeechFrames: 0,
         utteranceId: `utterance-${++utteranceSequence}`,
       };
       transcriptTurns.add(currentTurn);
@@ -698,6 +713,11 @@ function createSession(
       if (loud) {
         speechMs = boundedAdd(speechMs, durationMs);
       }
+    }
+
+    if (loud && evidence && evidence.speechProbability >= 0.85) {
+      currentTurn.trustedSpeechRmsSum += evidence.enhancedRms;
+      currentTurn.trustedSpeechFrames = boundedAdd(currentTurn.trustedSpeechFrames, 1);
     }
 
     if (!currentTurn.activitySustained && speechMs >= config.minSpeechMs) {
