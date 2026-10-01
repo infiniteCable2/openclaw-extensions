@@ -1,11 +1,39 @@
 const MAX_RESPONSE_BYTES = 256 * 1024;
 
+export type RecognitionSummary = {
+  speechDurationMs: number | null;
+  segmentCount: number;
+};
+
+export type TranscriptionResult = {
+  text: string;
+  recognition?: RecognitionSummary;
+};
+
+function recognitionSummary(value: unknown): RecognitionSummary | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { speechDurationMs, segmentCount } = value as Record<string, unknown>;
+  if (
+    (speechDurationMs !== null &&
+      (typeof speechDurationMs !== "number" ||
+        !Number.isSafeInteger(speechDurationMs) ||
+        speechDurationMs < 0)) ||
+    typeof segmentCount !== "number" ||
+    !Number.isInteger(segmentCount) ||
+    segmentCount < 0 ||
+    segmentCount > 2_147_483_647
+  ) {
+    return undefined;
+  }
+  return { speechDurationMs, segmentCount };
+}
+
 /** Consume the local STT event stream without retaining unbounded or backend error content. */
 export async function readTranscriptionEvents(
   response: Response,
   signal: AbortSignal,
   onSpeechConfirmed: () => void,
-): Promise<string> {
+): Promise<TranscriptionResult> {
   const invalid = () => new Error("Local media transcription event stream failed");
   if (
     response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !==
@@ -21,7 +49,7 @@ export async function readTranscriptionEvents(
   let bytes = 0;
   let pending = "";
   let confirmed = false;
-  let terminal: string | undefined;
+  let terminal: TranscriptionResult | undefined;
   const abort = () => {
     void reader.cancel().catch(() => {});
   };
@@ -48,7 +76,13 @@ export async function readTranscriptionEvents(
       "model" in event &&
       typeof event.model === "string"
     ) {
-      terminal = event.text.trim();
+      const recognition = "recognition" in event
+        ? recognitionSummary(event.recognition)
+        : undefined;
+      terminal = {
+        text: event.text.trim(),
+        ...(recognition ? { recognition } : {}),
+      };
     } else {
       // This includes the backend's error event. Its message is never propagated.
       throw invalid();

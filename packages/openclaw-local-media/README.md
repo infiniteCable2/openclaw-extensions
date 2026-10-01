@@ -161,6 +161,17 @@ streams. Existing onset, minimum speech,
 pre-roll, and silence timings remain unchanged. The per-call summary logs only
 aggregate levels, maximum gain and high-probability frame count, never audio.
 
+For an agent-directed enhanced call with streamed STT results, a nonempty
+recognized turn may also gently recalibrate the per-call minimum output-energy
+guard. This requires at least 300 ms of post-VAD audio, a decoder segment, and
+ten frames with strong WebRTC speech probability. Each successful turn can
+lower the guard by at most 8% of its configured starting value, with a hard
+floor at 60%; it never raises gain or weakens the probability and noise-margin
+checks. The estimate exists only for that call and resets on disconnect.
+Backend-specific decoder scores remain observations, not calibrated confidence
+or direct gain-control inputs. Calls without recognition evidence keep the
+configured guard unchanged. Files and media relays do not use this logic.
+
 Batch audio enhancement is independently selected by OpenClaw's
 `speechInput` intent. Matrix voice messages set it; ordinary audio files do
 not. The STT service then applies the same APM family before Faster-Whisper.

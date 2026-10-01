@@ -16,5 +16,21 @@ it("accepts optional STT recognition observations without exposing them as trans
   const response = new Response(`data: ${JSON.stringify(event)}\n\n`, {
     headers: { "content-type": "text/event-stream" },
   });
-  expect(await readTranscriptionEvents(response, new AbortController().signal, () => {})).toBe("Hallo");
+  expect(await readTranscriptionEvents(response, new AbortController().signal, () => {})).toEqual({
+    text: "Hallo",
+    recognition: { speechDurationMs: 500, segmentCount: 1 },
+  });
+});
+
+it("ignores malformed recognition observations without losing a valid transcript", async () => {
+  const event = {
+    type: "transcript.done", text: "Hallo", model: "test",
+    recognition: { speechDurationMs: -1, segmentCount: 1 },
+  };
+  const response = new Response(`data: ${JSON.stringify(event)}\n\n`, {
+    headers: { "content-type": "text/event-stream" },
+  });
+  expect(await readTranscriptionEvents(response, new AbortController().signal, () => {})).toEqual({
+    text: "Hallo",
+  });
 });

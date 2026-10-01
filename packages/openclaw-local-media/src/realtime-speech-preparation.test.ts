@@ -147,4 +147,55 @@ describe("realtime speech readiness", () => {
     expect(activity).toEqual(["candidate", "sustained"]);
     session.close();
   });
+
+  it("uses confirmed STT evidence to admit later quiet speech only in the same call", async () => {
+    vi.mocked(createLiveSpeechProcessor).mockImplementation(({ onFrame }) => ({
+      connect: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+      send: (audio) => onFrame({
+        audio,
+        speechProbability: audio.readInt16LE(0) === 0 ? 0.1 : 0.9,
+        gainDb: 0,
+      }),
+    }));
+    const event = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
+    const fetchMock = vi.fn(async () => new Response(
+      event({ type: "speech.confirmed" }) + event({
+        type: "transcript.done", text: "Hallo", model: "test",
+        recognition: {
+          audioDurationMs: 700, speechDurationMs: 500, segmentCount: 1, signals: [],
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const onSpeechStart = vi.fn();
+    const onTranscript = vi.fn();
+    const session = buildLocalRealtimeTranscriptionProvider(
+      vi.fn().mockResolvedValue({ release: vi.fn() }),
+    ).createSession({
+      providerConfig: { ...providerConfig, speechOnsetMs: 40, silenceMs: 200 },
+      inputAudioFormat: "pcm16-16khz",
+      onSpeechStart,
+      onProcessing: vi.fn(),
+      onTranscript,
+    });
+    const frame = (sample: number) => {
+      const audio = Buffer.alloc(640);
+      for (let offset = 0; offset < audio.byteLength; offset += 2) {
+        audio.writeInt16LE(sample, offset);
+      }
+      session.sendAudio(audio);
+    };
+    await session.connect();
+    for (let index = 0; index < 20; index += 1) frame(260);
+    for (let index = 0; index < 10; index += 1) frame(0);
+    await vi.waitFor(() => expect(onTranscript).toHaveBeenCalledTimes(1));
+    for (let index = 0; index < 10; index += 1) frame(230);
+    for (let index = 0; index < 10; index += 1) frame(0);
+    await vi.waitFor(() => expect(onTranscript).toHaveBeenCalledTimes(2));
+    expect(onSpeechStart).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    session.close();
+  });
 });
