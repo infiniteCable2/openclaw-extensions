@@ -90,6 +90,34 @@ are added by this transport option.
 
 ## Development
 
+### Offline noise/level matrix
+
+`tools/offline_noise_matrix.py` exercises the same APM configuration as live
+calls and marked voice messages, followed by Faster-Whisper's bundled Silero
+VAD. It mixes a supplied **synthetic** 16-kHz mono PCM16 voice WAV with seeded
+white, road-like, wash-like and impact noise at configurable voice levels and
+SNRs. Every mixture has a matching noise-only control. The default matrix has
+60 mixtures from -20 to +20 dB SNR and -40 to -12 dBFS voice level. It prints
+only numeric input/output level, clipping, WebRTC probability and retained-VAD
+duration; no audio or transcript is written by the evaluator.
+
+On Windows with an installed German offline SAPI voice:
+
+```powershell
+New-Item -ItemType Directory -Force build | Out-Null
+& powershell.exe -NoProfile -File tools/synthesize-test-voice.ps1 -OutputPath build/test-voice.wav
+& .venv/Scripts/python.exe tools/offline_noise_matrix.py build/test-voice.wav
+```
+
+On other systems, supply an independently synthesized WAV in the same format.
+The optional `--model-path /absolute/local/cuda/model --expected 'spoken words'`
+also tests word error rate through the local CUDA Faster-Whisper decoder. It
+never downloads a model or falls back to CPU/cloud inference. Without those
+two arguments, the evaluator explicitly reports `decoderTested: false`:
+retained VAD audio is not proof that words were understood. Clipping-heavy
+extremes are stress cases, not target operating conditions. This synthetic
+matrix cannot replace a real call in the problematic environment.
+
 ```bash
 python3.13 -m venv .venv
 .venv/bin/pip install -e '.[test]'

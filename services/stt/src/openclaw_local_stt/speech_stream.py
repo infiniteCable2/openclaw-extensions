@@ -9,24 +9,16 @@ from __future__ import annotations
 
 import sys
 
-FRAME_SAMPLES = 320
+from .speech_apm import SAMPLE_RATE, create_speech_processor
+
+FRAME_SAMPLES = SAMPLE_RATE // 50
 FRAME_BYTES = FRAME_SAMPLES * 2
 METADATA_BYTES = 8
 
 
 def main() -> int:
     import numpy as np
-    from pywebrtc_audio import AudioProcessor
-
-    processor = AudioProcessor(
-        sample_rate=16_000,
-        noise_suppression=True,
-        high_pass_filter=True,
-        auto_gain_control=True,
-        echo_cancellation=False,
-        ns_level=1,
-        agc_max_gain_db=12.0,
-    )
+    processor = create_speech_processor()
     source = sys.stdin.buffer
     sink = sys.stdout.buffer
     sink.write(b"APM2")

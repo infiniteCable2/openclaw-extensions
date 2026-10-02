@@ -11,8 +11,8 @@ import tempfile
 import wave
 from pathlib import Path
 
+from .speech_apm import SAMPLE_RATE, create_speech_processor
 
-SAMPLE_RATE = 16_000
 MAX_SAMPLES = SAMPLE_RATE * 15 * 60
 
 
@@ -25,21 +25,12 @@ def enhance_speech_file(source: Path) -> Path:
     """Decode, enhance, and return a private temporary PCM WAV artifact."""
     import numpy as np
     from faster_whisper.audio import decode_audio
-    from pywebrtc_audio import AudioProcessor
 
     audio = decode_audio(str(source), sampling_rate=SAMPLE_RATE)
     if audio.ndim != 1 or audio.size == 0 or audio.size > MAX_SAMPLES:
         raise ValueError("speech input duration is invalid")
 
-    processor = AudioProcessor(
-        sample_rate=SAMPLE_RATE,
-        noise_suppression=True,
-        high_pass_filter=True,
-        auto_gain_control=True,
-        echo_cancellation=False,
-        ns_level=1,
-        agc_max_gain_db=12.0,
-    )
+    processor = create_speech_processor()
     enhanced = np.empty_like(audio, dtype=np.float32)
     for start in range(0, audio.size, SAMPLE_RATE):
         stop = min(start + SAMPLE_RATE, audio.size)
