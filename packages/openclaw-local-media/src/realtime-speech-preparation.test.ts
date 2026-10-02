@@ -67,8 +67,10 @@ describe("realtime speech readiness", () => {
     vi.stubGlobal("fetch", fetchMock);
     const onTranscript = vi.fn();
     const onError = vi.fn();
+    const info = vi.fn();
     const provider = buildLocalRealtimeTranscriptionProvider(
       vi.fn().mockResolvedValue({ release: vi.fn() }),
+      { info },
     );
     const session = provider.createSession({
       providerConfig: { ...providerConfig, speechOnsetMs: 40, silenceMs: 200, minSpeechMs: 40 },
@@ -91,6 +93,20 @@ describe("realtime speech readiness", () => {
     expect(new Headers(init.headers).has("x-openclaw-speech-input")).toBe(false);
     expect(onError).not.toHaveBeenCalled();
     session.close();
+    const records = info.mock.calls.map(([line]) => JSON.parse(line as string));
+    expect(records).toContainEqual(expect.objectContaining({
+      event: "local_media_stt_utterance",
+      outcome: "transcribed",
+      meanSpeechProbability: expect.any(Number),
+      enhancedRms: expect.any(Number),
+      highProbabilityFrames: 4,
+      maxGainDb: 0,
+    }));
+    expect(records).toContainEqual(expect.objectContaining({
+      event: "local_media_stt_input_summary",
+      frontEndInputNearClipSamples: 0,
+      frontEndOutputNearClipSamples: 0,
+    }));
   });
 
   it("upsamples legacy mu-law callers into the same live speech path", async () => {
@@ -107,6 +123,33 @@ describe("realtime speech readiness", () => {
     expect(send).toHaveBeenCalledOnce();
     expect(send.mock.calls[0]?.[0]).toHaveLength(640);
     session.close();
+  });
+
+  it("counts clipping before and after the front end without retaining audio", async () => {
+    vi.mocked(createLiveSpeechProcessor).mockImplementation(({ onFrame }) => ({
+      connect: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+      send: () => onFrame({ audio: Buffer.alloc(640), speechProbability: 0, gainDb: 0 }),
+    }));
+    const info = vi.fn();
+    const session = buildLocalRealtimeTranscriptionProvider(vi.fn(), { info }).createSession({
+      providerConfig,
+      inputAudioFormat: "pcm16-16khz",
+    });
+    await session.connect();
+    const clippedInput = Buffer.alloc(640);
+    for (let offset = 0; offset < clippedInput.byteLength; offset += 2) {
+      clippedInput.writeInt16LE(32_767, offset);
+    }
+    session.sendAudio(clippedInput);
+    session.close();
+    expect(info.mock.calls.map(([line]) => JSON.parse(line as string))).toContainEqual(
+      expect.objectContaining({
+        event: "local_media_stt_input_summary",
+        frontEndInputNearClipSamples: 320,
+        frontEndOutputNearClipSamples: 0,
+      }),
+    );
   });
 
   it("keeps amplified road noise and brief impacts out of a call turn", async () => {
