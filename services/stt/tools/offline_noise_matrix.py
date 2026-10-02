@@ -75,11 +75,12 @@ def noise(profile: str, samples: int) -> np.ndarray:
     return np.asarray(result / level, dtype=np.float32)
 
 
-def enhance(audio: np.ndarray) -> tuple[np.ndarray, float, float]:
+def enhance(audio: np.ndarray) -> tuple[np.ndarray, float, float, float, float]:
     processor = create_speech_processor()
     padded = np.pad(audio, (0, (-audio.size) % FRAME_SAMPLES))
     output = np.empty_like(padded)
     probabilities: list[float] = []
+    gains: list[float] = []
     for start in range(0, padded.size, FRAME_SAMPLES):
         frame = processor.process(padded[start : start + FRAME_SAMPLES])
         if frame.shape != (FRAME_SAMPLES,) or not np.isfinite(frame).all():
@@ -89,7 +90,17 @@ def enhance(audio: np.ndarray) -> tuple[np.ndarray, float, float]:
         if not 0 <= probability <= 1 or not math.isfinite(probability):
             raise RuntimeError("APM returned invalid speech evidence")
         probabilities.append(probability)
-    return output[: audio.size], float(np.mean(probabilities)), float(max(probabilities))
+        gain = float(processor.gain_db)
+        if not math.isfinite(gain):
+            raise RuntimeError("APM returned invalid gain evidence")
+        gains.append(gain)
+    return (
+        output[: audio.size],
+        float(np.mean(probabilities)),
+        float(max(probabilities)),
+        float(np.mean(gains)),
+        float(max(gains)),
+    )
 
 
 def word_error_rate(expected: str, actual: str) -> float:
@@ -123,7 +134,7 @@ def transcribe_local(audio: np.ndarray, backend) -> str:
 def evaluate(audio: np.ndarray, *, backend=None, expected: str | None = None) -> dict[str, float | None]:
     from faster_whisper.vad import get_speech_timestamps
 
-    enhanced, probability_mean, probability_peak = enhance(audio)
+    enhanced, probability_mean, probability_peak, gain_mean, gain_peak = enhance(audio)
     timestamps = get_speech_timestamps(enhanced, sampling_rate=SAMPLE_RATE)
     result: dict[str, float | None] = {
         "inputRms": round(rms(audio), 5),
@@ -132,6 +143,8 @@ def evaluate(audio: np.ndarray, *, backend=None, expected: str | None = None) ->
         "enhancedClipPercent": round(float(np.mean(np.abs(enhanced) >= 0.98)) * 100, 3),
         "speechProbabilityMean": round(probability_mean, 3),
         "speechProbabilityPeak": round(probability_peak, 3),
+        "gainDbMean": round(gain_mean, 3),
+        "gainDbPeak": round(gain_peak, 3),
         "vadSpeechMs": round(sum(
             chunk["end"] - chunk["start"] for chunk in timestamps
         ) * 1_000 / SAMPLE_RATE),
@@ -139,6 +152,24 @@ def evaluate(audio: np.ndarray, *, backend=None, expected: str | None = None) ->
     }
     if backend is not None and expected is not None:
         result["wer"] = round(word_error_rate(expected, transcribe_local(enhanced, backend)), 3)
+    return result
+
+
+def evaluate_raw(audio: np.ndarray, *, backend=None, expected: str | None = None) -> dict[str, float | None]:
+    """Paired control: identical samples and VAD/STT, without the APM pass."""
+    from faster_whisper.vad import get_speech_timestamps
+
+    timestamps = get_speech_timestamps(audio, sampling_rate=SAMPLE_RATE)
+    result: dict[str, float | None] = {
+        "rms": round(rms(audio), 5),
+        "clipPercent": round(float(np.mean(np.abs(audio) >= 0.98)) * 100, 3),
+        "vadSpeechMs": round(sum(
+            chunk["end"] - chunk["start"] for chunk in timestamps
+        ) * 1_000 / SAMPLE_RATE),
+        "wer": None,
+    }
+    if backend is not None and expected is not None:
+        result["wer"] = round(word_error_rate(expected, transcribe_local(audio, backend)), 3)
     return result
 
 
@@ -158,21 +189,33 @@ def main() -> None:
     parser.add_argument("--voice-dbfs", default="-40,-26,-12")
     parser.add_argument("--model-path", type=Path, help="optional local CUDA model directory")
     parser.add_argument("--expected", help="expected words; required with --model-path")
+    parser.add_argument("--paired", action="store_true", help="report raw and APM results for identical inputs")
+    parser.add_argument("--direct", action="store_true", help="compare the supplied WAV as-is, without synthetic noise")
     args = parser.parse_args()
     if bool(args.model_path) != bool(args.expected):
         parser.error("--model-path and --expected must be supplied together")
-    snrs = parse_levels(args.snr_db, minimum=-30, maximum=30)
-    voice_levels = parse_levels(args.voice_dbfs, minimum=-60, maximum=-3)
-    if len(snrs) * len(voice_levels) * len(PROFILES) > 200:
-        parser.error("matrix exceeds 200 cases")
     voice = read_voice(args.voice_wav)
-    voice = np.pad(voice, (SAMPLE_RATE // 2, SAMPLE_RATE // 2))
-    voice_rms = rms(voice)
     backend = None
     if args.model_path:
         from openclaw_local_stt.backend import FasterWhisperBackend
 
         backend = FasterWhisperBackend(model_path=args.model_path)
+    if args.direct:
+        print(json.dumps({
+            "cases": [{
+                "profile": "direct",
+                "raw": evaluate_raw(voice, backend=backend, expected=args.expected),
+                "apm": evaluate(voice, backend=backend, expected=args.expected),
+            }],
+            "decoderTested": backend is not None,
+        }, separators=(",", ":")))
+        return
+    snrs = parse_levels(args.snr_db, minimum=-30, maximum=30)
+    voice_levels = parse_levels(args.voice_dbfs, minimum=-60, maximum=-3)
+    if len(snrs) * len(voice_levels) * len(PROFILES) > 200:
+        parser.error("matrix exceeds 200 cases")
+    voice = np.pad(voice, (SAMPLE_RATE // 2, SAMPLE_RATE // 2))
+    voice_rms = rms(voice)
     rows = []
     for profile in PROFILES:
         base_noise = noise(profile, voice.size)
@@ -182,15 +225,26 @@ def main() -> None:
             for snr_db in snrs:
                 noise_rms = target_voice_rms / 10 ** (snr_db / 20)
                 mixed = np.clip(scaled_voice + base_noise * noise_rms, -1, 1)
-                control = evaluate(np.clip(base_noise * noise_rms, -1, 1))
-                rows.append({
+                noise_only = np.clip(base_noise * noise_rms, -1, 1)
+                control = evaluate(noise_only)
+                apm = evaluate(mixed, backend=backend, expected=args.expected)
+                row = {
                     "profile": profile,
                     "voiceDbfs": voice_dbfs,
                     "snrDb": snr_db,
                     "noiseOnlyVadSpeechMs": control["vadSpeechMs"],
                     "noiseOnlyProbabilityPeak": control["speechProbabilityPeak"],
-                    **evaluate(mixed, backend=backend, expected=args.expected),
-                })
+                    "noiseOnlyGainDbPeak": control["gainDbPeak"],
+                }
+                if args.paired:
+                    row.update({
+                        "noiseOnlyRawVadSpeechMs": evaluate_raw(noise_only)["vadSpeechMs"],
+                        "raw": evaluate_raw(mixed, backend=backend, expected=args.expected),
+                        "apm": apm,
+                    })
+                else:
+                    row.update(apm)
+                rows.append(row)
     print(json.dumps({"cases": rows, "decoderTested": backend is not None}, separators=(",", ":")))
 
 
