@@ -3,6 +3,7 @@ import {
   type RealtimeTranscriptionProviderPlugin,
 } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_STT_MODEL, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
+import { createLiveSpeechDiagnostics } from "./live-speech-diagnostics.js";
 import { createLiveSpeechGate, type LiveSpeechEvidence } from "./live-speech-gate.js";
 import { requireLoopbackBaseUrl } from "./local-url.js";
 import { createLiveSpeechProcessor } from "./live-speech-processor.js";
@@ -311,6 +312,7 @@ function createSession(
   const config = normalizeConfig(request.providerConfig);
   const enhancedLive = Boolean(config.speechProcessorPython);
   const liveSpeechGate = enhancedLive ? createLiveSpeechGate(config) : undefined;
+  const liveSpeechDiagnostics = enhancedLive ? createLiveSpeechDiagnostics() : undefined;
   if (request.inputAudioFormat === "pcm16-16khz" && !enhancedLive) {
     throw new Error("Live speech enhancement requires speechProcessorPython");
   }
@@ -491,6 +493,7 @@ function createSession(
             frontEndHighProbabilityFrames,
             frontEndInputNearClipSamples,
             frontEndOutputNearClipSamples,
+            ...liveSpeechDiagnostics?.snapshot(),
           }
         : {}),
     });
@@ -831,6 +834,7 @@ function createSession(
     ? createLiveSpeechProcessor({
         python: config.speechProcessorPython,
         onFrame: (frame) => {
+          liveSpeechDiagnostics?.observe(frame);
           recordFrontEndRms(frame.audio, true);
           frontEndMaxGainDb = Math.max(frontEndMaxGainDb ?? frame.gainDb, frame.gainDb);
           if (frame.speechProbability >= config.speechProbabilityThreshold) {

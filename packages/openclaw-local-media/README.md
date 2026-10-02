@@ -256,7 +256,11 @@ When the live front end is enabled, this summary also includes aggregate
 `frontEndInputRms` and `frontEndOutputRms` for gain tuning; neither is an SNR
 estimate or a recording of speech content. The summary also counts input and
 output samples above 98% of full scale, allowing clipping before or after the
-front end to be distinguished without retaining the waveform.
+front end to be distinguished without retaining the waveform. It separates
+gain statistics for high (at least 0.85) and low (below 0.3) WebRTC speech
+probability. The longest low-probability run and its largest gain rise after
+one second help detect noise pumping. These are acoustic probability buckets,
+not verified speech/non-speech labels or a physical SNR measurement.
 Neither event contains audio, transcript text, URLs, exception messages, model
 or participant identifiers. Logger failures never interrupt media handling.
 
