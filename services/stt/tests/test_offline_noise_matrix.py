@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from tools.offline_noise_matrix import (
+    MAX_DIRECT_SECONDS,
     PROFILES,
     evaluate,
     evaluate_raw,
@@ -39,6 +40,20 @@ def test_rejects_invalid_voice_or_level_matrix(tmp_path) -> None:
         read_voice(wav)
     with pytest.raises(ValueError, match="level matrix"):
         parse_levels("-100", minimum=-60, maximum=-3)
+
+
+def test_direct_duration_limit_does_not_expand_synthetic_matrix(tmp_path) -> None:
+    wav = tmp_path / "long.wav"
+    samples = np.zeros(21 * 16_000, dtype="<i2")
+    samples[16_000] = 100
+    with wave.open(str(wav), "wb") as target:
+        target.setnchannels(1)
+        target.setsampwidth(2)
+        target.setframerate(16_000)
+        target.writeframes(samples.tobytes())
+    with pytest.raises(ValueError, match="at most 20 seconds"):
+        read_voice(wav)
+    assert read_voice(wav, max_seconds=MAX_DIRECT_SECONDS).size == samples.size
 
 
 def test_offline_apm_and_vad_report_metrics_without_decoder() -> None:

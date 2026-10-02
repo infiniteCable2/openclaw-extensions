@@ -23,18 +23,19 @@ from openclaw_local_stt.speech_apm import SAMPLE_RATE, create_speech_processor  
 
 FRAME_SAMPLES = SAMPLE_RATE // 50
 MAX_VOICE_SECONDS = 20
+MAX_DIRECT_SECONDS = 60
 PROFILES = ("white", "road", "wash", "impacts")
 
 
-def read_voice(path: Path) -> np.ndarray:
+def read_voice(path: Path, *, max_seconds: int = MAX_VOICE_SECONDS) -> np.ndarray:
     with wave.open(str(path), "rb") as source:
         if (
             source.getnchannels() != 1
             or source.getsampwidth() != 2
             or source.getframerate() != SAMPLE_RATE
-            or not 0 < source.getnframes() <= SAMPLE_RATE * MAX_VOICE_SECONDS
+            or not 0 < source.getnframes() <= SAMPLE_RATE * max_seconds
         ):
-            raise ValueError("voice WAV must be 16-kHz mono PCM16 and at most 20 seconds")
+            raise ValueError(f"voice WAV must be 16-kHz mono PCM16 and at most {max_seconds} seconds")
         audio = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2")
     if audio.size == 0 or not np.any(audio):
         raise ValueError("voice WAV must contain nonzero speech samples")
@@ -194,7 +195,7 @@ def main() -> None:
     args = parser.parse_args()
     if bool(args.model_path) != bool(args.expected):
         parser.error("--model-path and --expected must be supplied together")
-    voice = read_voice(args.voice_wav)
+    voice = read_voice(args.voice_wav, max_seconds=MAX_DIRECT_SECONDS if args.direct else MAX_VOICE_SECONDS)
     backend = None
     if args.model_path:
         from openclaw_local_stt.backend import FasterWhisperBackend
