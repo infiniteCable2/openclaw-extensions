@@ -126,8 +126,9 @@ behavior only. This flag does not alter the production speech processor.
 For a short, consented 16-kHz mono PCM16 recording, use `--direct` to compare
 the unchanged input with APM without adding synthetic noise. It reports no
 audio, path or transcript; omit `--expected` when there is no authorized local
-CUDA decoder. Keep test recordings outside Git and remove them according to the
-agreed retention policy.
+CUDA decoder. Direct recordings are bounded to 60 seconds; the synthetic
+matrix retains its 20-second input bound. Keep test recordings outside Git
+and remove them according to the agreed retention policy.
 
 The local-media plugin also has an opt-in cross-language worker test. Run it
 with `OPENCLAW_STT_REPLAY_PYTHON` set to the absolute Python executable from
@@ -135,6 +136,13 @@ an installed STT test environment and with that environment's `src` directory
 on `PYTHONPATH`. It checks the actual 20-ms APM wire protocol without loading
 the CUDA model or contacting a service. Ordinary plugin tests use deterministic
 APM evidence to exercise gate, endpoint and packet-fragmentation behavior.
+From the repository root, after building that plugin,
+`node packages/openclaw-local-media/tools/replay-live-speech.mjs <wav> [full|first5|last5]`
+replays a consented WAV through the actual native worker and provider gate.
+The tool intercepts STT requests in memory and emits only content-free counts
+and levels; it cannot measure recognition quality. Five-second regions are
+separate processor sessions, so the `last5` check does not preserve the gain
+history of the full call.
 
 ```bash
 python3.13 -m venv .venv
