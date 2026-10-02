@@ -155,8 +155,11 @@ frame. For enhanced calls, onset requires that probability (default `0.6`),
 nontrivial output energy, and either an adaptive margin over the per-call
 background estimate (default `3.5` dB) or strong speech evidence. The background
 estimate uses a gain-referenced signal, so AGC growth alone does not count as
-speech. Half of `speechRmsThreshold` is the absolute energy guard on enhanced
-calls; the full value remains the sole gate on legacy non-enhanced realtime
+speech. Strong speech evidence uses a smaller but still positive relative
+margin (at most `1` dB); high WebRTC speech probability alone can no longer
+override a learned loud background. Half of `speechRmsThreshold` is the
+absolute energy guard on enhanced calls; the full value remains the sole gate
+on legacy non-enhanced realtime
 streams. Existing onset, minimum speech,
 pre-roll, and silence timings remain unchanged. The per-call summary logs only
 aggregate levels, maximum gain and high-probability frame count, never audio.

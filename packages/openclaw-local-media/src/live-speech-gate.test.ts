@@ -25,6 +25,21 @@ describe("live speech evidence gate", () => {
     expect(gate.observe({ enhancedRms: 0.009, speechProbability: 0.9, gainDb: 6 })).toBe(true);
   });
 
+  it("does not let high speech probability alone bypass a learned loud background", () => {
+    const gate = createLiveSpeechGate(config);
+    for (let index = 0; index < 200; index += 1) {
+      expect(gate.observe({ enhancedRms: 0.12, speechProbability: 0.2, gainDb: 0 })).toBe(false);
+    }
+    for (let index = 0; index < 50; index += 1) {
+      expect(gate.observe({
+        enhancedRms: 0.12 * 10 ** (6 / 20), speechProbability: 0.95, gainDb: 6,
+      })).toBe(false);
+    }
+    expect(gate.observe({
+      enhancedRms: 0.14 * 10 ** (6 / 20), speechProbability: 0.95, gainDb: 6,
+    })).toBe(true);
+  });
+
   it("requires both nontrivial energy and speech evidence", () => {
     const gate = createLiveSpeechGate(config);
     expect(gate.observe({ enhancedRms: 0, speechProbability: 0.99, gainDb: 12 })).toBe(false);

@@ -12,6 +12,7 @@ export function createLiveSpeechGate(config: {
 }) {
   const minimumOutputRms = config.speechRmsThreshold / 2;
   const noiseMargin = 10 ** (config.speechNoiseMarginDb / 20);
+  const confidentSpeechMargin = 10 ** (Math.min(config.speechNoiseMarginDb, 1) / 20);
   let noiseRms = 0.001;
   let learnedMinimumOutputRms = minimumOutputRms;
   return {
@@ -29,7 +30,9 @@ export function createLiveSpeechGate(config: {
       return (
         evidence.speechProbability >= config.speechProbabilityThreshold &&
         evidence.enhancedRms >= learnedMinimumOutputRms &&
-        (referenceRms >= noiseRms * noiseMargin || evidence.speechProbability >= 0.85)
+        (referenceRms >= noiseRms * noiseMargin ||
+          (evidence.speechProbability >= 0.85 &&
+            referenceRms >= noiseRms * confidentSpeechMargin))
       );
     },
     acceptRecognizedSpeech(evidence: {
