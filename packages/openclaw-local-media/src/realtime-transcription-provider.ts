@@ -29,6 +29,13 @@ type UtteranceTimings = {
   httpMs: number | null;
   timedOut: boolean;
   reported: boolean;
+  enhancedRms: number | null;
+  meanSpeechProbability: number | null;
+  highProbabilityFrames: number;
+  maxGainDb: number | null;
+  vadSpeechDurationMs: number | null;
+  decoderSegmentCount: number | null;
+  emptyStage: "vad" | "decoder" | "unknown" | null;
 };
 type RealtimeTranscriptionProviderConfig = Record<string, unknown>;
 type RealtimeTranscriptionSessionCreateRequest = Parameters<
@@ -332,6 +339,13 @@ function createSession(
   let frontEndOutputSamples = 0;
   let frontEndMaxGainDb: number | null = null;
   let frontEndHighProbabilityFrames = 0;
+  let frontEndInputNearClipSamples = 0;
+  let frontEndOutputNearClipSamples = 0;
+  let batchEnhancedSquares = 0;
+  let batchProbabilitySum = 0;
+  let batchEvidenceFrames = 0;
+  let batchHighProbabilityFrames = 0;
+  let batchMaxGainDb: number | null = null;
   let connectedAt: number | undefined;
   let lastInputAt: number | undefined;
   let lastLoudAt: number | undefined;
@@ -412,6 +426,15 @@ function createSession(
     httpMs: null,
     timedOut: false,
     reported: false,
+    enhancedRms: batchEvidenceFrames > 0
+      ? Math.sqrt(batchEnhancedSquares / batchEvidenceFrames) : null,
+    meanSpeechProbability: batchEvidenceFrames > 0
+      ? batchProbabilitySum / batchEvidenceFrames : null,
+    highProbabilityFrames: batchHighProbabilityFrames,
+    maxGainDb: batchMaxGainDb,
+    vadSpeechDurationMs: null,
+    decoderSegmentCount: null,
+    emptyStage: null,
   });
 
   const reportUtterance = (timings: UtteranceTimings, outcome: UtteranceOutcome) => {
@@ -433,6 +456,13 @@ function createSession(
       endpointSilenceWallMs: timings.endpointSilenceWallMs,
       trailingSilenceAudioMs: timings.trailingSilenceAudioMs,
       utteranceAudioMs: timings.utteranceAudioMs,
+      enhancedRms: timings.enhancedRms,
+      meanSpeechProbability: timings.meanSpeechProbability,
+      highProbabilityFrames: timings.highProbabilityFrames,
+      maxGainDb: timings.maxGainDb,
+      vadSpeechDurationMs: timings.vadSpeechDurationMs,
+      decoderSegmentCount: timings.decoderSegmentCount,
+      emptyStage: timings.emptyStage,
     });
   };
 
@@ -459,6 +489,8 @@ function createSession(
                 : null,
             frontEndMaxGainDb,
             frontEndHighProbabilityFrames,
+            frontEndInputNearClipSamples,
+            frontEndOutputNearClipSamples,
           }
         : {}),
     });
@@ -470,6 +502,10 @@ function createSession(
     for (let offset = 0; offset < completeBytes; offset += 2) {
       const sample = audio.readInt16LE(offset) / 32_768;
       squares += sample * sample;
+      if (Math.abs(sample) >= 0.98) {
+        if (output) frontEndOutputNearClipSamples = boundedAdd(frontEndOutputNearClipSamples, 1);
+        else frontEndInputNearClipSamples = boundedAdd(frontEndInputNearClipSamples, 1);
+      }
     }
     if (output) {
       frontEndOutputSquares += squares;
@@ -487,6 +523,11 @@ function createSession(
     speechMs = 0;
     utterance = [];
     utteranceBytes = 0;
+    batchEnhancedSquares = 0;
+    batchProbabilitySum = 0;
+    batchEvidenceFrames = 0;
+    batchHighProbabilityFrames = 0;
+    batchMaxGainDb = null;
   };
 
   const discardInput = () => {
@@ -569,6 +610,14 @@ function createSession(
               : {}),
           });
           const text = result.text;
+          if (result.recognition) {
+            timings.vadSpeechDurationMs = result.recognition.speechDurationMs;
+            timings.decoderSegmentCount = result.recognition.segmentCount;
+          }
+          if (!text) {
+            timings.emptyStage = timings.vadSpeechDurationMs === 0
+              ? "vad" : timings.vadSpeechDurationMs !== null ? "decoder" : "unknown";
+          }
           if (closed) {
             reportUtterance(timings, "cancelled");
           } else if (turn.discarded) {
@@ -634,6 +683,11 @@ function createSession(
       // Preserve onset and silence accounting across the bounded audio batch.
       utterance = [];
       utteranceBytes = 0;
+      batchEnhancedSquares = 0;
+      batchProbabilitySum = 0;
+      batchEvidenceFrames = 0;
+      batchHighProbabilityFrames = 0;
+      batchMaxGainDb = null;
     }
     if (shouldTranscribe) {
       enqueue(audio, timings, silenceEndpoint, turn);
@@ -718,6 +772,16 @@ function createSession(
     if (loud && evidence && evidence.speechProbability >= 0.85) {
       currentTurn.trustedSpeechRmsSum += evidence.enhancedRms;
       currentTurn.trustedSpeechFrames = boundedAdd(currentTurn.trustedSpeechFrames, 1);
+    }
+
+    if (evidence) {
+      batchEnhancedSquares += evidence.enhancedRms * evidence.enhancedRms;
+      batchProbabilitySum += evidence.speechProbability;
+      batchEvidenceFrames = boundedAdd(batchEvidenceFrames, 1);
+      if (evidence.speechProbability >= 0.85) {
+        batchHighProbabilityFrames = boundedAdd(batchHighProbabilityFrames, 1);
+      }
+      batchMaxGainDb = Math.max(batchMaxGainDb ?? evidence.gainDb, evidence.gainDb);
     }
 
     if (!currentTurn.activitySustained && speechMs >= config.minSpeechMs) {

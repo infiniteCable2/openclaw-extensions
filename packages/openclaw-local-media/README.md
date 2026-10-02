@@ -232,6 +232,16 @@ are `null`. `endpointSilenceWallMs` is measured on a monotonic clock;
 `trailingSilenceAudioMs` and `utteranceAudioMs` are audio durations. An input
 pause alone does not end an utterance: the existing silence endpoint advances
 when audio frames arrive, not when a wall-clock timer expires.
+For enhanced live calls, the utterance record also carries post-onset
+`enhancedRms`, `meanSpeechProbability`, `highProbabilityFrames`, and `maxGainDb`.
+When the streamed STT response provides recognition evidence, an empty result
+sets `emptyStage` to `vad` if Faster-Whisper retained no post-VAD audio, or
+`decoder` if it retained audio but produced no text. `unknown` means that the
+backend supplied no usable stage evidence. `vadSpeechDurationMs` and
+`decoderSegmentCount` remain observations, not a claim that noise was speech.
+The plugin does not automatically bypass VAD or retry unfiltered audio: that
+could transcribe background noise as speech and increase CUDA load during a
+call. Use these bounded diagnostics to choose and verify a targeted change.
 
 One `local_media_stt_input_summary` at close/failure aggregates packet count,
 audio duration, largest packet and input gap, frame/loud-frame counts, longest
@@ -241,7 +251,9 @@ when no utterance reached STT. Pending cancellation records may settle after
 this closing snapshot. Counters are bounded and do not retain per-frame data.
 When the live front end is enabled, this summary also includes aggregate
 `frontEndInputRms` and `frontEndOutputRms` for gain tuning; neither is an SNR
-estimate or a recording of speech content.
+estimate or a recording of speech content. The summary also counts input and
+output samples above 98% of full scale, allowing clipping before or after the
+front end to be distinguished without retaining the waveform.
 Neither event contains audio, transcript text, URLs, exception messages, model
 or participant identifiers. Logger failures never interrupt media handling.
 

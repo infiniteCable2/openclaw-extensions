@@ -106,6 +106,13 @@ describe("local media realtime transcription provider", () => {
         endpointSilenceWallMs: 0,
         trailingSilenceAudioMs: 200,
         utteranceAudioMs: 220,
+        enhancedRms: null,
+        meanSpeechProbability: null,
+        highProbabilityFrames: 0,
+        maxGainDb: null,
+        vadSpeechDurationMs: null,
+        decoderSegmentCount: null,
+        emptyStage: null,
       })),
     );
     session.close();
@@ -232,6 +239,46 @@ describe("local media realtime transcription provider", () => {
     expect(() => session.close()).not.toThrow();
     expect(info).toHaveBeenCalledTimes(2);
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [0, "vad"],
+    [440, "decoder"],
+  ] as const)("attributes empty live recognition to the %s ms stage", async (speechDurationMs, emptyStage) => {
+    const release = vi.fn();
+    const acquire = vi.fn().mockResolvedValue({ release });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      `data: ${JSON.stringify({
+        type: "transcript.done",
+        text: "",
+        model: "test-model",
+        recognition: { speechDurationMs, segmentCount: 0 },
+      })}\n\n`,
+      { headers: { "content-type": "text/event-stream" } },
+    )));
+    const info = vi.fn();
+    const onProcessing = vi.fn();
+    const onTranscript = vi.fn();
+    const session = buildLocalRealtimeTranscriptionProvider(acquire, { info }).createSession({
+      providerConfig: requestConfig(),
+      onProcessing,
+      onTranscript,
+    });
+    await session.connect();
+    session.sendAudio(Buffer.concat([speech(), speech(), ...Array.from({ length: 10 }, silence)]));
+    await waitFor(() => diagnostics(info, "local_media_stt_utterance").length === 1);
+    expect(diagnostics(info, "local_media_stt_utterance")).toEqual([
+      expect.objectContaining({
+        outcome: "empty",
+        vadSpeechDurationMs: speechDurationMs,
+        decoderSegmentCount: 0,
+        emptyStage,
+      }),
+    ]);
+    expect(onTranscript).not.toHaveBeenCalled();
+    expect(onProcessing).toHaveBeenCalledWith({ utteranceId: "utterance-1", state: "empty" });
+    expect(release).toHaveBeenCalledOnce();
+    session.close();
   });
 
   it.each([
