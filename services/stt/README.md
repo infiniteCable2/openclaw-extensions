@@ -98,7 +98,7 @@ VAD. It mixes a supplied **synthetic** 16-kHz mono PCM16 voice WAV with seeded
 white, road-like, wash-like and impact noise at configurable voice levels and
 SNRs. Every mixture has a matching noise-only control. The default matrix has
 60 mixtures from -20 to +20 dB SNR and -40 to -12 dBFS voice level. It prints
-only numeric input/output level, clipping, WebRTC probability and retained-VAD
+only numeric input/output level, clipping, WebRTC probability/gain and retained-VAD
 duration; no audio or transcript is written by the evaluator.
 
 On Windows with an installed German offline SAPI voice:
@@ -117,6 +117,24 @@ two arguments, the evaluator explicitly reports `decoderTested: false`:
 retained VAD audio is not proof that words were understood. Clipping-heavy
 extremes are stress cases, not target operating conditions. This synthetic
 matrix cannot replace a real call in the problematic environment.
+
+Add `--paired` to report **raw and APM on the same mixtures** rather than
+only the configured APM path. Noise-only VAD duration is measured in both
+arms. With a model, compare paired WER case by case and repeat difficult cases;
+without a model, `wer: null` means that the result measures acoustic/VAD
+behavior only. This flag does not alter the production speech processor.
+For a short, consented 16-kHz mono PCM16 recording, use `--direct` to compare
+the unchanged input with APM without adding synthetic noise. It reports no
+audio, path or transcript; omit `--expected` when there is no authorized local
+CUDA decoder. Keep test recordings outside Git and remove them according to the
+agreed retention policy.
+
+The local-media plugin also has an opt-in cross-language worker test. Run it
+with `OPENCLAW_STT_REPLAY_PYTHON` set to the absolute Python executable from
+an installed STT test environment and with that environment's `src` directory
+on `PYTHONPATH`. It checks the actual 20-ms APM wire protocol without loading
+the CUDA model or contacting a service. Ordinary plugin tests use deterministic
+APM evidence to exercise gate, endpoint and packet-fragmentation behavior.
 
 ```bash
 python3.13 -m venv .venv
