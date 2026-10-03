@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openclaw-accelerator-runner"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fail-closed accelerator lease supervisor for OpenClaw local workers"
 requires-python = ">=3.13,<3.14"
 dependencies = []
