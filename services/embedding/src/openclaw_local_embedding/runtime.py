@@ -8,7 +8,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from openclaw_accelerator import AcceleratorDemandLease, AcceleratorDemandUnavailable
+from openclaw_accelerator import (
+    AcceleratorDemandLease,
+    AcceleratorDemandUnavailable,
+    AcceleratorPolicyKeeper,
+)
 
 
 class EmbeddingRuntimeError(RuntimeError):
@@ -31,6 +35,8 @@ class OllamaEmbeddingRuntime:
         request_keep_alive_seconds: float,
         minimum_vram_ratio: float = 0.95,
         demand_lease_factory: Any = AcceleratorDemandLease,
+        policy_subscription_enabled: bool = False,
+        policy_keeper_factory: Any = AcceleratorPolicyKeeper,
     ) -> None:
         if not model or any(ch.isspace() for ch in model):
             raise ValueError("model identifier is invalid")
@@ -62,6 +68,15 @@ class OllamaEmbeddingRuntime:
             acquire_timeout_seconds=90,
             quiesce=self._unload_and_verify,
         )
+        self._policy = None
+        if policy_subscription_enabled:
+            self._policy = policy_keeper_factory(
+                accelerator_id=accelerator_id,
+                consumer="openclaw-embedding-policy",
+                socket_path=socket_path,
+            )
+            self._policy.start()
+        self._next_warm_attempt = 0.0
         self._drainer = threading.Thread(target=self._drain_loop, name="embedding-idle-drain", daemon=True)
         self._drainer.start()
 
@@ -167,8 +182,22 @@ class OllamaEmbeddingRuntime:
     def _drain_loop(self) -> None:
         while not self._stop.wait(1.0):
             self._lease.drain_if_idle()
+            if (self._policy is not None
+                    and self._policy.unload_requested() is False
+                    and not self._lease.ready()
+                    and time.monotonic() >= self._next_warm_attempt):
+                self._next_warm_attempt = time.monotonic() + 30.0
+                try:
+                    self.embed(["OpenClaw embedding readiness probe"])
+                except EmbeddingRuntimeError:
+                    # The service remains live but not ready; retry is bounded.
+                    pass
 
     def close(self) -> None:
         self._stop.set()
         self._drainer.join(timeout=2)
-        self._lease.close()
+        try:
+            self._lease.close()
+        finally:
+            if self._policy is not None:
+                self._policy.close()
