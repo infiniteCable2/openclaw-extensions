@@ -18,6 +18,7 @@ def main() -> None:
     parser.add_argument("--accelerator-id", required=True)
     parser.add_argument("--accelerator-socket", type=Path, default=Path("/run/openclaw-accelerator/broker.sock"))
     parser.add_argument("--idle-release-seconds", type=float, default=120)
+    parser.add_argument("--prewarm-from-policy", action="store_true")
     args = parser.parse_args()
     runtime = OllamaEmbeddingRuntime(
         model=args.model,
@@ -28,6 +29,7 @@ def main() -> None:
         idle_release_seconds=args.idle_release_seconds,
         request_timeout_seconds=60,
         request_keep_alive_seconds=max(5, args.idle_release_seconds + 30),
+        policy_subscription_enabled=args.prewarm_from_policy,
         minimum_vram_ratio=0.95,
     )
     server = EmbeddingServer(

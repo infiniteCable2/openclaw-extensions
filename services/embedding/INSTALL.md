@@ -23,6 +23,16 @@ unloading, the existing `--idle-release-seconds` interval still decides when
 the service unloads and releases that lease. Active embedding requests are
 never interrupted at a schedule boundary.
 
+For opt-in autonomous daytime loading, add `--prewarm-from-policy` to the
+embedding service command only after the broker with policy subscriptions has
+been selected. The persistent embedding service then renews a CPU-only policy
+lease even while Ollama has no model loaded. On the first valid daytime policy
+it makes one bounded synthetic embedding request to load and verify GPU
+residency; a failed attempt is retried after 30 seconds. Its existing GPU
+demand lease remains tied to actual model residency, and the ordinary idle
+interval still controls unloading at night. Without this flag the previous
+on-request behavior is unchanged.
+
 Before selection, validate the package, service hardening, exact Ollama model
 digest, a synthetic 1024-dimensional non-zero embedding, and broker-confirmed
 unload after the idle interval. Back up the OpenClaw configuration and service

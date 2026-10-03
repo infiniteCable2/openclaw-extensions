@@ -8,6 +8,36 @@ from openclaw_accelerator import AcceleratorDemandUnavailable
 from openclaw_local_embedding.runtime import EmbeddingRuntimeError, OllamaEmbeddingRuntime
 
 
+def test_policy_prewarms_unloaded_embedding_once_without_user_content() -> None:
+    class Stop:
+        calls = 0
+
+        def wait(self, _seconds: float) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+    class Lease:
+        def drain_if_idle(self) -> None:
+            pass
+
+        def ready(self) -> bool:
+            return False
+
+    class Policy:
+        def unload_requested(self) -> bool:
+            return False
+
+    runtime = object.__new__(OllamaEmbeddingRuntime)
+    runtime._stop = Stop()
+    runtime._lease = Lease()
+    runtime._policy = Policy()
+    runtime._next_warm_attempt = 0.0
+    calls: list[list[str]] = []
+    runtime.embed = lambda inputs: calls.append(inputs)  # type: ignore[method-assign]
+    runtime._drain_loop()
+    assert calls == [["OpenClaw embedding readiness probe"]]
+
+
 @pytest.mark.parametrize(
     ("entry", "ok"),
     [
