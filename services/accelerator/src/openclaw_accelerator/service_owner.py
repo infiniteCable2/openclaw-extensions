@@ -174,9 +174,9 @@ class DemandSocket:
     def _handle(self, connection: socket.socket) -> None:
         added = False
         try:
-            self.owner.add_demand()
-            added = True
             with connection:
+                self.owner.add_demand()
+                added = True
                 connection.sendall(b"READY\n")
                 connection.settimeout(1.0)
                 while not self._stop.is_set():
@@ -193,6 +193,10 @@ class DemandSocket:
             self._slots.release()
 
     def serve(self, *, owner_alive: Callable[[], bool] = lambda: True) -> None:
+        if os.name == "posix":
+            parent = self.path.parent.stat()
+            if parent.st_uid != os.geteuid() or parent.st_mode & 0o077:
+                raise RuntimeError("demand socket directory must be private to the service account")
         if self.path.exists() or self.path.is_symlink():
             raise RuntimeError("demand socket already exists")
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
@@ -316,18 +320,23 @@ def demand_main() -> None:
             pass
 
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        parent_pid = os.getppid()
         connection.settimeout(10)
         connection.connect(str(args.control_socket))
         if connection.makefile("rb").read(6) != b"READY\n":
             raise SystemExit(75)
-        connection.settimeout(None)
+        connection.settimeout(1.0)
         with http.server.ThreadingHTTPServer(("127.0.0.1", args.health_port), Readiness) as server:
             server.daemon_threads = True
             thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.25}, daemon=True)
             thread.start()
             try:
-                while connection.recv(1):
-                    pass
+                while os.getppid() == parent_pid:
+                    try:
+                        if not connection.recv(1):
+                            break
+                    except socket.timeout:
+                        continue
             finally:
                 server.shutdown()
                 thread.join(timeout=2)

@@ -73,7 +73,8 @@ during daytime prewarm and could stop a live call at the night boundary. The
 connector reports ready only while connected to the owner *and* while the
 worker reports ready. Retain a bounded readiness timeout. The demand process only holds a local connection
 for as long as OpenClaw wants the service. It cannot choose a worker command,
-model or accelerator. Keep `idleStopMs` and `idleStopCheck`, so OpenClaw drops
+model or accelerator; it also exits when its OpenClaw parent disappears. Keep
+`idleStopMs` and `idleStopCheck`, so OpenClaw drops
 idle demand at night while retaining it during the daytime policy. The
 control socket must be `0600` in a private directory owned by the service
 account. Never activate both the previous direct runner command and this

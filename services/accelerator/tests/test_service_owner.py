@@ -194,3 +194,11 @@ def test_demand_connector_readiness_is_separate_from_warm_worker(tmp_path) -> No
         worker.shutdown()
         worker.server_close()
         worker_thread.join(timeout=3)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux socket permissions")
+def test_demand_socket_rejects_shared_directory(tmp_path) -> None:
+    tmp_path.chmod(0o755)
+    control = DemandSocket(tmp_path / "d.sock", object())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="private"):
+        control.serve()
