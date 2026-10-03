@@ -31,7 +31,8 @@
         },
         "expires_at_epoch": { "type": "number" },
         "unload_requested": { "type": "boolean" },
-        "policy_valid_until_epoch": { "type": "number" }
+        "policy_valid_until_epoch": { "type": "number" },
+        "policy_lease_count": { "type": "integer", "minimum": 0 }
       }
     },
     "error": {

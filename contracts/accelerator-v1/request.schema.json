@@ -6,6 +6,9 @@
     { "$ref": "#/$defs/acquire" },
     { "$ref": "#/$defs/renew" },
     { "$ref": "#/$defs/release" },
+    { "$ref": "#/$defs/subscribePolicy" },
+    { "$ref": "#/$defs/renewPolicy" },
+    { "$ref": "#/$defs/releasePolicy" },
     { "$ref": "#/$defs/status" }
   ],
   "$defs": {
@@ -54,6 +57,41 @@
       "properties": {
         "version": { "const": 1 },
         "action": { "const": "release" },
+        "accelerator_id": { "$ref": "#/$defs/id" },
+        "lease_id": { "$ref": "#/$defs/leaseId" }
+      }
+    },
+    "subscribePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "action", "accelerator_id", "consumer"],
+      "properties": {
+        "version": { "const": 1 },
+        "action": { "const": "subscribe_policy" },
+        "accelerator_id": { "$ref": "#/$defs/id" },
+        "consumer": { "$ref": "#/$defs/id" },
+        "ttl_sec": { "$ref": "#/$defs/ttl" }
+      }
+    },
+    "renewPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "action", "accelerator_id", "lease_id"],
+      "properties": {
+        "version": { "const": 1 },
+        "action": { "const": "renew_policy" },
+        "accelerator_id": { "$ref": "#/$defs/id" },
+        "lease_id": { "$ref": "#/$defs/leaseId" },
+        "ttl_sec": { "$ref": "#/$defs/ttl" }
+      }
+    },
+    "releasePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "action", "accelerator_id", "lease_id"],
+      "properties": {
+        "version": { "const": 1 },
+        "action": { "const": "release_policy" },
         "accelerator_id": { "$ref": "#/$defs/id" },
         "lease_id": { "$ref": "#/$defs/leaseId" }
       }

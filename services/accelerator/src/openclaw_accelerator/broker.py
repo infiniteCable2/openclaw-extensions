@@ -834,8 +834,10 @@ class AcceleratorManager:
         self._epoch = epoch
         self._lock = threading.RLock()
         self._leases: dict[str, Lease] = {}
+        self._policy_leases: dict[str, Lease] = {}
         self._started_at = monotonic()
         self._idle_since = self._started_at
+        self._next_wake_attempt = self._started_at
         self._state = "unknown"
         self._last_error = ""
         self._last_error_stage = ""
@@ -878,8 +880,21 @@ class AcceleratorManager:
         expired = [token for token, lease in self._leases.items() if lease.expires_monotonic <= now]
         for token in expired:
             self._leases.pop(token, None)
+        for token in [token for token, lease in self._policy_leases.items()
+                      if lease.expires_monotonic <= now]:
+            self._policy_leases.pop(token, None)
         if expired and not self._leases:
             self._idle_since = now
+
+    def _lease_ttl(self, ttl_sec: float | None) -> float:
+        if ttl_sec is not None and (
+            isinstance(ttl_sec, bool) or not isinstance(ttl_sec, (int, float))
+        ):
+            raise AcceleratorConfigError("lease ttl must be numeric")
+        ttl = self.config.default_lease_ttl_sec if ttl_sec is None else float(ttl_sec)
+        if not math.isfinite(ttl) or ttl < 5.0 or ttl > self.config.max_lease_ttl_sec:
+            raise AcceleratorConfigError("lease ttl is outside its allowed range")
+        return ttl
 
     def _policy_locked(self, epoch: float) -> dict[str, Any]:
         schedule = self.config.standby_schedule
@@ -908,13 +923,7 @@ class AcceleratorManager:
     def acquire(self, *, owner_uid: int, consumer: str, ttl_sec: float | None) -> dict[str, Any]:
         if not _ID_RE.fullmatch(consumer):
             raise AcceleratorConfigError("consumer id is invalid")
-        if ttl_sec is not None and (
-            isinstance(ttl_sec, bool) or not isinstance(ttl_sec, (int, float))
-        ):
-            raise AcceleratorConfigError("lease ttl must be numeric")
-        ttl = self.config.default_lease_ttl_sec if ttl_sec is None else float(ttl_sec)
-        if not math.isfinite(ttl) or ttl < 5.0 or ttl > self.config.max_lease_ttl_sec:
-            raise AcceleratorConfigError("lease ttl is outside its allowed range")
+        ttl = self._lease_ttl(ttl_sec)
         with self._lock:
             now = self._monotonic()
             self._reap_locked(now)
@@ -949,13 +958,7 @@ class AcceleratorManager:
             }
 
     def renew(self, *, owner_uid: int, token: str, ttl_sec: float | None) -> dict[str, Any]:
-        if ttl_sec is not None and (
-            isinstance(ttl_sec, bool) or not isinstance(ttl_sec, (int, float))
-        ):
-            raise AcceleratorConfigError("lease ttl must be numeric")
-        ttl = self.config.default_lease_ttl_sec if ttl_sec is None else float(ttl_sec)
-        if not math.isfinite(ttl) or ttl < 5.0 or ttl > self.config.max_lease_ttl_sec:
-            raise AcceleratorConfigError("lease ttl is outside its allowed range")
+        ttl = self._lease_ttl(ttl_sec)
         with self._lock:
             now = self._monotonic()
             self._reap_locked(now)
@@ -985,6 +988,49 @@ class AcceleratorManager:
                 self._idle_since = self._monotonic()
             return {"released": True, "state": self._state}
 
+    def subscribe_policy(self, *, owner_uid: int, consumer: str,
+                         ttl_sec: float | None) -> dict[str, Any]:
+        if not _ID_RE.fullmatch(consumer):
+            raise AcceleratorConfigError("consumer id is invalid")
+        ttl = self._lease_ttl(ttl_sec)
+        with self._lock:
+            now = self._monotonic()
+            self._reap_locked(now)
+            if sum(lease.owner_uid == owner_uid for lease in self._policy_leases.values()) >= MAX_LEASES_PER_UID:
+                raise AcceleratorBusyError("policy lease limit reached")
+            token = secrets.token_urlsafe(32)
+            expires_epoch = self._epoch() + ttl
+            self._policy_leases[token] = Lease(token, owner_uid, consumer, now + ttl, expires_epoch)
+            return {"lease_id": token, "accelerator_id": self.config.accelerator_id,
+                    "consumer": consumer, "expires_at_epoch": expires_epoch,
+                    **self._policy_locked(self._epoch())}
+
+    def renew_policy(self, *, owner_uid: int, token: str,
+                     ttl_sec: float | None) -> dict[str, Any]:
+        ttl = self._lease_ttl(ttl_sec)
+        with self._lock:
+            now = self._monotonic()
+            self._reap_locked(now)
+            lease = self._policy_leases.get(token)
+            if lease is None:
+                raise LeaseNotFoundError("policy lease was not found")
+            if lease.owner_uid != owner_uid:
+                raise LeaseOwnershipError("policy lease belongs to another peer")
+            lease.expires_monotonic = now + ttl
+            lease.expires_epoch = self._epoch() + ttl
+            return {"lease_id": token, "expires_at_epoch": lease.expires_epoch,
+                    **self._policy_locked(self._epoch())}
+
+    def release_policy(self, *, owner_uid: int, token: str) -> dict[str, Any]:
+        with self._lock:
+            lease = self._policy_leases.get(token)
+            if lease is None:
+                raise LeaseNotFoundError("policy lease was not found")
+            if lease.owner_uid != owner_uid:
+                raise LeaseOwnershipError("policy lease belongs to another peer")
+            self._policy_leases.pop(token, None)
+            return {"released": True}
+
     def status(self) -> dict[str, Any]:
         with self._lock:
             now = self._monotonic()
@@ -1010,6 +1056,7 @@ class AcceleratorManager:
                 "state": self._state,
                 "automatic_power_management": self.config.automatic_power_management,
                 "lease_count": len(self._leases),
+                "policy_lease_count": len(self._policy_leases),
                 "consumer_counts": dict(sorted(consumers.items())),
                 "idle_for_sec": max(0.0, now - self._idle_since) if not self._leases else 0.0,
                 "startup_guard_remaining_sec": max(
@@ -1037,6 +1084,24 @@ class AcceleratorManager:
             now = self._monotonic()
             self._reap_locked(now)
             if not self._policy_locked(self._epoch())["unload_requested"]:
+                if (self.config.automatic_power_management
+                        and self.config.standby_schedule is not None
+                        and (not self._readiness_verified or not self.backend.probe().ready)
+                        and now >= self._next_wake_attempt):
+                    try:
+                        self.backend.ensure_ready()
+                    except Exception as exc:
+                        self._state = "fault"
+                        self._readiness_verified = False
+                        self._last_error = type(exc).__name__
+                        self._last_error_stage = str(getattr(exc, "stage", "") or "")
+                        self._next_wake_attempt = now + MONITOR_FAILURE_RETRY_SEC
+                        return False
+                    self._state = "ready"
+                    self._readiness_verified = True
+                    self._last_error = ""
+                    self._last_error_stage = ""
+                    return True
                 return False
             if not self.config.automatic_power_management or self._leases:
                 return False
@@ -1156,6 +1221,26 @@ class BrokerRuntime:
         elif action == "release":
             self._fields(request, {"version", "action", "accelerator_id", "lease_id"})
             payload = self._manager(request).release(
+                owner_uid=peer_uid,
+                token=str(request.get("lease_id") or ""),
+            )
+        elif action == "subscribe_policy":
+            self._fields(request, {"version", "action", "accelerator_id", "consumer", "ttl_sec"})
+            payload = self._manager(request).subscribe_policy(
+                owner_uid=peer_uid,
+                consumer=str(request.get("consumer") or ""),
+                ttl_sec=request.get("ttl_sec"),
+            )
+        elif action == "renew_policy":
+            self._fields(request, {"version", "action", "accelerator_id", "lease_id", "ttl_sec"})
+            payload = self._manager(request).renew_policy(
+                owner_uid=peer_uid,
+                token=str(request.get("lease_id") or ""),
+                ttl_sec=request.get("ttl_sec"),
+            )
+        elif action == "release_policy":
+            self._fields(request, {"version", "action", "accelerator_id", "lease_id"})
+            payload = self._manager(request).release_policy(
                 owner_uid=peer_uid,
                 token=str(request.get("lease_id") or ""),
             )
