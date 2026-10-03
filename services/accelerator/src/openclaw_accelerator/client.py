@@ -89,6 +89,46 @@ class AcceleratorLease:
         self.released = True
 
 
+@dataclass
+class AcceleratorPolicyLease:
+    """Renewable schedule binding that never claims GPU readiness or blocks standby."""
+
+    client: "AcceleratorClient"
+    accelerator_id: str
+    lease_id: str
+    ttl_seconds: float
+    expires_at_epoch: float
+    unload_requested: bool
+    policy_valid_until_epoch: float
+    released: bool = False
+
+    def renew(self) -> float:
+        response = self.client.request({
+            "version": PROTOCOL_VERSION, "action": "renew_policy",
+            "accelerator_id": self.accelerator_id, "lease_id": self.lease_id,
+            "ttl_sec": self.ttl_seconds,
+        })
+        if response.get("lease_id") != self.lease_id:
+            raise BrokerError("broker_response_invalid", retryable=True)
+        expires_at = _required_number(response, "expires_at_epoch")
+        if expires_at <= time.time():
+            raise BrokerError("lease_expired", retryable=False)
+        unload_requested, policy_valid_until = _required_policy(response)
+        self.expires_at_epoch = expires_at
+        self.unload_requested = unload_requested
+        self.policy_valid_until_epoch = policy_valid_until
+        return expires_at
+
+    def release(self) -> None:
+        if self.released:
+            return
+        self.client.request({
+            "version": PROTOCOL_VERSION, "action": "release_policy",
+            "accelerator_id": self.accelerator_id, "lease_id": self.lease_id,
+        })
+        self.released = True
+
+
 class AcceleratorClient:
     def __init__(self, socket_path: Path, *, timeout_seconds: float = 60.0) -> None:
         path = Path(socket_path)
@@ -196,3 +236,29 @@ class AcceleratorClient:
         if response.get("accelerator_id") != accelerator_id:
             raise BrokerError("broker_response_invalid", retryable=True)
         return _required_policy(response)
+
+    def subscribe_policy(
+        self, accelerator_id: str, consumer: str, *, ttl_seconds: float,
+    ) -> AcceleratorPolicyLease:
+        if not _ID_RE.fullmatch(accelerator_id) or not _ID_RE.fullmatch(consumer):
+            raise ValueError("accelerator and consumer ids must use the safe id format")
+        if not 5 <= ttl_seconds <= 86_400:
+            raise ValueError("lease TTL is outside its allowed range")
+        response = self.request({
+            "version": PROTOCOL_VERSION, "action": "subscribe_policy",
+            "accelerator_id": accelerator_id, "consumer": consumer,
+            "ttl_sec": ttl_seconds,
+        })
+        lease_id = response.get("lease_id")
+        expires_at = _required_number(response, "expires_at_epoch")
+        unload_requested, policy_valid_until = _required_policy(response)
+        if (response.get("accelerator_id") != accelerator_id
+                or response.get("consumer") != consumer
+                or not isinstance(lease_id, str) or not 16 <= len(lease_id) <= 512
+                or expires_at <= time.time()):
+            raise BrokerError("broker_response_invalid", retryable=True)
+        return AcceleratorPolicyLease(
+            client=self, accelerator_id=accelerator_id, lease_id=lease_id,
+            ttl_seconds=float(ttl_seconds), expires_at_epoch=expires_at,
+            unload_requested=unload_requested, policy_valid_until_epoch=policy_valid_until,
+        )

@@ -875,9 +875,84 @@ def test_schedule_keeps_idle_hardware_attached_during_day() -> None:
         config, backend, start_monitor=False, monotonic=clock, epoch=epoch
     )
     clock.advance(3600)
-    assert manager.tick() is False
+    assert manager.tick() is True
     assert backend.off_count == 0
+    assert backend.ensure_count == 1
     assert manager.status()["unload_requested"] is False
+
+
+def test_policy_lease_survives_hardware_standby_and_renews_without_waking_it() -> None:
+    broker = _broker_module()
+    profile = _profile(automatic=True)
+    profile["standby_schedule"] = {
+        "timezone": "Europe/Berlin", "start": "23:00", "end": "07:00",
+    }
+    config = broker.AcceleratorConfig.from_dict("primary_cuda", profile)
+    monotonic = _Clock()
+    epoch = _Clock()
+    epoch.value = broker.datetime(2026, 9, 30, 23, tzinfo=broker.ZoneInfo("Europe/Berlin")).timestamp()
+    backend = _Backend(broker)
+    manager = broker.AcceleratorManager(
+        config, backend, start_monitor=False, monotonic=monotonic, epoch=epoch,
+    )
+    subscription = manager.subscribe_policy(owner_uid=1000, consumer="stt", ttl_sec=60)
+    assert subscription["unload_requested"] is True
+    assert manager.status()["policy_lease_count"] == 1
+    assert manager.status()["lease_count"] == 0
+    monotonic.advance(11)
+    epoch.advance(11)
+    assert manager.tick() is True
+    assert backend.off_count == 1
+    renewed = manager.renew_policy(owner_uid=1000, token=subscription["lease_id"], ttl_sec=60)
+    assert renewed["unload_requested"] is True
+    assert backend.ensure_count == 0
+    with pytest.raises(broker.LeaseOwnershipError):
+        manager.release_policy(owner_uid=1001, token=subscription["lease_id"])
+    manager.release_policy(owner_uid=1000, token=subscription["lease_id"])
+    assert manager.status()["policy_lease_count"] == 0
+
+
+def test_broker_wakes_off_hardware_at_day_boundary_without_gpu_lease() -> None:
+    broker = _broker_module()
+    profile = _profile(automatic=True)
+    profile["standby_schedule"] = {
+        "timezone": "Europe/Berlin", "start": "23:00", "end": "07:00",
+    }
+    config = broker.AcceleratorConfig.from_dict("primary_cuda", profile)
+    monotonic = _Clock()
+    epoch = _Clock()
+    epoch.value = broker.datetime(2026, 10, 1, 6, 59, 50,
+                                  tzinfo=broker.ZoneInfo("Europe/Berlin")).timestamp()
+    backend = _Backend(broker, ready=False)
+    manager = broker.AcceleratorManager(
+        config, backend, start_monitor=False, monotonic=monotonic, epoch=epoch,
+    )
+    subscription = manager.subscribe_policy(owner_uid=1000, consumer="tts", ttl_sec=60)
+    assert manager.tick() is False
+    assert backend.ensure_count == 0
+    monotonic.advance(10)
+    epoch.advance(10)
+    assert manager.tick() is True
+    assert backend.ensure_count == 1
+    assert manager.status()["readiness_verified"] is True
+    renewed = manager.renew_policy(owner_uid=1000, token=subscription["lease_id"], ttl_sec=60)
+    assert renewed["unload_requested"] is False
+    assert manager.tick() is False
+    assert backend.ensure_count == 1
+
+
+def test_policy_lease_expiry_does_not_keep_hardware_awake() -> None:
+    broker = _broker_module()
+    config = broker.AcceleratorConfig.from_dict("primary_cuda", _profile(automatic=True))
+    clock = _Clock()
+    backend = _Backend(broker)
+    manager = broker.AcceleratorManager(config, backend, start_monitor=False,
+                                        monotonic=clock, epoch=clock)
+    manager.subscribe_policy(owner_uid=1000, consumer="embedding", ttl_sec=5)
+    clock.advance(11)
+    assert manager.tick() is True
+    assert manager.status()["policy_lease_count"] == 0
+    assert manager.status()["state"] == "off"
 
 
 def test_disabled_power_management_does_not_expire_policy_at_schedule_boundary() -> None:
