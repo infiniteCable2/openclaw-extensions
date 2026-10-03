@@ -34,8 +34,9 @@ worker.
 
 ## OpenClaw ownership
 
-Do not install a persistent STT systemd unit. OpenClaw's `localService` owns
-the worker process and its idle lifetime. In accelerator `required` mode its
+In the original demand-only mode, do not install a persistent STT systemd unit.
+OpenClaw's `localService` owns the worker process and its idle lifetime. In
+accelerator `required` mode its
 command is `openclaw-accelerator-run`, followed after `--` by:
 
 ```text
@@ -70,6 +71,14 @@ When scheduled accelerator standby is enabled, keep the existing positive
 `openclaw-accelerator-idle-check` executable and fixed `--socket-path` and
 `--accelerator-id` arguments. The broker's unload wish gates the stop only
 after OpenClaw's existing idle interval. Apply the same setting to TTS.
+
+For the opt-in scheduled-owner mode, use the service-owned policy subscription
+and local demand connector described in `services/accelerator/INSTALL.md`.
+Only one owner may bind the STT worker port. Preserve the pinned CUDA library
+environment on the persistent owner unit, which launches the worker; putting
+it solely on the OpenClaw demand connector is insufficient. Verify daytime
+preload, night unload, an inbound night request, and broker outage behavior
+before switching production.
 
 For realtime agent-directed speech, set the local-media realtime provider's
 `speechProcessorPython` to
