@@ -17,6 +17,8 @@ openclaw-accelerator-run = "openclaw_accelerator.cli:main"
 openclaw-accelerator-broker = "openclaw_accelerator.broker:main"
 openclaw-accelerator-cuda-probe = "openclaw_accelerator.cuda_driver_probe:main"
 openclaw-accelerator-idle-check = "openclaw_accelerator.idle_check:main"
+openclaw-accelerator-service = "openclaw_accelerator.service_owner:owner_main"
+openclaw-accelerator-demand = "openclaw_accelerator.service_owner:demand_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/openclaw_accelerator"]

@@ -44,7 +44,8 @@ validated generation values.
 
 ## OpenClaw ownership
 
-Do not install a persistent TTS systemd unit. OpenClaw's `localService` owns
+In the original demand-only mode, do not install a persistent TTS systemd unit.
+OpenClaw's `localService` owns
 the worker and invokes the accelerator runner in `required` mode. The worker
 portion is:
 
@@ -62,6 +63,12 @@ Set `tts.auto: "inbound"` and `tts.mode: "final"`. This yields text only for a
 text inbound and text plus synthesized speech for an audio inbound. A persona
 may select one discovered public voice id; the TTS service remains the source
 of truth for its actual voice material and tuning.
+
+For the opt-in scheduled-owner mode, use the service-owned policy subscription
+and local demand connector described in `services/accelerator/INSTALL.md`.
+Only one owner may bind the TTS worker port. Verify the voice catalog and
+reference-file access from the persistent owner's worker environment before
+selection. Retain the original direct runner configuration as rollback.
 
 Acceptance requires public-catalog privacy, CUDA observation, successful Opus
 synthesis, correct per-voice switching without a second model load, worker
