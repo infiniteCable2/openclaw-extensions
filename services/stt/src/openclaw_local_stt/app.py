@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import tempfile
-import threading
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -12,6 +11,7 @@ from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from .backend import TranscriptionBackend
+from .request_lifecycle import RequestRegistry, RequestWork, ServiceError, ServiceState
 from .speech_frontend import enhance_speech_file
 
 _ALLOWED_AUDIO_TYPES = {
@@ -44,46 +44,6 @@ _AUDIO_SUFFIXES = {
 }
 
 _ALLOWED_FILENAME_SUFFIXES = frozenset(_AUDIO_SUFFIXES.values())
-
-
-class ServiceError(RuntimeError):
-    def __init__(self, code: str, message: str, status: int, *, retryable: bool) -> None:
-        super().__init__(message)
-        self.code = code
-        self.status = status
-        self.retryable = retryable
-
-
-class ServiceState:
-    def __init__(self, *, capacity: int) -> None:
-        self.admission = threading.BoundedSemaphore(capacity)
-        self.inference = threading.Lock()
-        self.counters_lock = threading.Lock()
-        self.active_requests = 0
-        self.queue_depth = 0
-
-    @contextmanager
-    def admit(self) -> Iterator[None]:
-        if not self.admission.acquire(blocking=False):
-            raise ServiceError("overloaded", "STT request queue is full", 429, retryable=True)
-        with self.counters_lock:
-            self.queue_depth += 1
-        try:
-            with self.inference:
-                with self.counters_lock:
-                    self.queue_depth -= 1
-                    self.active_requests += 1
-                try:
-                    yield
-                finally:
-                    with self.counters_lock:
-                        self.active_requests -= 1
-        finally:
-            self.admission.release()
-
-    def snapshot(self) -> tuple[int, int]:
-        with self.counters_lock:
-            return self.active_requests, self.queue_depth
 
 
 def _error_response(error: ServiceError) -> tuple[Response, int]:
@@ -155,7 +115,8 @@ def create_app(
     *,
     max_audio_bytes: int = 20 * 1024 * 1024,
     max_queued_requests: int = 2,
-    speech_frontend: Callable[[Path], Path] = enhance_speech_file,
+    request_timeout_ms: int = 300_000,
+    speech_frontend: Callable[..., Path] = enhance_speech_file,
 ) -> Flask:
     if max_audio_bytes < 1024:
         raise ValueError("max_audio_bytes must be at least 1024")
@@ -166,6 +127,7 @@ def create_app(
     app.config["MAX_CONTENT_LENGTH"] = max_audio_bytes + 1024 * 1024
     app.logger.setLevel(logging.INFO)
     state = ServiceState(capacity=1 + max_queued_requests)
+    registry = RequestRegistry(timeout_ms=request_timeout_ms)
 
     def readiness() -> dict[str, object]:
         active, queued = state.snapshot()
@@ -202,26 +164,43 @@ def create_app(
     def status() -> Response:
         return jsonify(readiness())
 
+    @app.post("/v1/requests/<identifier>/cancel")
+    def cancel(identifier: str) -> tuple[Response, int] | Response:
+        try:
+            registry.cancel(identifier)
+            return Response(status=204)
+        except ServiceError as error:
+            return _error_response(error)
+
     def streaming_response(
         audio_path: Path, *, language: str | None, prompt: str | None,
-        speech_input: bool,
+        speech_input: bool, work: RequestWork,
     ) -> Response:
         # Reserve before returning HTTP 200. threading.Lock is not owner-thread
         # bound; ExitStack retains the same bounded admission through WSGI close.
         resources = ExitStack()
+        resources.callback(registry.finish, work)
         resources.callback(audio_path.unlink, missing_ok=True)
         try:
-            resources.enter_context(state.admit())
+            resources.enter_context(state.admit(work))
             if speech_input:
-                audio_path = speech_frontend(audio_path)
+                audio_path = speech_frontend(audio_path, checkpoint=work.checkpoint)
                 resources.callback(audio_path.unlink, missing_ok=True)
-            events = backend.transcribe_stream(audio_path, language=language, prompt=prompt)
+            work.checkpoint()
+            events = backend.transcribe_stream(
+                audio_path, language=language, prompt=prompt, checkpoint=work.checkpoint,
+            )
             resources.callback(events.close)
 
             def generate() -> Iterator[bytes]:
                 try:
                     for event in events:
+                        work.checkpoint()
                         yield _sse_event(event)
+                except ServiceError as error:
+                    yield _sse_event({"type": "error", "error": {
+                        "code": error.code, "message": str(error), "retryable": error.retryable,
+                    }})
                 except Exception:
                     # Headers may already be sent. Never expose upstream error
                     # text or pretend that a failed stream completed normally.
@@ -250,7 +229,9 @@ def create_app(
     @app.post("/v1/audio/transcriptions")
     def transcribe() -> tuple[Response, int] | Response:
         audio_path: Path | None = None
+        work: RequestWork | None = None
         try:
+            work = registry.register(request.headers)
             model = _validate_optional_text("model", request.form.get("model"), 128)
             if model is None:
                 raise ServiceError("invalid_request", "model is required", 400, retryable=False)
@@ -270,18 +251,25 @@ def create_app(
                 )
             speech_input = speech_input_header == "agent-speech"
             audio_path = _store_bounded_upload(max_audio_bytes=max_audio_bytes)
+            work.checkpoint()
             if stream == "true":
                 response = streaming_response(
-                    audio_path, language=language, prompt=prompt, speech_input=speech_input
+                    audio_path, language=language, prompt=prompt, speech_input=speech_input,
+                    work=work,
                 )
                 audio_path = None  # The response owns upload/admission cleanup.
+                work = None
                 return response
-            with state.admit():
+            with state.admit(work):
                 if speech_input:
-                    processed_path = speech_frontend(audio_path)
+                    processed_path = speech_frontend(audio_path, checkpoint=work.checkpoint)
                     audio_path.unlink(missing_ok=True)
                     audio_path = processed_path
-                text = backend.transcribe(audio_path, language=language, prompt=prompt)
+                work.checkpoint()
+                text = backend.transcribe(
+                    audio_path, language=language, prompt=prompt, checkpoint=work.checkpoint,
+                )
+                work.checkpoint()
             return jsonify(text=text, model=backend.model_id)
         except ServiceError as error:
             return _error_response(error)
@@ -298,5 +286,7 @@ def create_app(
         finally:
             if audio_path is not None:
                 audio_path.unlink(missing_ok=True)
+            if work is not None:
+                registry.finish(work)
 
     return app

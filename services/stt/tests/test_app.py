@@ -22,6 +22,7 @@ class FakeBackend:
         *,
         language: str | None,
         prompt: str | None,
+        checkpoint=lambda: None,
     ) -> str:
         self.calls.append((audio_path.read_bytes(), language, prompt, audio_path.suffix))
         return "Hallo Welt"
@@ -70,7 +71,7 @@ def test_only_agent_speech_uses_frontend(tmp_path) -> None:
     backend = FakeBackend()
     calls: list[bytes] = []
 
-    def frontend(source: Path) -> Path:
+    def frontend(source: Path, **_kwargs) -> Path:
         calls.append(source.read_bytes())
         processed = tmp_path / "processed.wav"
         processed.write_bytes(b"enhanced")
@@ -166,4 +167,17 @@ def test_oversized_audio_is_rejected(service) -> None:
     )
     assert response.status_code == 413
     assert response.get_json()["error"]["code"] == "payload_too_large"
+    assert backend.calls == []
+
+
+def test_precancelled_stt_request_never_runs(service):
+    from uuid import uuid4
+    client, backend = service
+    identifier = str(uuid4())
+    assert client.post(f"/v1/requests/{identifier}/cancel").status_code == 204
+    response = client.post(
+        "/v1/audio/transcriptions", headers={"X-OpenClaw-Request-Id": identifier},
+        data={"file": (BytesIO(b"audio"), "test.wav", "audio/wav"), "model": "faster-whisper"},
+    )
+    assert response.status_code == 409
     assert backend.calls == []

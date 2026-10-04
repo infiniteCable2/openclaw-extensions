@@ -13,6 +13,7 @@ from openclaw_local_stt.backend import FasterWhisperBackend
 
 
 def make_backend(monkeypatch, tmp_path, transcribe):
+    monkeypatch.setattr(backend_module, "decode_bounded_audio", lambda path, **kwargs: str(path))
     model = SimpleNamespace(model=SimpleNamespace(device="cuda"), transcribe=transcribe)
     monkeypatch.setitem(
         sys.modules, "faster_whisper",
@@ -260,3 +261,23 @@ def test_closing_after_confirmation_closes_decoder_without_starting_it(
     assert actions == ["closed"]
     assert diagnostic_records(caplog)[0]["outcome"] == "cancelled"
     assert diagnostic_records(caplog)[0]["decodeMs"] is None
+
+
+def test_cancel_after_confirmation_skips_lazy_decoder(monkeypatch, tmp_path):
+    decoded = []
+    def segments():
+        decoded.append(True)
+        yield SimpleNamespace(text="not allowed")
+    backend = make_backend(monkeypatch, tmp_path, lambda *a, **kw: (
+        segments(), SimpleNamespace(duration=1, duration_after_vad=1),
+    ))
+    cancelled = [False]
+    def checkpoint():
+        if cancelled[0]:
+            raise RuntimeError("cancelled")
+    stream = backend.transcribe_stream(tmp_path / "input.wav", language=None, prompt=None, checkpoint=checkpoint)
+    assert next(stream) == {"type": "speech.confirmed"}
+    cancelled[0] = True
+    with pytest.raises(RuntimeError, match="cancelled"):
+        next(stream)
+    assert decoded == []

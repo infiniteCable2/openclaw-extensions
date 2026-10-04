@@ -21,9 +21,24 @@ silence. No separate VAD service is started.
 - `GET /ready`: model and requested-backend readiness.
 - `GET /status`: content-free state and bounded queue depth.
 - `POST /v1/audio/transcriptions`: OpenAI-compatible multipart upload.
+- `POST /v1/requests/{requestId}/cancel`: cooperative request cancellation.
 
 The service accepts at most one active inference plus a bounded number of
 waiting requests. It never logs audio or transcript content.
+
+Optional `X-OpenClaw-Request-Id` (random UUIDv4) and
+`X-OpenClaw-Request-Timeout-Ms` headers bind queued and active work to one bounded
+request. `--request-timeout-ms` defaults to 300000 and caps caller budgets.
+Cancellation skips stale queued inference and stops at safe decode checkpoints;
+it cannot preempt a running GPU kernel. See `contracts/local-media-v1` for
+idempotent pre-arrival cancellation, expiry/error status, and registry bounds.
+HTTP thread headroom is reserved beyond the configured inference queue.
+
+Both ordinary attachments and marked agent speech are incrementally decoded
+under a 900-second decoded-sample limit. This prevents highly compressed long
+uploads from being fully decoded before rejection. Playlist/concat demuxers and
+external protocol resolution are disabled. Ordinary attachments still receive
+no speech-only enhancement or extra capture gate.
 
 Requests explicitly marked `X-OpenClaw-Speech-Input: agent-speech` run a
 conservative WebRTC Audio Processing Module pass (high-pass, noise suppression,
@@ -34,14 +49,78 @@ the caller's device. Device-side capture should own AEC. The service requires
 the pinned WebRTC binding at startup; a missing processor never silently falls
 back to unprocessed agent speech.
 
+Live speech and marked uploads share one `SpeechProcessor`: HPF and NS precede
+one adaptive WebRTC AGC2, all at the native 10-ms cadence. The outer live wire
+still uses 20-ms frames. The public bindings are composed to expose headroom
+and gain/noise limits; no second independent feedback AGC or additional neural
+VAD is run. NS probability is passed explicitly to AGC2; uncertain input gives
+it zero gain-learning probability, not permission for another VAD invocation.
+Defaults are 12 dB maximum gain, 8 dB headroom, 6 dB/s native symmetric slew,
+and a -50 dBFS estimated output-noise limit. These are native control settings,
+not guarantees of measured SNR or of background-noise rejection. Slowing the
+symmetric slew also slows attenuation during sudden noise, so the native
+6 dB/s rate is retained. The limiter remains responsible for overload.
+
+One per-source `SpeechGainSupervisor` coordinates that native proposal with a
+signed, feed-forward speech-level ceiling. It observes **pre-gain** cleaned
+energy, never its own output, so native amplification cannot make it chase
+itself. Defaults are a -18 dBFS smoothed speech-RMS ceiling and up to 12 dB
+net attenuation, with 24 dB/s downward and 6 dB/s recovery slew. This is an
+upper operating level, not a demand to amplify everything to -18 dBFS.
+Native noise/gain constraints can always choose less. The output selector can
+only attenuate the native limited waveform, with a sample-smoothed multiplier;
+it never reverses native limiting. A falling native proposal cannot compound
+held attenuation below the supervisor's signed floor; a stronger native
+limiter reduction is left intact.
+
+Speech-level updates require NS probability at least 0.85 and nonzero received
+audio without at least 1% near-full-scale samples. Their pre-gain energy
+estimate follows rising levels with a 150-ms time constant and falling levels
+with 400 ms. Ambiguous input cannot teach a new speech level or request native
+gain growth. Existing attenuation is held for one second of untrusted frames;
+afterward negative net gain may recover smoothly toward unity, **not a new
+positive boost**. This bounds the risk of starving quiet speech after a loud
+utterance. The next trusted speech after that gap starts a fresh level estimate.
+These are conservative control permissions, not speaker identity or calibrated
+confidence. Exported capture probability is unchanged: ambiguous audio is not
+muted, gated, delayed or dropped by this supervisor.
+
+The pinned `pywebrtc-audio==0.2.0` binding hardcodes a 15 dB initial gain even
+when the maximum is lower. Startup advances only the gain stage through
+bounded silent frames to settle to the configured ceiling before processing
+user PCM. This introduces no wall-clock wait, does not prime the noise
+estimator, and discards no user samples. Revalidate this adaptation when
+upgrading the binding. Internal `SpeechControlConfig` bounds these settings;
+there is no new HTTP or OpenClaw configuration surface.
+
 The same installed runtime also exposes an internal per-call module,
 `python -m openclaw_local_stt.speech_stream`, for realtime clients. Its binary
-protocol is an `APM2` readiness marker followed by ordered 20 ms mono PCM16
-frames at 16 kHz; each input frame yields one output frame followed by two
-little-endian float32 values: speech probability and applied AGC gain in dB. The caller
+protocol is an `APM3` readiness marker followed by ordered 20 ms mono PCM16
+frames at 16 kHz; each input frame yields one 640-byte output frame followed by
+14 little-endian float32 values (56 bytes). In order: latest native 10-ms speech
+probability, applied block gain in dB, pre-gain cleaned RMS, native proposed gain
+including its limiter, minimum/maximum supervisory ceiling, then counts of
+10-ms speech/uncertain/nonspeech frames, ceiling hold/attenuate/recover frames,
+input-clipped frames and input-muted frames. Each state group sums to two;
+clipped means at least 1% of received samples at 99.9% full scale, muted means
+all-zero input. These last two counters help explain conservative control,
+not identify a speaker or classify sound conclusively. Old `APM2` workers are
+rejected at readiness; deploy and roll back the matched plugin/service pair.
+
+Gain is measured from aligned pre-/post-AGC squared energy
+over the complete 20-ms frame, including limiter action, rather than the
+binding's potentially stale last-10-ms peak ratio. It does not invert NS or
+reconstruct the original microphone signal. The caller
 owns process lifetime and a bounded input queue. This module is not a network
 endpoint, is not shared between callers, and must never be placed on a
 recording or media-relay path.
+
+Control observations do not change processing decisions. The plugin retains
+only bounded per-call aggregates in its existing log; the worker writes no
+per-frame log, audio recording or separate diagnostic store. Ceiling movement
+describes the supervisor's target, not every native gain/limiter movement.
+Raw, cleaned and output levels have distinct meanings; none is a physical SNR
+measurement or the original hardware microphone level.
 
 Each Faster-Whisper request emits one content-free info record with event
 `local_media_stt_backend` through the existing service logger. `durationMs`
@@ -51,8 +130,9 @@ with `vadEnabled` and the `transcribed`/`empty`/`failed` outcome, these distingu
 audio removed by VAD from retained audio that produced no transcript. Invalid
 or unavailable duration metadata is `null`.
 
-`prepareMs` measures the synchronous `WhisperModel.transcribe` call, including
-audio loading, VAD, feature preparation and any eager language/model work.
+`prepareMs` measures bounded audio loading and the synchronous
+`WhisperModel.transcribe` call, including VAD, feature preparation and any eager
+language/model work.
 `decodeMs` measures consuming its lazy segment iterator and collecting text.
 Neither is a pure VAD, CPU or GPU benchmark. `totalMs` covers both phases, but
 not HTTP admission or the service queue. All use a monotonic clock. No text,
@@ -85,10 +165,50 @@ Cancelled streams report diagnostic outcome `cancelled`, with `decodeMs=null`
 when decoding never started. `totalMs` can include streaming backpressure and
 is not pure model runtime. The optional wire contract is specified in
 `contracts/local-media-v1`; omitted/false `stream` preserves JSON and its error
-statuses. No VAD thresholds, default settings, worker threads or model calls
-are added by this transport option.
+statuses. No VAD thresholds or additional model calls are added by this transport
+option.
 
 ## Development
+
+### Model-free control comparison
+
+From this repository root, with the pinned native binding installed:
+
+```bash
+services/stt/.venv/bin/python services/stt/tools/compare_speech_control.py --synthetic-noise \
+  | node services/stt/tools/compare_speech_gate.mjs
+```
+
+Use a current Node runtime with native TypeScript stripping (22.18+ or 24+).
+Repeat `--input /path/to/consented.wav` for up to 32 mono 16-kHz PCM16 WAVs,
+each at most 60 seconds. The probe emits only numeric evidence and anonymous
+case labels, not media, filenames, transcripts or paths. It uses no model or
+server. Both APM variants feed the **current** TypeScript gate with its coded
+default thresholds: this isolates the APM change, not an old/new full-system
+or production-configuration comparison. Optional `--headroom-db` and
+`--slew-db-per-second` affect only the candidate in this offline probe.
+Use `--level-transitions` with an input to additionally replay a bounded excerpt
+at quiet/loud/quiet peak scales 0.05/0.98/0.05. Both native processors and gates
+retain their state across these phases. This deliberately extreme 26-dB switch
+tests recovery, not typical recording loudness. A low speech-probability result
+after the switch can originate in NS in both variants; gain changes alone
+cannot repair that classification.
+In the local extreme transition replay, both variants gave very little speech
+evidence in the final quiet phase. This remains a detector/recovery validation
+gap, not a passing end-to-end recognition result. No CUDA transcription or live
+call was exercised by this model-free probe.
+
+The local 14-recording replay retained zero accepted frames for six noise-only
+recordings and one silence recording in both variants. With the signed ceiling,
+accepted-frame fractions changed by at most 0.31 percentage points across the
+seven speech recordings compared with the combined-binding baseline.
+This is capture-gate evidence, not word-error-rate or live barge-in validation.
+The four synthetic 26-dB noise-step cases still produced 1.46–2.38-second
+speech-candidate bursts in **both** variants. Spectral probability and energy
+alone do not prove speech; preserve the subsequent VAD/STT confirmation and
+reversible interruption behavior. Do not tune a blanket rejection threshold
+to these few recordings or describe this controller as a clean-source SNR
+estimator.
 
 ### Offline noise/level matrix
 

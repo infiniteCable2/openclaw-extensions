@@ -6,9 +6,10 @@ import math
 from contextlib import closing
 from pathlib import Path
 from time import perf_counter
-from typing import Generator, Protocol
+from typing import Callable, Generator, Protocol
 
 from .recognition import RecognitionEvidence
+from .audio_decode import decode_bounded_audio
 
 
 TranscriptionEvents = Generator[dict[str, object], None, None]
@@ -33,6 +34,7 @@ class TranscriptionBackend(Protocol):
         *,
         language: str | None,
         prompt: str | None,
+        checkpoint: Callable[[], None] = lambda: None,
     ) -> str: ...
 
     def transcribe_stream(
@@ -41,6 +43,7 @@ class TranscriptionBackend(Protocol):
         *,
         language: str | None,
         prompt: str | None,
+        checkpoint: Callable[[], None] = lambda: None,
     ) -> TranscriptionEvents: ...
 
 
@@ -86,8 +89,11 @@ class FasterWhisperBackend:
         *,
         language: str | None,
         prompt: str | None,
+        checkpoint: Callable[[], None] = lambda: None,
     ) -> str:
-        with closing(self.transcribe_stream(audio_path, language=language, prompt=prompt)) as events:
+        with closing(self.transcribe_stream(
+            audio_path, language=language, prompt=prompt, checkpoint=checkpoint,
+        )) as events:
             for event in events:
                 if event["type"] == "transcript.done":
                     return str(event["text"])
@@ -99,6 +105,7 @@ class FasterWhisperBackend:
         *,
         language: str | None,
         prompt: str | None,
+        checkpoint: Callable[[], None] = lambda: None,
     ) -> TranscriptionEvents:
         started = perf_counter()
         prepare_finished: float | None = None
@@ -110,12 +117,15 @@ class FasterWhisperBackend:
         outcome = "failed"
         try:
             try:
+                audio = decode_bounded_audio(audio_path, checkpoint=checkpoint)
+                checkpoint()
                 segments, info = self._model.transcribe(
-                    str(audio_path),
+                    audio,
                     language=language,
                     initial_prompt=prompt,
                     vad_filter=self.vad_filter,
                 )
+                checkpoint()
             finally:
                 prepare_finished = perf_counter()
             retained = getattr(info, "duration_after_vad", None)
@@ -132,7 +142,14 @@ class FasterWhisperBackend:
             decode_started = perf_counter()
             try:
                 texts: list[str] = []
-                for segment in segments:
+                iterator = iter(segments)
+                while True:
+                    checkpoint()
+                    try:
+                        segment = next(iterator)
+                    except StopIteration:
+                        break
+                    checkpoint()
                     evidence.add_segment()
                     evidence.add_signal(
                         "fasterWhisper.avgLogProbability",
@@ -189,6 +206,7 @@ class FasterWhisperBackend:
                 # Diagnostics must neither fail successful inference nor mask
                 # the original inference exception when a logger is unavailable.
                 pass
+        checkpoint()
         yield {
             "type": "transcript.done", "text": result, "model": self.model_id,
             "recognition": evidence.result(

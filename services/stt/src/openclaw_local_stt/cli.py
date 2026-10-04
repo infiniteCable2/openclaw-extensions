@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--compute-type", default="float16")
     parser.add_argument("--max-audio-bytes", type=int, default=20 * 1024 * 1024)
     parser.add_argument("--max-queued-requests", type=int, default=2)
+    parser.add_argument("--request-timeout-ms", type=int, default=300_000)
     parser.add_argument("--no-vad-filter", action="store_true")
     return parser
 
@@ -38,8 +39,11 @@ def main() -> None:
         backend,
         max_audio_bytes=args.max_audio_bytes,
         max_queued_requests=args.max_queued_requests,
+        request_timeout_ms=args.request_timeout_ms,
     )
-    serve(app, host=args.host, port=args.port, threads=4, clear_untrusted_proxy_headers=True)
+    # Preserve control/health workers even when the inference queue is occupied.
+    serve(app, host=args.host, port=args.port, threads=args.max_queued_requests + 4,
+          clear_untrusted_proxy_headers=True)
 
 
 if __name__ == "__main__":

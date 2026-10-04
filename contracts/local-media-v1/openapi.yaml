@@ -48,6 +48,9 @@ paths:
   /v1/audio/transcriptions:
     post:
       operationId: transcribeAudio
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+        - $ref: "#/components/parameters/RequestTimeout"
       requestBody:
         required: true
         content:
@@ -100,6 +103,10 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "413":
           $ref: "#/components/responses/TooLarge"
+        "408":
+          $ref: "#/components/responses/Expired"
+        "409":
+          $ref: "#/components/responses/Cancelled"
         "429":
           $ref: "#/components/responses/Overloaded"
         "500":
@@ -113,6 +120,9 @@ paths:
   /v1/audio/speech:
     post:
       operationId: synthesizeSpeech
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+        - $ref: "#/components/parameters/RequestTimeout"
       requestBody:
         required: true
         content:
@@ -139,10 +149,64 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "413":
           $ref: "#/components/responses/TooLarge"
+        "408":
+          $ref: "#/components/responses/Expired"
+        "409":
+          $ref: "#/components/responses/Cancelled"
         "429":
           $ref: "#/components/responses/Overloaded"
         "503":
           $ref: "#/components/responses/Unavailable"
+  /v1/audio/speech/stream:
+    post:
+      operationId: streamSpeech
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+        - $ref: "#/components/parameters/RequestTimeout"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SpeechRequest"
+      responses:
+        "200":
+          description: >-
+            PCM-only stream. Each record is a big-endian uint32 byte length plus
+            that many PCM16 mono bytes. Zero length is successful completion;
+            EOF without it is failure/cancellation. Native sample rate is returned
+            in X-OpenClaw-Audio-Sample-Rate.
+          content:
+            application/vnd.openclaw.pcm-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "408":
+          $ref: "#/components/responses/Expired"
+        "409":
+          $ref: "#/components/responses/Cancelled"
+        "429":
+          $ref: "#/components/responses/Overloaded"
+  /v1/requests/{requestId}/cancel:
+    post:
+      operationId: cancelRequest
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The random UUIDv4 of the request in this service process.
+      responses:
+        "204":
+          description: Cancellation registered, including pre-arrival cancellation.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/Overloaded"
   /v1/voices:
     get:
       operationId: listSpeechVoices
@@ -154,6 +218,24 @@ paths:
               schema:
                 $ref: "#/components/schemas/VoiceList"
 components:
+  parameters:
+    RequestId:
+      name: X-OpenClaw-Request-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: Fresh random UUIDv4, never an identity or reused request ID.
+    RequestTimeout:
+      name: X-OpenClaw-Request-Timeout-Ms
+      in: header
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 300000
+      description: Monotonic request budget including queue and preparation time.
   schemas:
     Liveness:
       type: object
@@ -247,11 +329,12 @@ components:
               required: [code, message, retryable]
               properties:
                 code:
-                  const: inference_failed
+                  enum: [inference_failed, cancelled, deadline_exceeded, payload_too_large, invalid_request]
                 message:
-                  const: STT inference failed
+                  type: string
+                  maxLength: 512
                 retryable:
-                  const: true
+                  type: boolean
     RecognitionEvidence:
       type: object
       additionalProperties: false
@@ -371,6 +454,7 @@ components:
                 - payload_too_large
                 - overloaded
                 - timeout
+                - deadline_exceeded
                 - cancelled
                 - accelerator_unavailable
                 - model_unavailable
@@ -381,6 +465,18 @@ components:
             retryable:
               type: boolean
   responses:
+    Expired:
+      description: The bounded request deadline expired.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Cancelled:
+      description: Request cancelled or its identifier is already in use/retired.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     BadRequest:
       description: Invalid or unsupported request.
       content:
