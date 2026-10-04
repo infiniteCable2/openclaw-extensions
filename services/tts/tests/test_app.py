@@ -48,6 +48,7 @@ class FakeEncoder:
         *,
         output_format: str,
         sample_rate: int | None,
+        checkpoint=lambda: None,
     ) -> bytes:
         self.calls.append((rendered, output_format, sample_rate))
         return f"encoded-{output_format}-{sample_rate}".encode()
@@ -144,6 +145,7 @@ def test_telephony_stream_yields_ordered_segments_before_the_request_finishes() 
             *,
             output_format: str,
             sample_rate: int | None,
+            checkpoint=lambda: None,
         ) -> bytes:
             self.calls.append((rendered, output_format, sample_rate))
             return rendered.data
@@ -342,3 +344,60 @@ def test_failed_segment_never_returns_partial_audio() -> None:
     assert response.status_code == 500
     assert response.get_json()["error"]["code"] == "inference_failed"
     assert encoder.calls == []
+
+
+def test_unstarted_stream_close_releases_admission_and_retires_request():
+    from uuid import uuid4
+    backend = FakeBackend()
+    app = create_app(backend, FakeEncoder(), max_queued_requests=0)
+    identifier = str(uuid4())
+    body = {"input": "Hallo", "model": "chatterbox", "voice": "nova", "response_format": "pcm"}
+    with app.test_request_context(
+        "/v1/audio/speech/stream", method="POST", json=body,
+        headers={"X-OpenClaw-Request-Id": identifier},
+    ):
+        response = app.full_dispatch_request()
+        assert response.status_code == 200
+        assert backend.calls == []
+        assert app.test_client().get("/status").get_json()["activeRequests"] == 1
+        response.close()
+        response.close()
+    assert app.test_client().get("/status").get_json()["activeRequests"] == 0
+    assert app.test_client().post(
+        "/v1/audio/speech", json=body, headers={"X-OpenClaw-Request-Id": identifier},
+    ).status_code == 409
+    assert app.test_client().post("/v1/audio/speech", json=body).status_code == 200
+
+
+def test_cancelled_tts_stops_before_next_segment():
+    from uuid import uuid4
+    identifier = str(uuid4())
+    class CancellingBackend(FakeBackend):
+        def synthesize(self, text, *, voice_id):
+            rendered = super().synthesize(text, voice_id=voice_id)
+            app.test_client().post(f"/v1/requests/{identifier}/cancel")
+            return rendered
+    backend = CancellingBackend()
+    app = create_app(backend, FakeEncoder(), max_text_characters=1000)
+    response = app.test_client().post(
+        "/v1/audio/speech", headers={"X-OpenClaw-Request-Id": identifier},
+        json={"input": "Langer Beispielsatz mit mehreren Wörtern für einen eigenen Abschnitt. " * 8,
+              "model": "chatterbox", "voice": "nova", "response_format": "pcm"},
+    )
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "cancelled"
+    assert len(backend.calls) == 1
+    assert app.test_client().get("/status").get_json()["activeRequests"] == 0
+
+
+def test_precancelled_tts_request_never_runs(service):
+    from uuid import uuid4
+    client, backend, _ = service
+    identifier = str(uuid4())
+    assert client.post(f"/v1/requests/{identifier}/cancel").status_code == 204
+    response = client.post(
+        "/v1/audio/speech", headers={"X-OpenClaw-Request-Id": identifier},
+        json={"input": "Hallo", "model": "chatterbox", "voice": "nova", "response_format": "pcm"},
+    )
+    assert response.status_code == 409
+    assert backend.calls == []

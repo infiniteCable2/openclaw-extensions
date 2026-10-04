@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -29,4 +29,7 @@ class SynthesisBackend(Protocol):
 
 
 class AudioEncoder(Protocol):
-    def encode(self, rendered: RenderedPcm, *, output_format: str, sample_rate: int | None) -> bytes: ...
+    def encode(
+        self, rendered: RenderedPcm, *, output_format: str, sample_rate: int | None,
+        checkpoint: Callable[[], None] = lambda: None,
+    ) -> bytes: ...

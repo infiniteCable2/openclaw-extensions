@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+import time
 import wave
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from io import BytesIO
 from pathlib import Path
 
@@ -68,10 +69,14 @@ class FfmpegAudioEncoder:
         *,
         output_format: str,
         sample_rate: int | None,
+        checkpoint: Callable[[], None] = lambda: None,
     ) -> bytes:
+        checkpoint()
         if not rendered.data or len(rendered.data) % 2:
             raise ValueError("rendered PCM is empty or incomplete")
-        if output_format == "wav" and sample_rate in {None, rendered.sample_rate}:
+        if output_format == "pcm" and sample_rate in {None, rendered.sample_rate}:
+            output = rendered.data
+        elif output_format == "wav" and sample_rate in {None, rendered.sample_rate}:
             output = self._wav(rendered)
         else:
             target_rate = sample_rate or (48_000 if output_format == "opus" else rendered.sample_rate)
@@ -108,17 +113,31 @@ class FfmpegAudioEncoder:
                 "pipe:0",
                 *output_args,
             ]
-            result = subprocess.run(
+            process = subprocess.Popen(
                 command,
-                input=rendered.data,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=self.timeout_seconds,
             )
-            if result.returncode != 0 or not result.stdout:
+            deadline = time.monotonic() + self.timeout_seconds
+            data: bytes | None = rendered.data
+            try:
+                while True:
+                    checkpoint()
+                    if time.monotonic() >= deadline:
+                        raise subprocess.TimeoutExpired(command, self.timeout_seconds)
+                    try:
+                        output, _ = process.communicate(input=data, timeout=0.05)
+                        break
+                    except subprocess.TimeoutExpired:
+                        data = None
+            except BaseException:
+                process.kill()
+                process.communicate()
+                raise
+            if process.returncode != 0 or not output:
                 raise RuntimeError("audio encoding failed")
-            output = result.stdout
+        checkpoint()
         if len(output) > self.max_output_bytes:
             raise ValueError("encoded audio exceeds the configured size limit")
         return output
