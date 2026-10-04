@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import logging
 import struct
-import threading
-from contextlib import contextmanager
+from contextlib import ExitStack
 from typing import Iterator
 
 from flask import Flask, Response, jsonify, request
@@ -12,51 +11,12 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from .audio import join_speech_segments
 from .speech_segments import split_speech_text
 from .types import AudioEncoder, RenderedPcm, SynthesisBackend
+from .request_lifecycle import RequestRegistry, RequestWork, ServiceError, ServiceState
 
 _ALLOWED_FORMATS = {"opus", "pcm", "wav"}
 _ALLOWED_SAMPLE_RATES = {8_000, 16_000, 24_000, 48_000}
 _REQUEST_FIELDS = {"input", "model", "voice", "response_format", "sample_rate"}
 _MAX_STREAM_BYTES = 64 * 1024 * 1024
-
-
-class ServiceError(RuntimeError):
-    def __init__(self, code: str, message: str, status: int, *, retryable: bool) -> None:
-        super().__init__(message)
-        self.code = code
-        self.status = status
-        self.retryable = retryable
-
-
-class ServiceState:
-    def __init__(self, *, capacity: int) -> None:
-        self.admission = threading.BoundedSemaphore(capacity)
-        self.inference = threading.Lock()
-        self.counters_lock = threading.Lock()
-        self.active_requests = 0
-        self.queue_depth = 0
-
-    @contextmanager
-    def admit(self) -> Iterator[None]:
-        if not self.admission.acquire(blocking=False):
-            raise ServiceError("overloaded", "TTS request queue is full", 429, retryable=True)
-        with self.counters_lock:
-            self.queue_depth += 1
-        try:
-            with self.inference:
-                with self.counters_lock:
-                    self.queue_depth -= 1
-                    self.active_requests += 1
-                try:
-                    yield
-                finally:
-                    with self.counters_lock:
-                        self.active_requests -= 1
-        finally:
-            self.admission.release()
-
-    def snapshot(self) -> tuple[int, int]:
-        with self.counters_lock:
-            return self.active_requests, self.queue_depth
 
 
 def _error_response(error: ServiceError) -> tuple[Response, int]:
@@ -127,6 +87,7 @@ def create_app(
     *,
     max_text_characters: int = 4096,
     max_queued_requests: int = 2,
+    request_timeout_ms: int = 300_000,
 ) -> Flask:
     if max_text_characters < 10 or max_text_characters > 65_536:
         raise ValueError("max_text_characters is outside its allowed range")
@@ -137,6 +98,36 @@ def create_app(
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
     app.logger.setLevel(logging.INFO)
     state = ServiceState(capacity=1 + max_queued_requests)
+    registry = RequestRegistry(timeout_ms=request_timeout_ms)
+
+    def render_segments(segments, *, voice: str, work: RequestWork) -> Iterator[RenderedPcm]:
+        work.checkpoint()
+        rendered = backend.synthesize_segments((segment.text for segment in segments), voice_id=voice)
+        total_bytes = 0
+        try:
+            iterator = iter(rendered)
+            while True:
+                work.checkpoint()
+                try:
+                    segment = next(iterator)
+                except StopIteration:
+                    break
+                work.checkpoint()
+                total_bytes += len(segment.data)
+                if total_bytes > _MAX_STREAM_BYTES:
+                    raise ServiceError("payload_too_large", "rendered audio exceeds its limit", 413, retryable=False)
+                yield segment
+        finally:
+            if callable(close := getattr(rendered, "close", None)):
+                close()
+
+    @app.post("/v1/requests/<identifier>/cancel")
+    def cancel(identifier: str) -> tuple[Response, int] | Response:
+        try:
+            registry.cancel(identifier)
+            return Response(status=204)
+        except ServiceError as error:
+            return _error_response(error)
 
     def readiness() -> dict[str, object]:
         active, queued = state.snapshot()
@@ -184,19 +175,18 @@ def create_app(
 
     @app.post("/v1/audio/speech")
     def synthesize() -> tuple[Response, int] | Response:
+        work: RequestWork | None = None
         try:
+            work = registry.register(request.headers)
             text, voice, output_format, sample_rate = _parse_synthesis_request(
                 backend,
                 max_text_characters=max_text_characters,
             )
 
-            with state.admit():
+            with state.admit(work):
                 segments = split_speech_text(text)
                 rendered_segments = list(
-                    backend.synthesize_segments(
-                        (segment.text for segment in segments),
-                        voice_id=voice,
-                    )
+                    render_segments(segments, voice=voice, work=work)
                 )
                 rendered = join_speech_segments(
                     rendered_segments,
@@ -206,7 +196,9 @@ def create_app(
                     rendered,
                     output_format=output_format,
                     sample_rate=sample_rate,
+                    checkpoint=work.checkpoint,
                 )
+                work.checkpoint()
             content_types = {
                 "opus": "audio/ogg",
                 "pcm": "application/octet-stream",
@@ -229,10 +221,16 @@ def create_app(
                     retryable=True,
                 )
             )
+        finally:
+            if work is not None:
+                registry.finish(work)
 
     @app.post("/v1/audio/speech/stream")
     def synthesize_stream() -> tuple[Response, int] | Response:
+        resources = ExitStack()
         try:
+            work = registry.register(request.headers)
+            resources.callback(registry.finish, work)
             text, voice, output_format, sample_rate = _parse_synthesis_request(
                 backend,
                 max_text_characters=max_text_characters,
@@ -245,17 +243,14 @@ def create_app(
                     retryable=False,
                 )
             segments = split_speech_text(text)
-            admission = state.admit()
-            admission.__enter__()
+            resources.enter_context(state.admit(work))
 
             def generate() -> Iterator[bytes]:
                 total_bytes = 0
                 rendered_count = 0
                 try:
-                    rendered_segments = backend.synthesize_segments(
-                        (segment.text for segment in segments),
-                        voice_id=voice,
-                    )
+                    rendered_segments = render_segments(segments, voice=voice, work=work)
+                    resources.callback(rendered_segments.close)
                     for index, rendered in enumerate(rendered_segments):
                         rendered_count += 1
                         pause_ms = segments[index].pause_after_ms if index < len(segments) - 1 else 0
@@ -263,7 +258,9 @@ def create_app(
                             _append_pause(rendered, pause_ms),
                             output_format="pcm",
                             sample_rate=sample_rate,
+                            checkpoint=work.checkpoint,
                         )
+                        work.checkpoint()
                         if not audio or len(audio) % 2:
                             raise RuntimeError("streaming encoder returned incomplete PCM")
                         total_bytes += len(audio)
@@ -280,9 +277,9 @@ def create_app(
                     )
                     raise RuntimeError("TTS streaming inference failed") from None
                 finally:
-                    admission.__exit__(None, None, None)
+                    resources.close()
 
-            return Response(
+            response = Response(
                 generate(),
                 status=200,
                 content_type="application/vnd.openclaw.pcm-stream",
@@ -290,13 +287,19 @@ def create_app(
                     "X-OpenClaw-Audio-Sample-Rate": str(sample_rate or backend.sample_rate),
                 },
             )
+            # Unstarted WSGI generators do not execute their finally blocks.
+            response.call_on_close(resources.close)
+            return response
         except ServiceError as error:
+            resources.close()
             return _error_response(error)
         except BadRequest:
+            resources.close()
             return _error_response(
                 ServiceError("invalid_request", "JSON body is invalid", 400, retryable=False)
             )
         except Exception as error:
+            resources.close()
             app.logger.error("TTS stream setup failed error_type=%s", type(error).__name__)
             return _error_response(
                 ServiceError(

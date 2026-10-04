@@ -18,6 +18,7 @@ binary performs bounded Opus/WAV/PCM encoding; it is not discovered through
   generation settings.
 - `POST /v1/audio/speech`: OpenAI-compatible synthesis request.
 - `POST /v1/audio/speech/stream`: framed PCM segments for live transports.
+- `POST /v1/requests/{requestId}/cancel`: cooperative request cancellation.
 
 Voice-note output is Ogg Opus. Telephony output is raw mono PCM16 at the
 requested supported rate. Syntok disambiguates German and English sentence and
@@ -29,6 +30,18 @@ endpoint joins all PCM with bounded pauses and encodes once for attachment-style
 channels. The streaming endpoint emits each completed PCM segment immediately
 with a length prefix and a final completion frame; clients must reject truncated
 streams. The service never logs input text or generated audio.
+
+Requests optionally carry a random UUIDv4 `X-OpenClaw-Request-Id` and bounded
+`X-OpenClaw-Request-Timeout-Ms`. The configurable service ceiling
+`--request-timeout-ms` defaults to 300000. Queue waiting, synthesis and encoding
+share the deadline. FIFO admission skips cancelled/expired work; cancellation
+between segments prevents the remaining text from being synthesized. A running
+GPU segment may finish internally before cancellation takes effect. Codec
+processes are killed and reaped on cancellation or deadline; native-rate PCM
+uses a bit-exact process-free path. Rendered and encoded audio are bounded.
+Closing an unstarted streaming response releases its reserved admission too.
+See `contracts/local-media-v1` for the additive request lifecycle contract,
+pre-arrival cancellation, bounded ID retirement and failure semantics.
 
 ## Development
 

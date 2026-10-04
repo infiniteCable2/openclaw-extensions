@@ -35,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-text-characters", type=int, default=4096)
     parser.add_argument("--max-audio-bytes", type=int, default=64 * 1024 * 1024)
     parser.add_argument("--max-queued-requests", type=int, default=2)
+    parser.add_argument("--request-timeout-ms", type=int, default=300_000)
     return parser
 
 
@@ -80,8 +81,10 @@ def main() -> None:
         encoder,
         max_text_characters=args.max_text_characters,
         max_queued_requests=args.max_queued_requests,
+        request_timeout_ms=args.request_timeout_ms,
     )
-    serve(app, host=args.host, port=args.port, threads=4, clear_untrusted_proxy_headers=True)
+    serve(app, host=args.host, port=args.port, threads=args.max_queued_requests + 4,
+          clear_untrusted_proxy_headers=True)
 
 
 if __name__ == "__main__":
