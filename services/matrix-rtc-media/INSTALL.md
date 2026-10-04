@@ -35,3 +35,10 @@ acknowledgement form one versioned contract.
 
 A release is not accepted until a real encrypted Element X call proves
 bidirectional audio, Barge-in, teardown, and rejection of a third participant.
+For the paced reversible-gate implementation, additionally verify false
+candidate -> duck -> pause -> empty transcript -> resume with a known spoken
+sequence: no skipped or repeated words. Repeat under CPU/scheduler load and
+measure audible pause/resume latency. Keep the 1,000 ms native source queue setting;
+unit fake-sink tests verify ownership and ordering but cannot prove native
+playout continuity or bound remote latency. No dependency pin change is part
+of this implementation.
