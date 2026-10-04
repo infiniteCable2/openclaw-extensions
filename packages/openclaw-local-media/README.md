@@ -155,7 +155,9 @@ frame. For enhanced calls, onset requires that probability (default `0.6`),
 nontrivial output energy, and either an adaptive margin over the per-call
 background estimate (default `3.5` dB) or strong speech evidence. The background
 estimate uses a gain-referenced signal, so AGC growth alone does not count as
-speech. Strong speech evidence uses a smaller but still positive relative
+speech. Learning is frozen for plausible speech, including speech near the
+learned noise floor, so sustained speech cannot train itself out of the gate.
+Strong speech evidence uses a smaller but still positive relative
 margin (at most `1` dB); high WebRTC speech probability alone can no longer
 override a learned loud background. Half of `speechRmsThreshold` is the
 absolute energy guard on enhanced calls; the full value remains the sole gate
@@ -164,20 +166,52 @@ streams. Existing onset, minimum speech,
 pre-roll, and silence timings remain unchanged. The per-call summary logs only
 aggregate levels, maximum gain and high-probability frame count, never audio.
 
+Each processed 20-ms frame is paired FIFO with RMS and peak measurements from
+its exact received PCM frame before APM. Packet fragmentation does not change
+this alignment. This is the received/decoded input, not the hardware microphone
+signal; neither these levels nor the de-gained enhanced level is a physical
+SNR estimate. The original zero-input guard cannot be bypassed by APM residual
+energy. The STT processor owns the entire gain decision: native AGC2 supplies
+the noise-limited boost proposal, and a pre-gain speech-level ceiling can select
+net attenuation without a competing output-feedback loop. This plugin never
+applies an additional gain multiplier.
+An APM frame that produces no response within two seconds fails closed even
+if further input stops. Abandoned incomplete PCM frames are discarded after
+two seconds instead of being spliced into later speech.
+
 For an agent-directed enhanced call with streamed STT results, a nonempty
 recognized turn may also gently recalibrate the per-call minimum output-energy
 guard. This requires at least 300 ms of post-VAD audio, a decoder segment, and
 ten frames with strong WebRTC speech probability. Each successful turn can
 lower the guard by at most 8% of its configured starting value, with a hard
 floor at 60%; it never raises gain or weakens the probability and noise-margin
-checks. The estimate exists only for that call and resets on disconnect.
+checks. Feedback is bound to the utterance's acoustic environment and endpoint
+frame. Duplicate, out-of-order, or more than 30 seconds of input-audio-old
+feedback cannot ratchet sensitivity. After that validity period the guard
+gently returns to its configured baseline during low-probability nonspeech
+(5-second time constant), never during plausible speech. A continuous
+same-direction raw-background change of at least 6 dB for one second
+invalidates old calibration. Mute zeros, isolated impacts and missing raw
+evidence do not constitute such a change. None of these checks discard the
+recognized transcript; they govern calibration only. The estimate exists
+only for that call and resets on disconnect.
+While the current probability is ambiguous (from 0.05 below the configured
+speech threshold up to 0.85), delayed STT evidence cannot relax the energy
+guard. Capture still uses its configured threshold and preserves pre-roll;
+uncertainty does not become a new mute or hard interruption. Existing reversible
+activity and STT-confirmation rules remain unchanged.
 Backend-specific decoder scores remain observations, not calibrated confidence
 or direct gain-control inputs. Calls without recognition evidence keep the
 configured guard unchanged. Files and media relays do not use this logic.
 
 Batch audio enhancement is independently selected by OpenClaw's
 `speechInput` intent. Matrix voice messages set it; ordinary audio files do
-not. The STT service then applies the same APM family before Faster-Whisper.
+not. The STT service then applies the same 10-ms HPF/NS/AGC implementation before
+Faster-Whisper. The coordinated processor retains 8 dB native headroom,
+a 12 dB boost ceiling and the native 6 dB/s slew, and can also select up to
+12 dB net attenuation for loud speech. See the STT service README for the
+signed ceiling, bounded uncertainty hold, startup priming and model-free A/B
+probe. These service-level defaults apply to marked speech, not raw media.
 Live audio already enhanced before VAD is not enhanced a second time.
 
 `maxUtteranceMs` bounds each audio batch sent to STT, not the user's speaking
@@ -187,13 +221,22 @@ receives the cumulative text; only an actual silence endpoint delivers one
 `onTranscript` and its processing lifecycle. An audio-size boundary alone
 never dispatches an agent turn or starts waiting audio. A silence-only final
 batch still finalizes text recognized in earlier batches.
+Within the final 400 ms (at most 20% of a batch), an observed gap of at least
+80 ms is preferred as an earlier batch boundary. The hard audio cap remains
+unchanged. This avoids some word-boundary cuts without introducing duplicate
+overlap text; uninterrupted speech can still reach the hard cap.
 
 `minSpeechMs` gates the completed turn, not individual size-limited batches.
 When that minimum exceeds the batch cap, initial audio still reaches STT in
 bounded batches; partial callbacks wait until the minimum is reached. A turn
 ending below the minimum discards collected text and any late batch results.
 
-Audio queue limits and per-request deadlines remain unchanged. Accumulated
+Audio queue limits remain unchanged. The request deadline now includes serial
+queue and lease-acquisition time, starting at the audio-batch endpoint. The
+service receives a unique job ID and the remaining deadline; abort/error sends
+a bounded, best-effort cancellation request without retrying inference. HTTP
+429 rejects only the affected turn; subsequent input can use the same healthy
+call. Accumulated
 text is limited to the same 256 KiB UTF-8 budget as one STT response; overflow
 fails visibly rather than dispatching a truncated turn. Close or any failed
 batch discards unfinished text. Batch text is joined in order with spaces,
@@ -226,7 +269,15 @@ OpenClaw public SDK exposing `onProcessing` and transcript metadata; the origina
 
 Realtime transcription emits content-free JSON timing summaries through the
 existing OpenClaw plugin logger at info level; no global debug mode or extra
-provider configuration is needed. `local_media_stt_utterance` is emitted once
+provider configuration is needed. Each call receives a random `diagnosticCallId`,
+not derived from a participant, agent, room or session. Both event types retain
+it for concurrency-safe grouping. `sectionOrdinal` numbers audio batches within
+the call, and `utteranceOrdinal` groups size-limited batches of one speaking
+turn. `requestId` is the ephemeral service-job UUID, or `null` when submission
+was never reached; it is not a credential or user identifier. The current
+backend timing record does not retain that job UUID, so matching backend events
+across simultaneous requests still requires care.
+`local_media_stt_utterance` is emitted once
 per completed, discarded, or failed audio batch. A `partial` outcome denotes a
 completed size-limited batch, not a completed user turn. It separates `queueWaitMs`,
 `acquireMs`, and `httpMs` (including response-body parsing), and reports
@@ -235,13 +286,25 @@ are `null`. `endpointSilenceWallMs` is measured on a monotonic clock;
 `trailingSilenceAudioMs` and `utteranceAudioMs` are audio durations. An input
 pause alone does not end an utterance: the existing silence endpoint advances
 when audio frames arrive, not when a wall-clock timer expires.
+If input stops during an incomplete turn for at least two seconds or twice
+`silenceMs` (whichever is longer), the adapter discards that turn and its partial
+PCM, cancels its pending service job, and rejects reversible speech activity.
+It never dispatches a truncated command as though the missing frames were
+silence. The session remains connected for fresh input. `interruptedInputs`
+counts these recoveries; already-completed turns are unaffected.
 For enhanced live calls, the utterance record also carries post-onset
 `enhancedRms`, `meanSpeechProbability`, `highProbabilityFrames`, and `maxGainDb`.
+Aligned `originalRms` and `originalPeak` describe the same post-onset frames
+before APM, exposing input-level and processing changes without storing audio.
 When the streamed STT response provides recognition evidence, an empty result
 sets `emptyStage` to `vad` if Faster-Whisper retained no post-VAD audio, or
 `decoder` if it retained audio but produced no text. `unknown` means that the
 backend supplied no usable stage evidence. `vadSpeechDurationMs` and
 `decoderSegmentCount` remain observations, not a claim that noise was speech.
+Allowlisted finite decoder observations are also logged with their sample
+counts: `decoderAvgLogProbability`, `decoderNoSpeechProbability`, and
+`decoderCompressionRatio`. Unknown backend names and out-of-range values are
+omitted. These measurements are diagnostic only and never directly change AGC.
 The plugin does not automatically bypass VAD or retry unfiltered audio: that
 could transcribe background noise as speech and increase CUDA load during a
 call. Use these bounded diagnostics to choose and verify a targeted change.
@@ -261,6 +324,31 @@ gain statistics for high (at least 0.85) and low (below 0.3) WebRTC speech
 probability. The longest low-probability run and its largest gain rise after
 one second help detect noise pumping. These are acoustic probability buckets,
 not verified speech/non-speech labels or a physical SNR measurement.
+The middle probability bucket (0.3 through less than 0.85) is also recorded
+with its frame count and min/mean/max gain, rather than silently omitting
+uncertain observations. These probability buckets use one latest observation
+per 20-ms transport frame and differ from the supervisor's 10-ms permissions.
+
+The matched `APM3` worker additionally reports aligned numeric control evidence.
+`controlFrames20Ms` is the denominator for `controlCleanRms` (root mean squared
+pre-gain cleaned RMS) and `controlNativeMeanGainDb` (arithmetic mean of block
+gain in dB); native gain extrema and supervisory ceiling extrema are retained.
+`controlReceivedRms` uses the matching pre-APM frames that actually returned,
+with denominator `controlReceivedFrames20Ms`, so a remaining input backlog at
+close does not skew the raw/clean comparison. The existing output RMS covers
+these returned PCM frames as well.
+`controlSpeechFrames10Ms`, `controlUncertainFrames10Ms`, and
+`controlNonspeechFrames10Ms` count the supervisor's actual learning states.
+`controlCeilingHoldFrames10Ms`, `controlCeilingAttenuateFrames10Ms`, and
+`controlCeilingRecoverFrames10Ms` count target movements, not inferred audible
+gain changes. `controlInputClippedFrames10Ms` and `controlInputMutedFrames10Ms`
+help distinguish clipped/muted input from ambiguous acoustic evidence.
+Both three-state groups sum to twice `controlFrames20Ms`. All measurements
+remain diagnostic-only; no per-frame history, waveform, new store or separate
+retention policy is introduced. Existing logger retention applies. A hard
+process termination can still prevent the final summary from being written.
+Plugin and STT worker must be deployed/rolled back together: APM3 rejects old
+workers instead of guessing their frame layout.
 Neither event contains audio, transcript text, URLs, exception messages, model
 or participant identifiers. Logger failures never interrupt media handling.
 

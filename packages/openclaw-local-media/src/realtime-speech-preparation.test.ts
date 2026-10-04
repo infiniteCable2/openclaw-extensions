@@ -16,7 +16,12 @@ describe("realtime speech readiness", () => {
     const release = vi.fn();
     const connect = vi.fn().mockResolvedValue(undefined);
     const close = vi.fn();
-    vi.mocked(createLiveSpeechProcessor).mockReturnValue({ connect, close, send: vi.fn() });
+    vi.mocked(createLiveSpeechProcessor).mockReturnValue({
+      connect,
+      close,
+      send: vi.fn(),
+      discardPartialInput: vi.fn(),
+    });
     const provider = buildLocalRealtimeTranscriptionProvider(
       vi.fn().mockResolvedValue({ release }),
     );
@@ -40,6 +45,7 @@ describe("realtime speech readiness", () => {
       connect: vi.fn().mockRejectedValue(new Error("processor unavailable")),
       close,
       send: vi.fn(),
+      discardPartialInput: vi.fn(),
     });
     const provider = buildLocalRealtimeTranscriptionProvider(
       vi.fn().mockResolvedValue({ release }),
@@ -55,11 +61,15 @@ describe("realtime speech readiness", () => {
     vi.mocked(createLiveSpeechProcessor).mockImplementation(({ onFrame }) => ({
       connect: vi.fn().mockResolvedValue(undefined),
       close: vi.fn(),
-      send: (audio) => onFrame({
-        audio,
-        speechProbability: audio.readInt16LE(0) === 0 ? 0.1 : 0.9,
-        gainDb: 0,
-      }),
+      send: (audio) =>
+        onFrame({
+          audio,
+          speechProbability: audio.readInt16LE(0) === 0 ? 0.1 : 0.9,
+          gainDb: 0,
+          originalRms: Math.abs(audio.readInt16LE(0)) / 32768,
+          originalPeak: Math.abs(audio.readInt16LE(0)) / 32768,
+        }),
+      discardPartialInput: vi.fn(),
     }));
     const fetchMock = vi
       .fn()
@@ -94,25 +104,31 @@ describe("realtime speech readiness", () => {
     expect(onError).not.toHaveBeenCalled();
     session.close();
     const records = info.mock.calls.map(([line]) => JSON.parse(line as string));
-    expect(records).toContainEqual(expect.objectContaining({
-      event: "local_media_stt_utterance",
-      outcome: "transcribed",
-      meanSpeechProbability: expect.any(Number),
-      enhancedRms: expect.any(Number),
-      highProbabilityFrames: 4,
-      maxGainDb: 0,
-    }));
-    expect(records).toContainEqual(expect.objectContaining({
-      event: "local_media_stt_input_summary",
-      frontEndInputNearClipSamples: 0,
-      frontEndOutputNearClipSamples: 0,
-      highProbabilityGainFrames: 5,
-      highProbabilityMeanGainDb: 0,
-      lowProbabilityGainFrames: 10,
-      lowProbabilityMeanGainDb: 0,
-      longestLowProbabilityStreakMs: 200,
-      maxLowProbabilityStreakGainRiseDb: 0,
-    }));
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "local_media_stt_utterance",
+        outcome: "transcribed",
+        meanSpeechProbability: expect.any(Number),
+        enhancedRms: expect.any(Number),
+        originalRms: expect.any(Number),
+        originalPeak: 10_000 / 32_768,
+        highProbabilityFrames: 4,
+        maxGainDb: 0,
+      }),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "local_media_stt_input_summary",
+        frontEndInputNearClipSamples: 0,
+        frontEndOutputNearClipSamples: 0,
+        highProbabilityGainFrames: 5,
+        highProbabilityMeanGainDb: 0,
+        lowProbabilityGainFrames: 10,
+        lowProbabilityMeanGainDb: 0,
+        longestLowProbabilityStreakMs: 200,
+        maxLowProbabilityStreakGainRiseDb: 0,
+      }),
+    );
   });
 
   it("upsamples legacy mu-law callers into the same live speech path", async () => {
@@ -121,6 +137,7 @@ describe("realtime speech readiness", () => {
       connect: vi.fn().mockResolvedValue(undefined),
       close: vi.fn(),
       send,
+      discardPartialInput: vi.fn(),
     });
     const provider = buildLocalRealtimeTranscriptionProvider(vi.fn());
     const session = provider.createSession({ providerConfig });
@@ -135,7 +152,15 @@ describe("realtime speech readiness", () => {
     vi.mocked(createLiveSpeechProcessor).mockImplementation(({ onFrame }) => ({
       connect: vi.fn().mockResolvedValue(undefined),
       close: vi.fn(),
-      send: () => onFrame({ audio: Buffer.alloc(640), speechProbability: 0, gainDb: 0 }),
+      send: () =>
+        onFrame({
+          audio: Buffer.alloc(640),
+          speechProbability: 0,
+          gainDb: 0,
+          originalRms: 1,
+          originalPeak: 1,
+        }),
+      discardPartialInput: vi.fn(),
     }));
     const info = vi.fn();
     const session = buildLocalRealtimeTranscriptionProvider(vi.fn(), { info }).createSession({
@@ -164,7 +189,15 @@ describe("realtime speech readiness", () => {
     vi.mocked(createLiveSpeechProcessor).mockImplementation(({ onFrame }) => ({
       connect: vi.fn().mockResolvedValue(undefined),
       close: vi.fn(),
-      send: (audio) => onFrame({ audio, speechProbability: probability, gainDb }),
+      send: (audio) =>
+        onFrame({
+          audio,
+          speechProbability: probability,
+          gainDb,
+          originalRms: Math.abs(audio.readInt16LE(0)) / 32768,
+          originalPeak: Math.abs(audio.readInt16LE(0)) / 32768,
+        }),
+      discardPartialInput: vi.fn(),
     }));
     const onSpeechStart = vi.fn();
     const activity: string[] = [];
@@ -201,22 +234,35 @@ describe("realtime speech readiness", () => {
     vi.mocked(createLiveSpeechProcessor).mockImplementation(({ onFrame }) => ({
       connect: vi.fn().mockResolvedValue(undefined),
       close: vi.fn(),
-      send: (audio) => onFrame({
-        audio,
-        speechProbability: audio.readInt16LE(0) === 0 ? 0.1 : 0.9,
-        gainDb: 0,
-      }),
+      send: (audio) =>
+        onFrame({
+          audio,
+          speechProbability: audio.readInt16LE(0) === 0 ? 0.1 : 0.9,
+          gainDb: 0,
+          originalRms: Math.abs(audio.readInt16LE(0)) / 32768,
+          originalPeak: Math.abs(audio.readInt16LE(0)) / 32768,
+        }),
+      discardPartialInput: vi.fn(),
     }));
     const event = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
-    const fetchMock = vi.fn(async () => new Response(
-      event({ type: "speech.confirmed" }) + event({
-        type: "transcript.done", text: "Hallo", model: "test",
-        recognition: {
-          audioDurationMs: 700, speechDurationMs: 500, segmentCount: 1, signals: [],
-        },
-      }),
-      { headers: { "content-type": "text/event-stream" } },
-    ));
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          event({ type: "speech.confirmed" }) +
+            event({
+              type: "transcript.done",
+              text: "Hallo",
+              model: "test",
+              recognition: {
+                audioDurationMs: 700,
+                speechDurationMs: 500,
+                segmentCount: 1,
+                signals: [],
+              },
+            }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    );
     vi.stubGlobal("fetch", fetchMock);
     const onSpeechStart = vi.fn();
     const onTranscript = vi.fn();

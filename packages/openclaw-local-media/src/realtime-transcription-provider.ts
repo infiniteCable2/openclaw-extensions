@@ -1,12 +1,18 @@
+import { randomUUID } from "node:crypto";
 import {
   type OpenClawPluginApi,
   type RealtimeTranscriptionProviderPlugin,
 } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_STT_MODEL, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { createLiveSpeechDiagnostics } from "./live-speech-diagnostics.js";
-import { createLiveSpeechGate, type LiveSpeechEvidence } from "./live-speech-gate.js";
+import {
+  createLiveSpeechGate,
+  type LiveSpeechEvidence,
+  type SpeechObservation,
+} from "./live-speech-gate.js";
 import { requireLoopbackBaseUrl } from "./local-url.js";
 import { createLiveSpeechProcessor } from "./live-speech-processor.js";
+import { createMediaRequestLifecycle } from "./request-lifecycle.js";
 import { readTranscriptionEvents, type TranscriptionResult } from "./transcription-events.js";
 
 type AcquireLocalService = OpenClawPluginApi["runtime"]["llm"]["acquireLocalService"];
@@ -21,6 +27,9 @@ type UtteranceOutcome =
   | "timeout"
   | "failed";
 type UtteranceTimings = {
+  sectionOrdinal: number;
+  utteranceOrdinal: number;
+  requestId: string | null;
   endpointAt: number;
   endpointSilenceWallMs: number;
   trailingSilenceAudioMs: number;
@@ -31,11 +40,14 @@ type UtteranceTimings = {
   timedOut: boolean;
   reported: boolean;
   enhancedRms: number | null;
+  originalRms: number | null;
+  originalPeak: number | null;
   meanSpeechProbability: number | null;
   highProbabilityFrames: number;
   maxGainDb: number | null;
   vadSpeechDurationMs: number | null;
   decoderSegmentCount: number | null;
+  recognitionSignals: Record<string, number>;
   emptyStage: "vad" | "decoder" | "unknown" | null;
 };
 type RealtimeTranscriptionProviderConfig = Record<string, unknown>;
@@ -80,10 +92,12 @@ type LocalRealtimeConfig = {
 };
 
 type TranscriptTurn = {
+  controller: AbortController;
   text: string;
   generation: number;
   trustedSpeechRmsSum: number;
   trustedSpeechFrames: number;
+  speechObservation?: SpeechObservation;
   utteranceId?: string;
   speechConfirmed?: boolean;
   confirmationPublished?: boolean;
@@ -94,6 +108,7 @@ type TranscriptTurn = {
 
 const ANALYSIS_FRAME_MS = 20;
 const MAX_RESPONSE_BYTES = 256 * 1024;
+class TranscriptionBusyError extends Error {}
 
 function boundedAdd(value: number, increment: number): number {
   return Math.min(Number.MAX_SAFE_INTEGER, value + increment);
@@ -205,16 +220,40 @@ function pcm16Wav(pcm: Buffer, sampleRate: number): Buffer {
   return Buffer.concat([header, pcm]);
 }
 
-async function readBoundedJson(response: Response): Promise<unknown> {
+async function readBoundedJson(response: Response, signal: AbortSignal): Promise<unknown> {
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    void response.body?.cancel().catch(() => {});
     throw new Error("Local media realtime transcription response exceeded the size limit");
   }
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.byteLength > MAX_RESPONSE_BYTES) {
-    throw new Error("Local media realtime transcription response exceeded the size limit");
+  if (!response.body) throw new Error("Local media realtime transcription returned no response");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const abort = () => {
+    void reader.cancel().catch(() => {});
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      const next = await reader.read();
+      signal.throwIfAborted();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        throw new Error("Local media realtime transcription response exceeded the size limit");
+      }
+      chunks.push(next.value);
+    }
+    return JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total)),
+    ) as unknown;
+  } finally {
+    signal.removeEventListener("abort", abort);
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
-  return JSON.parse(bytes.toString("utf8")) as unknown;
 }
 
 async function transcribeUtterance(params: {
@@ -229,11 +268,17 @@ async function transcribeUtterance(params: {
 }): Promise<TranscriptionResult> {
   const controller = new AbortController();
   const signal = AbortSignal.any([params.signal, controller.signal]);
+  const remainingMs = params.config.requestTimeoutMs - elapsedMs(params.timings.endpointAt);
+  if (remainingMs <= 0) {
+    params.timings.timedOut = true;
+    throw new Error("Local media realtime transcription expired in queue");
+  }
   const timer = setTimeout(() => {
     params.timings.timedOut = true;
     controller.abort();
-  }, params.config.requestTimeoutMs);
+  }, remainingMs);
   let lease: Awaited<ReturnType<AcquireLocalService>>;
+  let job: ReturnType<typeof createMediaRequestLifecycle> | undefined;
   try {
     signal.throwIfAborted();
     const acquireStarted = performance.now();
@@ -264,27 +309,38 @@ async function transcribeUtterance(params: {
       form.set("language", params.config.language);
     }
     const endpoint = `${params.config.baseUrl.replace(/\/+$/, "")}/audio/transcriptions`;
+    job = createMediaRequestLifecycle({
+      baseUrl: params.config.baseUrl,
+      timeoutMs: params.config.requestTimeoutMs - elapsedMs(params.timings.endpointAt),
+      signal,
+    });
+    params.timings.requestId = job.headers["X-OpenClaw-Request-Id"];
     const httpStarted = performance.now();
     let body: unknown;
     try {
       const response = await fetch(endpoint, {
         method: "POST",
         body: form,
-        signal,
+        signal: job.signal,
         headers: {
+          ...job.headers,
           ...(!params.alreadyEnhanced ? { "x-openclaw-speech-input": "agent-speech" } : {}),
           ...(params.onSpeechConfirmed ? { accept: "text/event-stream" } : {}),
         },
       });
       if (!response.ok) {
         void response.body?.cancel().catch(() => {});
+        if (response.status === 429)
+          throw new TranscriptionBusyError("Local media transcription busy");
         throw new Error(`Local media realtime transcription failed with HTTP ${response.status}`);
       }
       if (params.onSpeechConfirmed) {
-        return await readTranscriptionEvents(response, signal, params.onSpeechConfirmed);
+        return await readTranscriptionEvents(response, job.signal, params.onSpeechConfirmed);
       }
-      body = await readBoundedJson(response);
-    } catch {
+      body = await readBoundedJson(response, job.signal);
+    } catch (error) {
+      await job.cancel();
+      if (error instanceof TranscriptionBusyError) throw error;
       // Network/parser failures can carry response text or local endpoint details.
       throw new Error("Local media realtime transcription request failed");
     } finally {
@@ -299,6 +355,7 @@ async function transcribeUtterance(params: {
     }
     return { text: (body as { text: string }).text.trim() };
   } finally {
+    job?.finish();
     clearTimeout(timer);
     await lease?.release();
   }
@@ -337,6 +394,7 @@ function createSession(
   let previousMulawSample = 0;
   let frontEndInputSquares = 0;
   let frontEndInputSamples = 0;
+  let inputDiagnosticByte: number | undefined;
   let frontEndOutputSquares = 0;
   let frontEndOutputSamples = 0;
   let frontEndMaxGainDb: number | null = null;
@@ -344,19 +402,31 @@ function createSession(
   let frontEndInputNearClipSamples = 0;
   let frontEndOutputNearClipSamples = 0;
   let batchEnhancedSquares = 0;
+  let batchOriginalSquares = 0;
+  let batchOriginalFrames = 0;
+  let batchOriginalPeak: number | null = null;
   let batchProbabilitySum = 0;
   let batchEvidenceFrames = 0;
   let batchHighProbabilityFrames = 0;
   let batchMaxGainDb: number | null = null;
   let connectedAt: number | undefined;
   let lastInputAt: number | undefined;
+  let lastRawInputAt: number | undefined;
   let lastLoudAt: number | undefined;
+  // Random and scoped to this connection, never derived from an agent/user/session.
+  const diagnosticCallId = randomUUID();
+  let diagnosticSectionOrdinal = 0;
   let summaryReported = false;
+  let inputGapTimer: NodeJS.Timeout | undefined;
   let consecutiveLoudMs = 0;
   let utteranceSequence = 0n;
   let speechGeneration = 0;
   let currentTurn: TranscriptTurn = {
-    text: "", generation: 0, trustedSpeechRmsSum: 0, trustedSpeechFrames: 0,
+    controller: new AbortController(),
+    text: "",
+    generation: 0,
+    trustedSpeechRmsSum: 0,
+    trustedSpeechFrames: 0,
   };
   const transcriptTurns = new Set<TranscriptTurn>();
   const pendingUtterances = new Set<string>();
@@ -386,6 +456,7 @@ function createSession(
     for (const turn of transcriptTurns) {
       turn.text = "";
       turn.discarded = true;
+      turn.controller.abort();
     }
     transcriptTurns.clear();
   };
@@ -416,9 +487,13 @@ function createSession(
     endpoints: 0,
     completed: 0,
     dropped: 0,
+    interruptedInputs: 0,
   };
 
   const captureTimings = (): UtteranceTimings => ({
+    sectionOrdinal: (diagnosticSectionOrdinal = boundedAdd(diagnosticSectionOrdinal, 1)),
+    utteranceOrdinal: currentTurn.generation,
+    requestId: null,
     endpointAt: performance.now(),
     endpointSilenceWallMs: lastLoudAt === undefined ? 0 : elapsedMs(lastLoudAt),
     trailingSilenceAudioMs: quietMs,
@@ -428,14 +503,18 @@ function createSession(
     httpMs: null,
     timedOut: false,
     reported: false,
-    enhancedRms: batchEvidenceFrames > 0
-      ? Math.sqrt(batchEnhancedSquares / batchEvidenceFrames) : null,
-    meanSpeechProbability: batchEvidenceFrames > 0
-      ? batchProbabilitySum / batchEvidenceFrames : null,
+    enhancedRms:
+      batchEvidenceFrames > 0 ? Math.sqrt(batchEnhancedSquares / batchEvidenceFrames) : null,
+    originalRms:
+      batchOriginalFrames > 0 ? Math.sqrt(batchOriginalSquares / batchOriginalFrames) : null,
+    originalPeak: batchOriginalPeak,
+    meanSpeechProbability:
+      batchEvidenceFrames > 0 ? batchProbabilitySum / batchEvidenceFrames : null,
     highProbabilityFrames: batchHighProbabilityFrames,
     maxGainDb: batchMaxGainDb,
     vadSpeechDurationMs: null,
     decoderSegmentCount: null,
+    recognitionSignals: {},
     emptyStage: null,
   });
 
@@ -450,6 +529,10 @@ function createSession(
       input.dropped = boundedAdd(input.dropped, 1);
     }
     logDiagnostic(logger, "local_media_stt_utterance", {
+      diagnosticCallId,
+      sectionOrdinal: timings.sectionOrdinal,
+      utteranceOrdinal: timings.utteranceOrdinal,
+      requestId: timings.requestId,
       outcome,
       queueWaitMs: timings.queueWaitMs,
       acquireMs: timings.acquireMs,
@@ -459,11 +542,14 @@ function createSession(
       trailingSilenceAudioMs: timings.trailingSilenceAudioMs,
       utteranceAudioMs: timings.utteranceAudioMs,
       enhancedRms: timings.enhancedRms,
+      originalRms: timings.originalRms,
+      originalPeak: timings.originalPeak,
       meanSpeechProbability: timings.meanSpeechProbability,
       highProbabilityFrames: timings.highProbabilityFrames,
       maxGainDb: timings.maxGainDb,
       vadSpeechDurationMs: timings.vadSpeechDurationMs,
       decoderSegmentCount: timings.decoderSegmentCount,
+      ...timings.recognitionSignals,
       emptyStage: timings.emptyStage,
     });
   };
@@ -474,6 +560,7 @@ function createSession(
     }
     summaryReported = true;
     logDiagnostic(logger, "local_media_stt_input_summary", {
+      diagnosticCallId,
       ...input,
       elapsedMs: connectedAt === undefined ? 0 : elapsedMs(connectedAt),
       inputIdleMs: lastInputAt === undefined ? 0 : elapsedMs(lastInputAt),
@@ -500,6 +587,18 @@ function createSession(
   };
 
   const recordFrontEndRms = (audio: Buffer, output: boolean) => {
+    if (!output) {
+      // Transport fragments can split a PCM16 sample at either byte. Preserve
+      // parity here just as the APM's frame buffer does.
+      if (inputDiagnosticByte !== undefined) {
+        audio = Buffer.concat([Buffer.from([inputDiagnosticByte]), audio]);
+        inputDiagnosticByte = undefined;
+      }
+      if (audio.byteLength % 2 !== 0) {
+        inputDiagnosticByte = audio[audio.byteLength - 1];
+        audio = audio.subarray(0, -1);
+      }
+    }
     let squares = 0;
     const completeBytes = audio.byteLength - (audio.byteLength % 2);
     for (let offset = 0; offset < completeBytes; offset += 2) {
@@ -527,6 +626,9 @@ function createSession(
     utterance = [];
     utteranceBytes = 0;
     batchEnhancedSquares = 0;
+    batchOriginalSquares = 0;
+    batchOriginalFrames = 0;
+    batchOriginalPeak = null;
     batchProbabilitySum = 0;
     batchEvidenceFrames = 0;
     batchHighProbabilityFrames = 0;
@@ -534,6 +636,8 @@ function createSession(
   };
 
   const discardInput = () => {
+    if (inputGapTimer) clearTimeout(inputGapTimer);
+    inputGapTimer = undefined;
     if (speaking) {
       reportUtterance(captureTimings(), "cancelled");
     }
@@ -566,6 +670,12 @@ function createSession(
     silenceEndpoint: boolean,
     turn: TranscriptTurn,
   ) => {
+    // A size-capped batch can be rejected while its user is still speaking.
+    // Its later endpoint must not reopen processing ownership for a dead turn.
+    if (turn.discarded) {
+      reportUtterance(timings, "cancelled");
+      return;
+    }
     if (queued >= config.maxQueuedUtterances) {
       reportUtterance(timings, "queue_overflow");
       fail(new Error("Local media realtime transcription queue limit exceeded"));
@@ -601,7 +711,7 @@ function createSession(
             alreadyEnhanced: enhancedLive,
             config,
             acquireLocalService,
-            signal: sessionController.signal,
+            signal: AbortSignal.any([sessionController.signal, turn.controller.signal]),
             timings,
             ...(request.onProcessing
               ? {
@@ -616,10 +726,35 @@ function createSession(
           if (result.recognition) {
             timings.vadSpeechDurationMs = result.recognition.speechDurationMs;
             timings.decoderSegmentCount = result.recognition.segmentCount;
+            // Log only known numeric observations with bounded semantics. An
+            // arbitrary backend metric name must never become log content.
+            const knownSignals = [
+              ["fasterWhisper.avgLogProbability", "decoderAvgLogProbability", -100, 0],
+              ["fasterWhisper.noSpeechProbability", "decoderNoSpeechProbability", 0, 1],
+              ["fasterWhisper.compressionRatio", "decoderCompressionRatio", 0, 100],
+            ] as const;
+            for (const [name, field, minimum, maximum] of knownSignals) {
+              const observation = result.recognition.signals?.find((item) => item.name === name);
+              if (
+                observation &&
+                Number.isFinite(observation.mean) &&
+                observation.mean >= minimum &&
+                observation.mean <= maximum &&
+                Number.isSafeInteger(observation.samples) &&
+                observation.samples >= 1
+              ) {
+                timings.recognitionSignals[field] = observation.mean;
+                timings.recognitionSignals[`${field}Samples`] = observation.samples;
+              }
+            }
           }
           if (!text) {
-            timings.emptyStage = timings.vadSpeechDurationMs === 0
-              ? "vad" : timings.vadSpeechDurationMs !== null ? "decoder" : "unknown";
+            timings.emptyStage =
+              timings.vadSpeechDurationMs === 0
+                ? "vad"
+                : timings.vadSpeechDurationMs !== null
+                  ? "decoder"
+                  : "unknown";
           }
           if (closed) {
             reportUtterance(timings, "cancelled");
@@ -635,8 +770,14 @@ function createSession(
             }
             if (utteranceId) {
               const finalText = turn.text;
-              if (finalText && result.recognition && turn.trustedSpeechFrames > 0) {
+              if (
+                finalText &&
+                result.recognition &&
+                turn.trustedSpeechFrames > 0 &&
+                turn.speechObservation
+              ) {
                 liveSpeechGate?.acceptRecognizedSpeech({
+                  observation: turn.speechObservation,
                   speechRms: turn.trustedSpeechRmsSum / turn.trustedSpeechFrames,
                   speechFrames: turn.trustedSpeechFrames,
                   speechDurationMs: result.recognition.speechDurationMs,
@@ -658,10 +799,24 @@ function createSession(
             }
           }
         } catch (error) {
+          if (turn.discarded && !closed) {
+            if (turn.utteranceId) settleProcessing(turn.utteranceId, "cancelled");
+            reportUtterance(timings, "cancelled");
+            return;
+          }
           if (turn.utteranceId) {
             settleProcessing(turn.utteranceId, closed ? "cancelled" : "failed");
           }
           reportUtterance(timings, closed ? "cancelled" : timings.timedOut ? "timeout" : "failed");
+          if (error instanceof TranscriptionBusyError) {
+            // A bounded service queue is a per-turn admission failure. Do not
+            // tear down the call or blindly replay a potentially stale command.
+            turn.discarded = true;
+            turn.text = "";
+            transcriptTurns.delete(turn);
+            if (turn.utteranceId) notifyActivity(turn.utteranceId, "rejected");
+            return;
+          }
           throw error;
         }
       })
@@ -677,6 +832,9 @@ function createSession(
     const audio = Buffer.concat(utterance, utteranceBytes);
     const silenceEndpoint = quietMs >= config.silenceMs;
     const turn = currentTurn;
+    if (turn.speechObservation && liveSpeechGate && silenceEndpoint) {
+      turn.speechObservation.frame = liveSpeechGate.captureObservation().frame;
+    }
     turn.minimumSpeechReached ||= speechMs >= config.minSpeechMs;
     const shouldTranscribe =
       (!silenceEndpoint || turn.minimumSpeechReached) && audio.byteLength > 0;
@@ -687,6 +845,9 @@ function createSession(
       utterance = [];
       utteranceBytes = 0;
       batchEnhancedSquares = 0;
+      batchOriginalSquares = 0;
+      batchOriginalFrames = 0;
+      batchOriginalPeak = null;
       batchProbabilitySum = 0;
       batchEvidenceFrames = 0;
       batchHighProbabilityFrames = 0;
@@ -699,6 +860,7 @@ function createSession(
       if (silenceEndpoint) {
         if (turn.utteranceId) notifyActivity(turn.utteranceId, "rejected");
         turn.discarded = true;
+        turn.controller.abort();
         turn.text = "";
         transcriptTurns.delete(turn);
       }
@@ -749,11 +911,13 @@ function createSession(
       speaking = true;
       speechGeneration += 1;
       currentTurn = {
+        controller: new AbortController(),
         text: "",
         generation: speechGeneration,
         trustedSpeechRmsSum: 0,
         trustedSpeechFrames: 0,
         utteranceId: `utterance-${++utteranceSequence}`,
+        speechObservation: liveSpeechGate?.captureObservation(),
       };
       transcriptTurns.add(currentTurn);
       input.speechStarts = boundedAdd(input.speechStarts, 1);
@@ -778,6 +942,11 @@ function createSession(
     }
 
     if (evidence) {
+      if (evidence.originalRms !== undefined && evidence.originalPeak !== undefined) {
+        batchOriginalSquares += evidence.originalRms * evidence.originalRms;
+        batchOriginalFrames = boundedAdd(batchOriginalFrames, 1);
+        batchOriginalPeak = Math.max(batchOriginalPeak ?? 0, evidence.originalPeak);
+      }
       batchEnhancedSquares += evidence.enhancedRms * evidence.enhancedRms;
       batchProbabilitySum += evidence.speechProbability;
       batchEvidenceFrames = boundedAdd(batchEvidenceFrames, 1);
@@ -794,7 +963,16 @@ function createSession(
 
     quietMs = loud ? 0 : quietMs + durationMs;
     const utteranceMs = utteranceBytes / inputBytesPerMs;
-    if (quietMs >= config.silenceMs || utteranceMs >= config.maxUtteranceMs) {
+    // Prefer an observed word gap near the hard work cap. This is only a batch
+    // boundary, not a user-turn endpoint, and adds neither latency nor overlap.
+    const nearCapQuietBoundary =
+      utteranceMs >= config.maxUtteranceMs - Math.min(400, config.maxUtteranceMs / 5) &&
+      quietMs >= 80;
+    if (
+      quietMs >= config.silenceMs ||
+      nearCapQuietBoundary ||
+      utteranceMs >= config.maxUtteranceMs
+    ) {
       finishTurn();
     }
   };
@@ -823,11 +1001,39 @@ function createSession(
         const frame = inputFrame;
         inputFrame = Buffer.alloc(analysisFrameBytes);
         inputFrameBytes = 0;
-        analyzeFrame(
-          frame,
-          evidence && { ...evidence, enhancedRms: calculatePcmRms(frame) },
-        );
+        analyzeFrame(frame, evidence && { ...evidence, enhancedRms: calculatePcmRms(frame) });
       }
+    }
+    if (inputGapTimer) clearTimeout(inputGapTimer);
+    inputGapTimer = undefined;
+    if (speaking || onsetMs > 0 || inputFrameBytes > 0) {
+      inputGapTimer = setTimeout(
+        () => {
+          inputGapTimer = undefined;
+          if (closed) return;
+          // Missing transport data is not acoustic silence. Drop an incomplete
+          // command rather than dispatching its truncated transcript on a timer.
+          if (speaking) {
+            reportUtterance(captureTimings(), "cancelled");
+            currentTurn.discarded = true;
+            currentTurn.controller.abort();
+            currentTurn.text = "";
+            transcriptTurns.delete(currentTurn);
+            if (currentTurn.utteranceId) notifyActivity(currentTurn.utteranceId, "rejected");
+          }
+          input.interruptedInputs = boundedAdd(input.interruptedInputs, 1);
+          resetTurn();
+          preRoll = [];
+          preRollBytes = 0;
+          inputFrame = Buffer.alloc(analysisFrameBytes);
+          inputFrameBytes = 0;
+          previousMulawSample = 0;
+          inputDiagnosticByte = undefined;
+          processor?.discardPartialInput();
+        },
+        Math.max(2_000, config.silenceMs * 2),
+      );
+      inputGapTimer.unref?.();
     }
   };
   const processor = config.speechProcessorPython
@@ -843,6 +1049,8 @@ function createSession(
           acceptAudio(frame.audio, {
             speechProbability: frame.speechProbability,
             gainDb: frame.gainDb,
+            originalRms: frame.originalRms,
+            originalPeak: frame.originalPeak,
           });
         },
         onError: fail,
@@ -859,6 +1067,11 @@ function createSession(
       connectedAt ??= performance.now();
     },
     sendAudio(audio) {
+      if (!connected || closed || audio.byteLength === 0) return;
+      if (lastRawInputAt !== undefined && elapsedMs(lastRawInputAt) >= 2_000) {
+        inputDiagnosticByte = undefined;
+      }
+      lastRawInputAt = performance.now();
       if (processor) {
         if (request.inputAudioFormat === "pcm16-16khz") {
           recordFrontEndRms(audio, false);
