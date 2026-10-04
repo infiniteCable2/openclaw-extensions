@@ -53,6 +53,81 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<Buffer[]>
 }
 
 describe("local media speech provider", () => {
+  it("drops prefetched PCM when the caller aborts between frames", async () => {
+    const upstreamCancel = vi.fn();
+    const frame = Buffer.from([0, 0, 0, 2, 1, 2]);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.concat([frame, frame]));
+      },
+      cancel: upstreamCancel,
+    });
+    const fetchMock = vi.fn(async (url: string) =>
+      url.endsWith("/cancel")
+        ? new Response(null, { status: 204 })
+        : new Response(body, {
+            headers: {
+              "content-type": "application/vnd.openclaw.pcm-stream",
+              "x-openclaw-audio-sample-rate": "24000",
+            },
+          }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { provider, providerConfig } = configuredProvider();
+    const caller = new AbortController();
+    const result = await provider.streamSynthesizeTelephony({
+      text: "Two parts",
+      providerConfig,
+      timeoutMs: 1_000,
+      signal: caller.signal,
+    });
+    const reader = result.audioStream.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false, value: Uint8Array.of(1, 2) });
+    // Let the default stream high-water mark prefetch the second local frame.
+    await Promise.resolve();
+    await Promise.resolve();
+    caller.abort(new Error("Caller interrupted"));
+    await expect(reader.read()).rejects.toThrow("Caller interrupted");
+    expect(upstreamCancel).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/cancel"))).toHaveLength(1);
+  });
+
+  it("cancels a pending PCM read before the service cancellation HTTP request finishes", async () => {
+    const upstreamCancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel: upstreamCancel });
+    let finishCancel!: (response: Response) => void;
+    const cancellationResponse = new Promise<Response>((resolve) => {
+      finishCancel = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url.endsWith("/cancel")
+          ? cancellationResponse
+          : new Response(body, {
+              headers: {
+                "content-type": "application/vnd.openclaw.pcm-stream",
+                "x-openclaw-audio-sample-rate": "24000",
+              },
+            }),
+      ),
+    );
+    const { provider, providerConfig } = configuredProvider();
+    const caller = new AbortController();
+    const result = await provider.streamSynthesizeTelephony({
+      text: "Pending",
+      providerConfig,
+      timeoutMs: 1_000,
+      signal: caller.signal,
+    });
+    const reader = result.audioStream.getReader();
+    const reading = reader.read();
+    caller.abort(new Error("Stop now"));
+    expect(upstreamCancel).toHaveBeenCalledOnce();
+    await expect(reading).rejects.toThrow("Stop now");
+    finishCancel(new Response(null, { status: 204 }));
+    await Promise.resolve();
+  });
   it("renders a Matrix-compatible Opus voice note", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(new Uint8Array([1, 2, 3]), {
@@ -106,13 +181,13 @@ describe("local media speech provider", () => {
     ).resolves.toMatchObject({
       audioBuffer: Buffer.from([4, 5]),
       outputFormat: "pcm",
-      sampleRate: 16_000,
+      sampleRate: 24_000,
     });
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(init.body))).toMatchObject({
       response_format: "pcm",
-      sample_rate: 16_000,
+      sample_rate: 24_000,
     });
   });
 
@@ -122,7 +197,7 @@ describe("local media speech provider", () => {
         status: 200,
         headers: {
           "content-type": "application/vnd.openclaw.pcm-stream",
-          "x-openclaw-audio-sample-rate": "16000",
+          "x-openclaw-audio-sample-rate": "24000",
         },
       }),
     );
@@ -139,13 +214,13 @@ describe("local media speech provider", () => {
       Buffer.from([1, 2]),
       Buffer.from([3, 4, 5, 6]),
     ]);
-    expect(result).toMatchObject({ outputFormat: "pcm", sampleRate: 16_000 });
+    expect(result).toMatchObject({ outputFormat: "pcm", sampleRate: 24_000 });
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("http://127.0.0.1:8020/v1/audio/speech/stream");
     expect(JSON.parse(String(init.body))).toMatchObject({
       voice: "nova",
       response_format: "pcm",
-      sample_rate: 16_000,
+      sample_rate: 24_000,
     });
   });
 
@@ -157,7 +232,7 @@ describe("local media speech provider", () => {
           status: 200,
           headers: {
             "content-type": "application/vnd.openclaw.pcm-stream",
-            "x-openclaw-audio-sample-rate": "16000",
+            "x-openclaw-audio-sample-rate": "24000",
           },
         }),
       ),
@@ -190,7 +265,7 @@ describe("local media speech provider", () => {
           status: 200,
           headers: {
             "content-type": "application/vnd.openclaw.pcm-stream",
-            "x-openclaw-audio-sample-rate": "16000",
+            "x-openclaw-audio-sample-rate": "24000",
           },
         }),
       ),

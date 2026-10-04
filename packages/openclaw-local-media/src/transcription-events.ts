@@ -3,6 +3,8 @@ const MAX_RESPONSE_BYTES = 256 * 1024;
 export type RecognitionSummary = {
   speechDurationMs: number | null;
   segmentCount: number;
+  /** Backend observations, not calibrated confidence or real-time VAD. */
+  signals?: Array<{ name: string; mean: number; samples: number }>;
 };
 
 export type TranscriptionResult = {
@@ -12,7 +14,7 @@ export type TranscriptionResult = {
 
 function recognitionSummary(value: unknown): RecognitionSummary | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const { speechDurationMs, segmentCount } = value as Record<string, unknown>;
+  const { speechDurationMs, segmentCount, signals: rawSignals } = value as Record<string, unknown>;
   if (
     (speechDurationMs !== null &&
       (typeof speechDurationMs !== "number" ||
@@ -25,7 +27,21 @@ function recognitionSummary(value: unknown): RecognitionSummary | undefined {
   ) {
     return undefined;
   }
-  return { speechDurationMs, segmentCount };
+  const signals: NonNullable<RecognitionSummary["signals"]> = [];
+  const names = new Set<string>();
+  if (Array.isArray(rawSignals) && rawSignals.length <= 8) {
+    for (const raw of rawSignals) {
+      if (!raw || typeof raw !== "object") continue;
+      const { name, mean, samples } = raw as Record<string, unknown>;
+      if (typeof name !== "string" || !/^[A-Za-z][A-Za-z0-9.]{0,63}$/.test(name) ||
+          names.has(name) || typeof mean !== "number" || !Number.isFinite(mean) ||
+          typeof samples !== "number" || !Number.isSafeInteger(samples) ||
+          samples < 1 || samples > 2_147_483_647) continue;
+      names.add(name);
+      signals.push({ name, mean, samples });
+    }
+  }
+  return { speechDurationMs, segmentCount, ...(signals.length ? { signals } : {}) };
 }
 
 /** Consume the local STT event stream without retaining unbounded or backend error content. */

@@ -36,11 +36,16 @@ function replayWorker(evidence: ReplayFrame[]) {
           audio: pcmAtRms(item.rms),
           speechProbability: item.probability,
           gainDb: item.gainDb,
+          originalRms: item.rms / 10 ** (item.gainDb / 20),
+          originalPeak: item.rms / 10 ** (item.gainDb / 20),
         };
         onFrame(frame);
       }
     },
     close() {},
+    discardPartialInput() {
+      pending = Buffer.alloc(0);
+    },
   }));
   return () => sent;
 }
@@ -56,10 +61,13 @@ async function waitFor(check: () => boolean) {
 async function runReplay(evidence: ReplayFrame[], packetSizes: number[], expectTranscript = false) {
   const seen = replayWorker(evidence);
   const acquire = vi.fn(async () => ({ release: vi.fn() }));
-  const fetchMock = vi.fn(async (_url: unknown, _init?: RequestInit) => new Response(
-    `data: ${JSON.stringify({ type: "transcript.done", text: "recognized", model: "test" })}\n\n`,
-    { headers: { "content-type": "text/event-stream" } },
-  ));
+  const fetchMock = vi.fn(
+    async (_url: unknown, _init?: RequestInit) =>
+      new Response(
+        `data: ${JSON.stringify({ type: "transcript.done", text: "recognized", model: "test" })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+  );
   vi.stubGlobal("fetch", fetchMock);
   const events: string[] = [];
   const transcripts: string[] = [];
@@ -87,7 +95,10 @@ async function runReplay(evidence: ReplayFrame[], packetSizes: number[], expectT
     let offset = 0;
     let index = 0;
     while (offset < input.byteLength) {
-      const end = Math.min(input.byteLength, offset + (packetSizes[index++ % packetSizes.length] ?? FRAME_BYTES));
+      const end = Math.min(
+        input.byteLength,
+        offset + (packetSizes[index++ % packetSizes.length] ?? FRAME_BYTES),
+      );
       session.sendAudio(input.subarray(offset, end));
       offset = end;
     }
@@ -135,10 +146,7 @@ describe("agent-directed live speech replay (APM evidence supplied, no recogniti
       probability: 0.18,
       gainDb: Math.min(12, index / 10),
     }));
-    const bumps = [
-      ...frames(2, 0.25, 0.9, 12),
-      ...frames(10, 0.015, 0.15, 12),
-    ];
+    const bumps = [...frames(2, 0.25, 0.9, 12), ...frames(10, 0.015, 0.15, 12)];
     const result = await runReplay([...road, ...bumps], [7, 319, 51, 163]);
     expect(result.events).toEqual([]);
     expect(result.transcripts).toEqual([]);

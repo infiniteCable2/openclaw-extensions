@@ -69,6 +69,117 @@ function fixture(
 }
 
 describe("continuous speech across bounded STT batches", () => {
+  it.each([false, true])("does not reopen a rejected size batch (endpoint queued: %s)", async (endpointAlreadyQueued) => {
+    const f = fixture(true, [], { maxUtteranceMs: 1_000 });
+    const first = deferredResponse();
+    f.fetch.mockImplementation(async (url) => {
+      if (String(url).endsWith("/cancel")) return new Response(null, { status: 204 });
+      return first.promise;
+    });
+    await f.session.connect();
+    f.session.sendAudio(speech(1_000));
+    await vi.advanceTimersByTimeAsync(0);
+    if (endpointAlreadyQueued) f.session.sendAudio(silence());
+    first.resolve(new Response(null, { status: 429 }));
+    await vi.advanceTimersByTimeAsync(0);
+    if (!endpointAlreadyQueued) f.session.sendAudio(silence());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.onProcessing.mock.calls.map(([value]) => value.state)).toEqual(
+      endpointAlreadyQueued ? ["started", "failed"] : [],
+    );
+    expect(f.fetch.mock.calls.filter(([url]) => !String(url).endsWith("/cancel"))).toHaveLength(1);
+    expect(f.onTranscript).not.toHaveBeenCalled();
+    expect(f.onError).not.toHaveBeenCalled();
+    expect(f.session.isConnected()).toBe(true);
+    f.session.close();
+    expect(f.onProcessing.mock.calls.map(([value]) => value.state)).toEqual(
+      endpointAlreadyQueued ? ["started", "failed"] : [],
+    );
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("preserves an older completed turn when a newer incomplete input stalls", async () => {
+    const f = fixture(true);
+    const first = deferredResponse();
+    f.fetch.mockImplementationOnce(() => first.promise);
+    await f.session.connect();
+    f.session.sendAudio(Buffer.concat([speech(200), silence()]));
+    await vi.advanceTimersByTimeAsync(0);
+    f.session.sendAudio(speech(200));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(f.fetch).toHaveBeenCalledOnce();
+    first.resolve(
+      new Response(
+        event({ type: "speech.confirmed" }) +
+          event({
+            type: "transcript.done",
+            text: "Keep the completed first request",
+            model: "test",
+          }),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.onTranscript).toHaveBeenCalledExactlyOnceWith("Keep the completed first request", {
+      utteranceId: "utterance-1",
+    });
+    expect(f.onProcessing.mock.calls.map(([value]) => value)).toEqual([
+      { utteranceId: "utterance-1", state: "started" },
+      { utteranceId: "utterance-1", state: "transcribed" },
+    ]);
+    expect(f.onError).not.toHaveBeenCalled();
+    expect(f.session.isConnected()).toBe(true);
+    f.session.close();
+  });
+  it("cancels an in-flight partial after a transport gap without closing the call", async () => {
+    const f = fixture(true, [], { maxUtteranceMs: 1_000 });
+    f.fetch.mockImplementation(async (url, init) => {
+      if (String(url).endsWith("/cancel")) return new Response(null, { status: 204 });
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("Cancelled")), {
+          once: true,
+        });
+      });
+    });
+    await f.session.connect();
+    f.session.sendAudio(speech(1_000));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.fetch).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith("/cancel"))).toHaveLength(1);
+    expect(f.release).toHaveBeenCalledOnce();
+    expect(f.onTranscript).not.toHaveBeenCalled();
+    expect(f.onPartial).not.toHaveBeenCalled();
+    expect(f.onError).not.toHaveBeenCalled();
+    expect(f.session.isConnected()).toBe(true);
+    f.session.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("uses a short observed gap near the audio cap without finalizing the turn", async () => {
+    const f = fixture(true, ["Before gap", "after gap"], { maxUtteranceMs: 2_000 });
+    await f.session.connect();
+    f.session.sendAudio(speech(1_600));
+    f.session.sendAudio(silence(80));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(f.onTranscript).not.toHaveBeenCalled();
+    expect(f.onProcessing).not.toHaveBeenCalled();
+    f.session.sendAudio(speech(500));
+    f.session.sendAudio(silence());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.onTranscript).toHaveBeenCalledExactlyOnceWith("Before gap after gap", {
+      utteranceId: "utterance-1",
+    });
+    const sizes = await Promise.all(
+      f.fetch.mock.calls.map(async ([, init]) => {
+        const file = (init?.body as FormData).get("file") as File;
+        return ((await file.arrayBuffer()).byteLength - 44) / 16;
+      }),
+    );
+    expect(sizes).toEqual([1_680, 1_200]);
+    expect(f.onSpeechStart).toHaveBeenCalledOnce();
+    f.session.close();
+  });
   it("retains initial bounded batches when minimum speech exceeds the batch cap", async () => {
     const f = fixture(true, ["Beginning", "middle", "ending", ""], {
       maxUtteranceMs: 1_000,
@@ -141,7 +252,7 @@ describe("continuous speech across bounded STT batches", () => {
     ]);
     expect(f.onTranscript).not.toHaveBeenCalled();
     expect(f.onPartial).not.toHaveBeenCalled();
-    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(f.fetch.mock.calls.filter(([url]) => !String(url).endsWith("/cancel"))).toHaveLength(1);
     expect(f.release).toHaveBeenCalledOnce();
     expect(f.onError).toHaveBeenCalledOnce();
     expect(f.session.isConnected()).toBe(false);
@@ -257,7 +368,7 @@ describe("continuous speech across bounded STT batches", () => {
       ),
     );
     await vi.advanceTimersByTimeAsync(0);
-    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.fetch.mock.calls.filter(([url]) => !String(url).endsWith("/cancel"))).toHaveLength(2);
     expect(f.onPartial).toHaveBeenCalledExactlyOnceWith("Prefix");
     expect(f.onTranscript).not.toHaveBeenCalled();
     expect(f.onProcessing.mock.calls.map(([value]) => value.state)).toEqual([

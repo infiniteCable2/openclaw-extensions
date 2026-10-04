@@ -1,6 +1,7 @@
 import type { SpeechProviderPlugin } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { requireLoopbackBaseUrl, resolveLoopbackBaseUrl } from "./local-url.js";
+import { createMediaRequestLifecycle } from "./request-lifecycle.js";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_AUDIO_RESPONSE_BYTES = 64 * 1024 * 1024;
@@ -64,23 +65,34 @@ async function requestSpeech(params: {
 }): Promise<Buffer> {
   const baseUrl = requireLoopbackBaseUrl(params.providerConfig.baseUrl, "Local media TTS");
   const selection = readSpeechSelection(params.providerConfig, params.overrides);
-  const response = await fetch(`${baseUrl}/audio/speech`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      input: params.text,
-      model: selection.model,
-      voice: selection.voice,
-      response_format: params.responseFormat,
-      ...(params.sampleRate ? { sample_rate: params.sampleRate } : {}),
-    }),
-    redirect: "error",
-    signal: AbortSignal.timeout(params.timeoutMs),
-  });
-  if (!response.ok) {
-    throw new Error(`Local media TTS failed with HTTP ${response.status}`);
+  const job = createMediaRequestLifecycle({ baseUrl, timeoutMs: params.timeoutMs });
+  let response: Response | undefined;
+  try {
+    job.signal.throwIfAborted();
+    response = await fetch(`${baseUrl}/audio/speech`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...job.headers },
+      body: JSON.stringify({
+        input: params.text,
+        model: selection.model,
+        voice: selection.voice,
+        response_format: params.responseFormat,
+        ...(params.sampleRate ? { sample_rate: params.sampleRate } : {}),
+      }),
+      redirect: "error",
+      signal: job.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Local media TTS failed with HTTP ${response.status}`);
+    }
+    return await readBoundedAudioResponse(response);
+  } catch (error) {
+    await response?.body?.cancel().catch(() => undefined);
+    await job.cancel();
+    throw error;
+  } finally {
+    job.finish();
   }
-  return await readBoundedAudioResponse(response);
 }
 
 async function requestSpeechStream(params: {
@@ -93,94 +105,149 @@ async function requestSpeechStream(params: {
 }): Promise<ReadableStream<Uint8Array>> {
   const baseUrl = requireLoopbackBaseUrl(params.providerConfig.baseUrl, "Local media TTS");
   const selection = readSpeechSelection(params.providerConfig, params.overrides);
-  const timeoutSignal = AbortSignal.timeout(params.timeoutMs);
-  const signal = params.signal ? AbortSignal.any([params.signal, timeoutSignal]) : timeoutSignal;
-  const response = await fetch(`${baseUrl}/audio/speech/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      input: params.text,
-      model: selection.model,
-      voice: selection.voice,
-      response_format: "pcm",
-      sample_rate: params.sampleRate,
-    }),
-    redirect: "error",
-    signal,
+  const job = createMediaRequestLifecycle({
+    baseUrl,
+    timeoutMs: params.timeoutMs,
+    signal: params.signal,
   });
-  if (!response.ok) {
-    throw new Error(`Local media streaming TTS failed with HTTP ${response.status}`);
-  }
-  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-  if (contentType !== "application/vnd.openclaw.pcm-stream") {
-    throw new Error("Local media streaming TTS returned an invalid content type");
-  }
-  if (Number(response.headers.get("x-openclaw-audio-sample-rate")) !== params.sampleRate) {
-    throw new Error("Local media streaming TTS returned an unexpected sample rate");
-  }
-  if (!response.body) {
-    throw new Error("Local media streaming TTS returned an empty response");
-  }
+  let response: Response | undefined;
+  try {
+    job.signal.throwIfAborted();
+    response = await fetch(`${baseUrl}/audio/speech/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...job.headers },
+      body: JSON.stringify({
+        input: params.text,
+        model: selection.model,
+        voice: selection.voice,
+        response_format: "pcm",
+        sample_rate: params.sampleRate,
+      }),
+      redirect: "error",
+      signal: job.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Local media streaming TTS failed with HTTP ${response.status}`);
+    }
+    const contentType = response.headers
+      .get("content-type")
+      ?.split(";", 1)[0]
+      ?.trim()
+      .toLowerCase();
+    if (contentType !== "application/vnd.openclaw.pcm-stream") {
+      throw new Error("Local media streaming TTS returned an invalid content type");
+    }
+    if (Number(response.headers.get("x-openclaw-audio-sample-rate")) !== params.sampleRate) {
+      throw new Error("Local media streaming TTS returned an unexpected sample rate");
+    }
+    if (!response.body) {
+      throw new Error("Local media streaming TTS returned an empty response");
+    }
 
-  const reader = response.body.getReader();
-  let buffered = Buffer.alloc(0);
-  let totalLength = 0;
-  let complete = false;
-  const readMore = async () => {
-    const next = await reader.read();
-    if (next.done) {
-      throw new Error("Local media streaming TTS response ended before completion");
-    }
-    buffered = Buffer.concat([buffered, Buffer.from(next.value)]);
-  };
-  const readFrame = async (): Promise<Uint8Array | undefined> => {
-    while (buffered.byteLength < 4) {
-      await readMore();
-    }
-    const frameLength = buffered.readUInt32BE(0);
-    if (frameLength === 0) {
-      buffered = buffered.subarray(4);
-      complete = true;
-      return undefined;
-    }
-    if (frameLength > MAX_AUDIO_RESPONSE_BYTES || frameLength % 2 !== 0) {
-      throw new Error("Local media streaming TTS returned an invalid frame");
-    }
-    while (buffered.byteLength < 4 + frameLength) {
-      await readMore();
-    }
-    const frame = buffered.subarray(4, 4 + frameLength);
-    buffered = buffered.subarray(4 + frameLength);
-    totalLength += frame.byteLength;
-    if (totalLength > MAX_AUDIO_RESPONSE_BYTES) {
-      throw new Error("Local media streaming TTS response exceeds the configured size limit");
-    }
-    return Uint8Array.from(frame);
-  };
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const frame = await readFrame();
-        if (frame) {
-          controller.enqueue(frame);
-          return;
-        }
-        if (!complete || totalLength === 0 || buffered.byteLength !== 0) {
-          throw new Error("Local media streaming TTS returned an incomplete response");
-        }
-        controller.close();
-        reader.releaseLock();
-      } catch (error) {
-        await reader.cancel().catch(() => undefined);
-        reader.releaseLock();
-        controller.error(error);
+    const reader = response.body.getReader();
+    let buffered = Buffer.alloc(0);
+    let totalLength = 0;
+    let complete = false;
+    let stopped = false;
+    let cleanupPromise: Promise<void> | undefined;
+    let outputController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const abortOutput = () => {
+      if (stopped) return;
+      // Erroring the output also drops a frame already queued by stream
+      // prefetch; stopping fetch alone cannot invalidate that local buffer.
+      outputController?.error(
+        job.signal.reason ?? new Error("Local media streaming TTS cancelled"),
+      );
+      void cleanup(true, job.signal.reason);
+    };
+    const cleanup = (cancelJob: boolean, reason?: unknown): Promise<void> => {
+      if (cleanupPromise) return cleanupPromise;
+      stopped = true;
+      job.signal.removeEventListener("abort", abortOutput);
+      buffered = Buffer.alloc(0);
+      // Stop consumption immediately, before the best-effort cancellation
+      // request waits for its independent HTTP deadline.
+      const cancelReader = reader
+        .cancel(reason)
+        .catch(() => undefined)
+        .then(() => {
+          reader.releaseLock();
+        });
+      const cancelService = cancelJob ? job.cancel() : Promise.resolve();
+      job.finish();
+      cleanupPromise = Promise.all([cancelReader, cancelService]).then(() => undefined);
+      return cleanupPromise;
+    };
+    const readMore = async () => {
+      job.signal.throwIfAborted();
+      const next = await reader.read();
+      if (stopped) throw new Error("Local media streaming TTS closed");
+      if (next.done) {
+        throw new Error("Local media streaming TTS response ended before completion");
       }
-    },
-    async cancel(reason) {
-      await reader.cancel(reason).catch(() => undefined);
-      reader.releaseLock();
-    },
-  });
+      buffered = Buffer.concat([buffered, Buffer.from(next.value)]);
+    };
+    const readFrame = async (): Promise<Uint8Array | undefined> => {
+      while (buffered.byteLength < 4) {
+        await readMore();
+      }
+      const frameLength = buffered.readUInt32BE(0);
+      if (frameLength === 0) {
+        buffered = buffered.subarray(4);
+        complete = true;
+        return undefined;
+      }
+      if (frameLength > MAX_AUDIO_RESPONSE_BYTES || frameLength % 2 !== 0) {
+        throw new Error("Local media streaming TTS returned an invalid frame");
+      }
+      while (buffered.byteLength < 4 + frameLength) {
+        await readMore();
+      }
+      const frame = buffered.subarray(4, 4 + frameLength);
+      buffered = buffered.subarray(4 + frameLength);
+      totalLength += frame.byteLength;
+      if (totalLength > MAX_AUDIO_RESPONSE_BYTES) {
+        throw new Error("Local media streaming TTS response exceeds the configured size limit");
+      }
+      return Uint8Array.from(frame);
+    };
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        outputController = controller;
+        job.signal.addEventListener("abort", abortOutput, { once: true });
+        if (job.signal.aborted) abortOutput();
+      },
+      async pull(controller) {
+        if (stopped) return;
+        try {
+          job.signal.throwIfAborted();
+          const frame = await readFrame();
+          if (stopped) return;
+          job.signal.throwIfAborted();
+          if (frame) {
+            controller.enqueue(frame);
+            return;
+          }
+          if (!complete || totalLength === 0 || buffered.byteLength !== 0) {
+            throw new Error("Local media streaming TTS returned an incomplete response");
+          }
+          controller.close();
+          await cleanup(false);
+        } catch (error) {
+          if (!stopped) controller.error(error);
+          await cleanup(true, error);
+        }
+      },
+      async cancel(reason) {
+        await cleanup(true, reason);
+      },
+    });
+  } catch (error) {
+    await response?.body?.cancel().catch(() => undefined);
+    await job.cancel();
+    job.finish();
+    throw error;
+  }
 }
 
 async function readBoundedAudioResponse(response: Response): Promise<Buffer> {
@@ -343,7 +410,9 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
       };
     },
     async synthesizeTelephony(req) {
-      const sampleRate = 16_000;
+      // Preserve the local backend's speech bandwidth. The host already owns
+      // conversion to a transport's 8/16/24 kHz format from result.sampleRate.
+      const sampleRate = 24_000;
       return {
         audioBuffer: await requestSpeech({
           text: req.text,
@@ -358,7 +427,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
       };
     },
     async streamSynthesizeTelephony(req) {
-      const sampleRate = 16_000;
+      const sampleRate = 24_000;
       return {
         audioStream: await requestSpeechStream({
           text: req.text,

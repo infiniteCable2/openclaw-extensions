@@ -38,7 +38,7 @@ describe("local media understanding provider", () => {
         providerId: "local-media",
         baseUrl: "http://127.0.0.1:8010/v1",
       }),
-      undefined,
+      expect.any(AbortSignal),
     );
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
@@ -57,13 +57,19 @@ describe("local media understanding provider", () => {
 
     await provider.transcribeAudio?.({
       ...request,
-      headers: { "X-OpenClaw-Speech-Input": "agent-speech" },
+      headers: {
+        "X-OpenClaw-Speech-Input": "agent-speech",
+        "x-openclaw-request-id": "caller-must-not-own-lifecycle",
+        "x-openclaw-request-timeout-ms": "999999999",
+      },
     });
     await provider.transcribeAudio?.({ ...request, speechInput: true });
 
     const firstHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
     const secondHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
     expect(firstHeaders.has("x-openclaw-speech-input")).toBe(false);
+    expect(firstHeaders.get("x-openclaw-request-id")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(Number(firstHeaders.get("x-openclaw-request-timeout-ms"))).toBeLessThanOrEqual(1000);
     expect(secondHeaders.get("x-openclaw-speech-input")).toBe("agent-speech");
   });
 

@@ -57,6 +57,129 @@ function diagnostics(info: ReturnType<typeof vi.fn>, event: string) {
 }
 
 describe("local media realtime transcription provider", () => {
+  it("bounds undeclared JSON responses during streaming and cancels the oversized body", async () => {
+    vi.useFakeTimers();
+    const cancelBody = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(256 * 1024));
+        controller.enqueue(Uint8Array.of(1));
+      },
+      cancel: cancelBody,
+    });
+    const response = new Response(body);
+    const wholeBodyRead = vi.spyOn(response, "arrayBuffer");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url.endsWith("/cancel") ? new Response(null, { status: 204 }) : response,
+      ),
+    );
+    const onTranscript = vi.fn();
+    const onError = vi.fn();
+    const release = vi.fn();
+    const session = buildLocalRealtimeTranscriptionProvider(
+      vi.fn().mockResolvedValue({ release }),
+    ).createSession({
+      providerConfig: requestConfig(),
+      onTranscript,
+      onError,
+    });
+    await session.connect();
+    session.sendAudio(Buffer.concat([speech(), speech(), ...Array.from({ length: 10 }, silence)]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cancelBody).toHaveBeenCalledOnce();
+    expect(wholeBodyRead).not.toHaveBeenCalled();
+    expect(onTranscript).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    session.close();
+  });
+  it("rejects a transport-stalled incomplete command and recovers for the next utterance", async () => {
+    vi.useFakeTimers();
+    const acquire = vi.fn().mockResolvedValue({ release: vi.fn() });
+    const fetchMock = vi.fn(async () => Response.json({ text: "New complete command" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const activity = vi.fn();
+    const onTranscript = vi.fn();
+    const session = buildLocalRealtimeTranscriptionProvider(acquire).createSession({
+      providerConfig: requestConfig(),
+      onSpeechActivity: activity,
+      onTranscript,
+    });
+    await session.connect();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(vi.getTimerCount()).toBe(0);
+    session.sendAudio(Buffer.concat([speech(), speech(), speech().subarray(0, 37)]));
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(activity).not.toHaveBeenCalledWith(expect.objectContaining({ state: "rejected" }));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(activity).toHaveBeenLastCalledWith({ utteranceId: "utterance-1", state: "rejected" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(onTranscript).not.toHaveBeenCalled();
+    expect(session.isConnected()).toBe(true);
+    session.sendAudio(Buffer.concat([speech(), speech(), ...Array.from({ length: 10 }, silence)]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith("New complete command");
+    session.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps a healthy call after HTTP 429 without retrying the rejected utterance", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/cancel")) return new Response(null, { status: 204 });
+      return ++calls === 1
+        ? new Response(null, { status: 429 })
+        : Response.json({ text: "Next command" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onTranscript = vi.fn();
+    const onError = vi.fn();
+    const session = buildLocalRealtimeTranscriptionProvider(
+      vi.fn().mockResolvedValue({ release: vi.fn() }),
+    ).createSession({
+      providerConfig: requestConfig(),
+      onTranscript,
+      onError,
+    });
+    await session.connect();
+    const utterance = Buffer.concat([speech(), speech(), ...Array.from({ length: 10 }, silence)]);
+    session.sendAudio(utterance);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onTranscript).not.toHaveBeenCalled();
+    expect(session.isConnected()).toBe(true);
+    expect(onError).not.toHaveBeenCalled();
+    expect(calls).toBe(1);
+    session.sendAudio(utterance);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith("Next command");
+    expect(calls).toBe(2);
+    session.close();
+  });
+
+  it("includes serial queue time in the service request deadline", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      if (fetchMock.mock.calls.length === 1)
+        await new Promise((resolve) => setTimeout(resolve, 600));
+      return Response.json({ text: "Result" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const session = buildLocalRealtimeTranscriptionProvider(
+      vi.fn().mockResolvedValue({ release: vi.fn() }),
+    ).createSession({ providerConfig: requestConfig() });
+    await session.connect();
+    const utterance = Buffer.concat([speech(), speech(), ...Array.from({ length: 10 }, silence)]);
+    session.sendAudio(Buffer.concat([utterance, utterance]));
+    await vi.advanceTimersByTimeAsync(600);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const headers = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
+    expect(headers.get("x-openclaw-request-id")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(Number(headers.get("x-openclaw-request-timeout-ms"))).toBe(400);
+    session.close();
+  });
   it("separates queue, acquire and complete HTTP timings without exposing content", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     const release = vi.fn();
@@ -96,8 +219,12 @@ describe("local media realtime transcription provider", () => {
     expect(release).toHaveBeenCalledTimes(2);
     const records = diagnostics(info, "local_media_stt_utterance");
     expect(records).toEqual(
-      [0, 51].map((queueWaitMs) => ({
+      [0, 51].map((queueWaitMs, index) => ({
         event: "local_media_stt_utterance",
+        diagnosticCallId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+        sectionOrdinal: index + 1,
+        utteranceOrdinal: index + 1,
+        requestId: expect.stringMatching(/^[a-f0-9-]{36}$/),
         outcome: "transcribed",
         queueWaitMs,
         acquireMs: 17,
@@ -107,6 +234,8 @@ describe("local media realtime transcription provider", () => {
         trailingSilenceAudioMs: 200,
         utteranceAudioMs: 220,
         enhancedRms: null,
+        originalRms: null,
+        originalPeak: null,
         meanSpeechProbability: null,
         highProbabilityFrames: 0,
         maxGainDb: null,
@@ -118,6 +247,9 @@ describe("local media realtime transcription provider", () => {
     session.close();
     session.close();
     expect(diagnostics(info, "local_media_stt_input_summary")).toHaveLength(1);
+    const summary = diagnostics(info, "local_media_stt_input_summary")[0];
+    expect(records.every((record) => record.diagnosticCallId === summary.diagnosticCallId)).toBe(true);
+    expect(new Set(records.map((record) => record.requestId)).size).toBe(2);
     const logged = JSON.stringify(info.mock.calls);
     for (const privateValue of [
       "PRIVATE_TRANSCRIPT",
@@ -192,6 +324,14 @@ describe("local media realtime transcription provider", () => {
     interrupted.close();
     expect(acquire).toHaveBeenCalledOnce();
     expect(diagnostics(info, "local_media_stt_input_summary")).toHaveLength(2);
+    const summaries = diagnostics(info, "local_media_stt_input_summary");
+    expect(summaries[0].diagnosticCallId).not.toBe(summaries[1].diagnosticCallId);
+    expect(diagnostics(info, "local_media_stt_utterance")[1]).toMatchObject({
+      diagnosticCallId: summaries[1].diagnosticCallId,
+      utteranceOrdinal: 1,
+      sectionOrdinal: 1,
+      requestId: null,
+    });
     expect(diagnostics(info, "local_media_stt_input_summary")[1]).toEqual(
       expect.objectContaining({
         elapsedMs: 1_000,
@@ -244,42 +384,65 @@ describe("local media realtime transcription provider", () => {
   it.each([
     [0, "vad"],
     [440, "decoder"],
-  ] as const)("attributes empty live recognition to the %s ms stage", async (speechDurationMs, emptyStage) => {
-    const release = vi.fn();
-    const acquire = vi.fn().mockResolvedValue({ release });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(
-      `data: ${JSON.stringify({
-        type: "transcript.done",
-        text: "",
-        model: "test-model",
-        recognition: { speechDurationMs, segmentCount: 0 },
-      })}\n\n`,
-      { headers: { "content-type": "text/event-stream" } },
-    )));
-    const info = vi.fn();
-    const onProcessing = vi.fn();
-    const onTranscript = vi.fn();
-    const session = buildLocalRealtimeTranscriptionProvider(acquire, { info }).createSession({
-      providerConfig: requestConfig(),
-      onProcessing,
-      onTranscript,
-    });
-    await session.connect();
-    session.sendAudio(Buffer.concat([speech(), speech(), ...Array.from({ length: 10 }, silence)]));
-    await waitFor(() => diagnostics(info, "local_media_stt_utterance").length === 1);
-    expect(diagnostics(info, "local_media_stt_utterance")).toEqual([
-      expect.objectContaining({
-        outcome: "empty",
-        vadSpeechDurationMs: speechDurationMs,
-        decoderSegmentCount: 0,
-        emptyStage,
-      }),
-    ]);
-    expect(onTranscript).not.toHaveBeenCalled();
-    expect(onProcessing).toHaveBeenCalledWith({ utteranceId: "utterance-1", state: "empty" });
-    expect(release).toHaveBeenCalledOnce();
-    session.close();
-  });
+  ] as const)(
+    "attributes empty live recognition to the %s ms stage",
+    async (speechDurationMs, emptyStage) => {
+      const release = vi.fn();
+      const acquire = vi.fn().mockResolvedValue({ release });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response(
+              `data: ${JSON.stringify({
+                type: "transcript.done",
+                text: "",
+                model: "test-model",
+                recognition: {
+                  speechDurationMs,
+                  segmentCount: 0,
+                  signals: [
+                    { name: "fasterWhisper.avgLogProbability", mean: -0.4, samples: 2 },
+                    { name: "fasterWhisper.noSpeechProbability", mean: 1.5, samples: 2 },
+                    { name: "PrivateBackendDetails", mean: 1, samples: 1 },
+                  ],
+                },
+              })}\n\n`,
+              { headers: { "content-type": "text/event-stream" } },
+            ),
+        ),
+      );
+      const info = vi.fn();
+      const onProcessing = vi.fn();
+      const onTranscript = vi.fn();
+      const session = buildLocalRealtimeTranscriptionProvider(acquire, { info }).createSession({
+        providerConfig: requestConfig(),
+        onProcessing,
+        onTranscript,
+      });
+      await session.connect();
+      session.sendAudio(
+        Buffer.concat([speech(), speech(), ...Array.from({ length: 10 }, silence)]),
+      );
+      await waitFor(() => diagnostics(info, "local_media_stt_utterance").length === 1);
+      expect(diagnostics(info, "local_media_stt_utterance")).toEqual([
+        expect.objectContaining({
+          outcome: "empty",
+          vadSpeechDurationMs: speechDurationMs,
+          decoderSegmentCount: 0,
+          emptyStage,
+          decoderAvgLogProbability: -0.4,
+          decoderAvgLogProbabilitySamples: 2,
+        }),
+      ]);
+      expect(JSON.stringify(info.mock.calls)).not.toContain("PrivateBackendDetails");
+      expect(JSON.stringify(info.mock.calls)).not.toContain("decoderNoSpeechProbability");
+      expect(onTranscript).not.toHaveBeenCalled();
+      expect(onProcessing).toHaveBeenCalledWith({ utteranceId: "utterance-1", state: "empty" });
+      expect(release).toHaveBeenCalledOnce();
+      session.close();
+    },
+  );
 
   it.each([
     ["aligned", [FRAME_BYTES]],
@@ -387,6 +550,7 @@ describe("local media realtime transcription provider", () => {
     const acquire = vi.fn().mockResolvedValue({ release });
     let fetchSignal: AbortSignal | undefined;
     const fetchMock = vi.fn((_url: string, init: RequestInit) => {
+      if (_url.endsWith("/cancel")) return Promise.resolve(new Response(null, { status: 204 }));
       fetchSignal = init.signal as AbortSignal;
       return new Promise<Response>((_resolve, reject) => {
         fetchSignal?.addEventListener(
@@ -418,7 +582,8 @@ describe("local media realtime transcription provider", () => {
     await waitFor(() => release.mock.calls.length === 1);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(acquire).toHaveBeenCalledOnce();
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.filter(([url]) => !url.endsWith("/cancel"))).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/cancel"))).toHaveLength(1);
     expect(onTranscript).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
     expect(session.isConnected()).toBe(false);
