@@ -1,3 +1,4 @@
+mod playout;
 mod protocol;
 
 use std::{
@@ -19,6 +20,7 @@ use livekit::{
         prelude::{AudioFrame, AudioSourceOptions, RtcAudioSource},
     },
 };
+use playout::{AudioSink, OutputControl, pump_local_audio};
 use protocol::{
     CHANNELS, ControlEvent, ControlMessage, DecodedKey, FRAME_SAMPLES, OUTPUT_FRAME_HEADER_BYTES,
     OutputGate, SAMPLE_RATE, decode_key, decode_output_frame_header, validate_start,
@@ -26,18 +28,13 @@ use protocol::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
-    sync::{Mutex, mpsc, watch},
+    sync::{Mutex, mpsc},
 };
 
 const MAX_CONTROL_LINE_BYTES: usize = 128 * 1024;
-// Keep the proven LiveKit source capacity. Barge-in explicitly clears this
-// queue; shrinking it causes the native SDK to publish silence under load.
+// Queue configuration remains unchanged. The single owner paces submission rather
+// than filling this buffer; only confirmed cancellation clears it.
 const OUTPUT_QUEUE_MS: u32 = 1_000;
-
-struct ClearOutput {
-    generation: u64,
-    acknowledged: tokio::sync::oneshot::Sender<bool>,
-}
 
 fn control_socket_arg() -> anyhow::Result<PathBuf> {
     let mut args = env::args_os();
@@ -132,47 +129,19 @@ async fn read_local_audio(output: mpsc::Sender<(u64, Vec<u8>)>) -> anyhow::Resul
     Ok(())
 }
 
-async fn pump_local_audio(
-    source: NativeAudioSource,
-    mut output: mpsc::Receiver<(u64, Vec<u8>)>,
-    mut clears: mpsc::Receiver<ClearOutput>,
-    mut output_gate: watch::Receiver<OutputGate>,
-    frame_diagnostic: bool,
-) -> anyhow::Result<()> {
-    let mut generation = 0_u64;
-    let mut first_frame = true;
-    loop {
-        let gate = *output_gate.borrow_and_update();
-        tokio::select! {
-            biased;
-            changed = output_gate.changed() => {
-                changed.context("output gate closed")?;
-            }
-            Some(clear) = clears.recv() => {
-                let accepted = clear.generation > generation;
-                if accepted {
-                    generation = clear.generation;
-                    source.clear_buffer();
-                }
-                let _ = clear.acknowledged.send(accepted);
-            }
-            frame = output.recv(), if gate != OutputGate::Paused => {
-                let Some((frame_generation, bytes)) = frame else { break; };
-                if frame_generation != generation {
-                    continue;
-                }
-                let current_gate = *output_gate.borrow();
-                capture_output_frame(
-                    &source,
-                    &bytes,
-                    current_gate,
-                    frame_diagnostic && first_frame,
-                ).await?;
-                first_frame = false;
-            }
-        }
+impl AudioSink for NativeAudioSource {
+    fn capture<'a>(
+        &'a self,
+        bytes: &'a [u8],
+        gate: OutputGate,
+        diagnostic: bool,
+    ) -> futures_util::future::BoxFuture<'a, anyhow::Result<()>> {
+        Box::pin(capture_output_frame(self, bytes, gate, diagnostic))
     }
-    Ok(())
+
+    fn clear(&self) {
+        self.clear_buffer();
+    }
 }
 
 async fn capture_output_frame(
@@ -263,15 +232,13 @@ async fn run_started_session(
     let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
     let (fatal_tx, mut fatal_rx) = mpsc::channel::<()>(1);
     let (output_tx, output_rx) = mpsc::channel::<(u64, Vec<u8>)>(4);
-    let (clear_tx, clear_rx) = mpsc::channel::<ClearOutput>(4);
+    let (output_control_tx, output_control_rx) = mpsc::channel::<OutputControl>(4);
     let frame_diagnostic = env::var_os("OPENCLAW_MATRIX_RTC_FRAME_DIAGNOSTIC").is_some();
     let mut local_reader = tokio::spawn(read_local_audio(output_tx.clone()));
-    let (output_gate_tx, output_gate_rx) = watch::channel(OutputGate::Normal);
     let mut local_audio = tokio::spawn(pump_local_audio(
         source.clone(),
         output_rx,
-        clear_rx,
-        output_gate_rx,
+        output_control_rx,
         frame_diagnostic,
     ));
 
@@ -284,7 +251,7 @@ async fn run_started_session(
                 }
                 ControlMessage::ClearOutput { generation } => {
                     let (acknowledged_tx, acknowledged_rx) = tokio::sync::oneshot::channel();
-                    clear_tx.send(ClearOutput {
+                    output_control_tx.send(OutputControl::Clear {
                         generation,
                         acknowledged: acknowledged_tx,
                     }).await.context("output audio queue closed")?;
@@ -292,12 +259,10 @@ async fn run_started_session(
                     send_event(&writer, ControlEvent::OutputCleared { generation }).await?;
                 }
                 ControlMessage::SetOutputGate { gate } => {
-                    if *output_gate_tx.borrow() != gate {
-                        output_gate_tx.send(gate).context("output gate closed")?;
-                        if gate != OutputGate::Normal {
-                            source.clear_buffer();
-                        }
-                    }
+                    let (acknowledged, ack) = tokio::sync::oneshot::channel();
+                    output_control_tx.send(OutputControl::Gate { gate, acknowledged })
+                        .await.context("output audio queue closed")?;
+                    ack.await.context("output gate owner stopped")?;
                     send_event(&writer, ControlEvent::OutputGateSet { gate }).await?;
                 }
                 ControlMessage::Stop {} => break,

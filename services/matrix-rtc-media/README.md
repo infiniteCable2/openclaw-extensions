@@ -27,11 +27,26 @@ the call.
 `output_gate_set`. The early acoustic candidate ducks output to one quarter
 amplitude; sustained activity pauses the current TTS generation without
 discarding its stdin frames. A rejected candidate resumes that generation.
-Only confirmed speech discards the TTS generation with `clear_output`. The bridge clears
-LiveKit's already-buffered source audio when entering duck or pause, so the
-change is audible promptly; audio already queued inside LiveKit may be lost
-at that boundary. Control and PCM frame queues are separate so `clear_output`
-still completes while playout is paused.
+Only confirmed speech discards the TTS generation with `clear_output`. A single
+playout owner applies gates and generation changes and acknowledges them after
+the current capture call finishes. Reversible duck/pause never clears native
+audio. PCM submission is paced at one 10 ms frame per interval, with no catch-up
+burst after pauses or scheduler stalls. The proven 1,000 ms native queue setting
+is retained without intentionally prefilling it; it is not a promise of the
+SDK's maximum internal occupancy. Pending frames retain their
+order across a false candidate, pause, empty transcript, and resume. Separate
+bounded control and PCM queues allow cancellation while paused.
+
+The SDK exposes no exact consumption cursor: already-submitted native audio
+can finish before a reversible gate becomes audible. An acknowledgement means
+the local owner applied the gate, not that a remote loudspeaker has stopped.
+Native scheduler/network stalls can exceed the nominal 10 ms submission cadence.
+Capture futures are never cancelled for reversible gates because PCM may have
+been accepted before the completion callback. A native capture stalled for two
+seconds fails the session closed; possibly accepted PCM is never retried or
+replayed, and the source is not reused. Release validation must include
+native-load and encrypted-call pause/resume tests; fake-sink tests establish
+sample ownership and ordering, not a remote playout latency guarantee.
 The initial `ready` event advertises `output_gate: true` and
 `remote_audio_ready: true`. After an allowed remote audio track is subscribed,
 the bridge emits `remote_audio_ready` separately. OpenClaw can wait for this
