@@ -13,7 +13,12 @@ from .speech_apm import SAMPLE_RATE, create_speech_processor
 
 FRAME_SAMPLES = SAMPLE_RATE // 50
 FRAME_BYTES = FRAME_SAMPLES * 2
-METADATA_BYTES = 8
+# Fixed ordered float32 metadata. APM3 requires the matching adapter; an older
+# worker fails its readiness handshake rather than silently misframing audio.
+CONTROL_FIELDS = ("cleanRms", "nativeGainDb", "minimumCeilingDb", "maximumCeilingDb",
+                  "speechFrames", "uncertainFrames", "nonspeechFrames", "holdFrames",
+                  "attenuateFrames", "recoverFrames", "clippedFrames", "mutedFrames")
+METADATA_BYTES = (2 + len(CONTROL_FIELDS)) * 4
 
 
 def main() -> int:
@@ -21,7 +26,7 @@ def main() -> int:
     processor = create_speech_processor()
     source = sys.stdin.buffer
     sink = sys.stdout.buffer
-    sink.write(b"APM2")
+    sink.write(b"APM3")
     sink.flush()
     while True:
         frame = source.read(FRAME_BYTES)
@@ -39,7 +44,10 @@ def main() -> int:
         if not np.isfinite(probability) or not 0.0 <= probability <= 1.0 or not np.isfinite(gain_db):
             return 3
         sink.write(encoded.tobytes())
-        sink.write(np.asarray([probability, gain_db], dtype="<f4").tobytes())
+        metadata = [probability, gain_db, *(processor.control[name] for name in CONTROL_FIELDS)]
+        if not np.isfinite(metadata).all():
+            return 3
+        sink.write(np.asarray(metadata, dtype="<f4").tobytes())
         sink.flush()
 
 

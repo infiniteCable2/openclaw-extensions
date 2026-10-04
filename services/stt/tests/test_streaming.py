@@ -93,7 +93,7 @@ def test_streamed_agent_speech_frontend_is_owned_until_close(tmp_path):
     backend = StreamingBackend()
     processed = tmp_path / "processed.wav"
 
-    def frontend(source):
+    def frontend(source, **_kwargs):
         assert source.read_bytes() == b"audio"
         processed.write_bytes(b"enhanced")
         return processed
