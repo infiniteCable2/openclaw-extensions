@@ -2,23 +2,17 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isAbsolute, posix } from "node:path";
 
 const FRAME_BYTES = 640; // 20 ms, mono PCM16 at 16 kHz.
-const METADATA_BYTES = 56; // APM3: probability, gain, then bounded numeric control observations.
+const METADATA_BYTES = 32; // APM4: probability, gain, then bounded numeric control observations.
 const RESPONSE_BYTES = FRAME_BYTES + METADATA_BYTES;
 const MAX_PENDING_FRAMES = 100; // Bound latency and child-process input memory to 2 s.
 const RESPONSE_TIMEOUT_MS = 2_000;
-const READY_BYTES = Buffer.from("APM3");
+const READY_BYTES = Buffer.from("APM4");
 
 export type LiveSpeechControl = {
   cleanRms: number;
-  nativeGainDb: number;
-  minimumCeilingDb: number;
-  maximumCeilingDb: number;
-  speechFrames: number;
-  uncertainFrames: number;
-  nonspeechFrames: number;
-  holdFrames: number;
-  attenuateFrames: number;
-  recoverFrames: number;
+  highProbabilityFrames: number;
+  midProbabilityFrames: number;
+  lowProbabilityFrames: number;
   clippedFrames: number;
   mutedFrames: number;
 };
@@ -27,39 +21,25 @@ function readControl(data: Buffer): LiveSpeechControl | undefined {
   const read = (index: number) => data.readFloatLE(FRAME_BYTES + 8 + index * 4);
   const control: LiveSpeechControl = {
     cleanRms: read(0),
-    nativeGainDb: read(1),
-    minimumCeilingDb: read(2),
-    maximumCeilingDb: read(3),
-    speechFrames: read(4),
-    uncertainFrames: read(5),
-    nonspeechFrames: read(6),
-    holdFrames: read(7),
-    attenuateFrames: read(8),
-    recoverFrames: read(9),
-    clippedFrames: read(10),
-    mutedFrames: read(11),
+    highProbabilityFrames: read(1),
+    midProbabilityFrames: read(2),
+    lowProbabilityFrames: read(3),
+    clippedFrames: read(4),
+    mutedFrames: read(5),
   };
   if (Object.values(control).some((value) => !Number.isFinite(value))) return;
   const counts = [
-    control.speechFrames,
-    control.uncertainFrames,
-    control.nonspeechFrames,
-    control.holdFrames,
-    control.attenuateFrames,
-    control.recoverFrames,
+    control.highProbabilityFrames,
+    control.midProbabilityFrames,
+    control.lowProbabilityFrames,
     control.clippedFrames,
     control.mutedFrames,
   ];
   if (
     control.cleanRms < 0 ||
     control.cleanRms > 64 ||
-    Math.abs(control.nativeGainDb) > 120 ||
-    control.minimumCeilingDb < -60 ||
-    control.maximumCeilingDb > 60 ||
-    control.minimumCeilingDb > control.maximumCeilingDb ||
     counts.some((value) => !Number.isInteger(value) || value < 0 || value > 2) ||
-    control.speechFrames + control.uncertainFrames + control.nonspeechFrames !== 2 ||
-    control.holdFrames + control.attenuateFrames + control.recoverFrames !== 2 ||
+    control.highProbabilityFrames + control.midProbabilityFrames + control.lowProbabilityFrames !== 2 ||
     control.clippedFrames + control.mutedFrames > 2
   )
     return;

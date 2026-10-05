@@ -1,7 +1,7 @@
 import type { LiveSpeechControl } from "./live-speech-processor.js";
 
 const FRAME_MS = 20;
-const HIGH_PROBABILITY = 0.85;
+const HIGH_PROBABILITY = 0.95;
 const LOW_PROBABILITY = 0.3;
 const MIN_LOW_PROBABILITY_STREAK_MS = 1_000;
 
@@ -32,15 +32,10 @@ export function createLiveSpeechDiagnostics() {
   let cleanPowerMean = 0;
   let receivedFrames = 0;
   let receivedPowerMean = 0;
-  let minimumCeilingDb: number | null = null;
-  let maximumCeilingDb: number | null = null;
   const controlFrames = {
-    speech: 0,
-    uncertain: 0,
-    nonspeech: 0,
-    hold: 0,
-    attenuate: 0,
-    recover: 0,
+    highProbability: 0,
+    midProbability: 0,
+    lowProbability: 0,
     clipped: 0,
     muted: 0,
   };
@@ -58,7 +53,7 @@ export function createLiveSpeechDiagnostics() {
     }): void {
       if (frame.control) {
         const control = frame.control;
-        addGain(native, control.nativeGainDb);
+        addGain(native, frame.gainDb);
         cleanPowerMean += (control.cleanRms ** 2 - cleanPowerMean) / native.frames;
         if (
           frame.originalRms !== undefined &&
@@ -69,14 +64,6 @@ export function createLiveSpeechDiagnostics() {
           receivedFrames = Math.min(Number.MAX_SAFE_INTEGER, receivedFrames + 1);
           receivedPowerMean += (frame.originalRms ** 2 - receivedPowerMean) / receivedFrames;
         }
-        minimumCeilingDb = Math.min(
-          minimumCeilingDb ?? control.minimumCeilingDb,
-          control.minimumCeilingDb,
-        );
-        maximumCeilingDb = Math.max(
-          maximumCeilingDb ?? control.maximumCeilingDb,
-          control.maximumCeilingDb,
-        );
         for (const key of Object.keys(controlFrames) as Array<keyof typeof controlFrames>) {
           controlFrames[key] = Math.min(
             Number.MAX_SAFE_INTEGER,
@@ -129,14 +116,9 @@ export function createLiveSpeechDiagnostics() {
         controlNativeMeanGainDb: native.frames ? native.meanDb : null,
         controlNativeMinGainDb: native.minDb,
         controlNativeMaxGainDb: native.maxDb,
-        controlMinimumCeilingDb: minimumCeilingDb,
-        controlMaximumCeilingDb: maximumCeilingDb,
-        controlSpeechFrames10Ms: controlFrames.speech,
-        controlUncertainFrames10Ms: controlFrames.uncertain,
-        controlNonspeechFrames10Ms: controlFrames.nonspeech,
-        controlCeilingHoldFrames10Ms: controlFrames.hold,
-        controlCeilingAttenuateFrames10Ms: controlFrames.attenuate,
-        controlCeilingRecoverFrames10Ms: controlFrames.recover,
+        controlHighProbabilityFrames10Ms: controlFrames.highProbability,
+        controlMidProbabilityFrames10Ms: controlFrames.midProbability,
+        controlLowProbabilityFrames10Ms: controlFrames.lowProbability,
         controlInputClippedFrames10Ms: controlFrames.clipped,
         controlInputMutedFrames10Ms: controlFrames.muted,
       };

@@ -179,9 +179,8 @@ its exact received PCM frame before APM. Packet fragmentation does not change
 this alignment. This is the received/decoded input, not the hardware microphone
 signal; neither these levels nor the de-gained enhanced level is a physical
 SNR estimate. The original zero-input guard cannot be bypassed by APM residual
-energy. The STT processor owns the entire gain decision: native AGC2 supplies
-the noise-limited boost proposal, and a pre-gain speech-level ceiling can select
-net attenuation without a competing output-feedback loop. This plugin never
+energy. The STT processor owns the entire gain decision through native AGC2,
+including noise-aware gain and peak limiting. This plugin never
 applies an additional gain multiplier.
 An APM frame that produces no response within two seconds fails closed even
 if further input stops. Abandoned incomplete PCM frames are discarded after
@@ -215,11 +214,10 @@ configured guard unchanged. Files and media relays do not use this logic.
 Batch audio enhancement is independently selected by OpenClaw's
 `speechInput` intent. Matrix voice messages set it; ordinary audio files do
 not. The STT service then applies the same 10-ms HPF/NS/AGC implementation before
-Faster-Whisper. The coordinated processor retains 8 dB native headroom,
-a 12 dB boost ceiling and the native 6 dB/s slew, and can also select up to
-12 dB net attenuation for loud speech. See the STT service README for the
-signed ceiling, bounded uncertainty hold, startup priming and model-free A/B
-probe. These service-level defaults apply to marked speech, not raw media.
+Faster-Whisper. The processor retains 8 dB native headroom, a 12 dB maximum
+native boost, 6 dB/s native slew and a -50 dBFS estimated-output-noise limit.
+See the STT service README for startup priming, parameter-sweep limitations
+and the model-free A/B probe. These defaults apply to marked speech, not raw media.
 Live audio already enhanced before VAD is not enhanced a second time.
 
 `maxUtteranceMs` bounds each audio batch sent to STT, not the user's speaking
@@ -328,34 +326,33 @@ When the live front end is enabled, this summary also includes aggregate
 estimate or a recording of speech content. The summary also counts input and
 output samples above 98% of full scale, allowing clipping before or after the
 front end to be distinguished without retaining the waveform. It separates
-gain statistics for high (at least 0.85) and low (below 0.3) WebRTC speech
+gain statistics for high (at least 0.95) and low (below 0.3) WebRTC speech
 probability. The longest low-probability run and its largest gain rise after
 one second help detect noise pumping. These are acoustic probability buckets,
 not verified speech/non-speech labels or a physical SNR measurement.
-The middle probability bucket (0.3 through less than 0.85) is also recorded
+The middle probability bucket (0.3 through less than 0.95) is also recorded
 with its frame count and min/mean/max gain, rather than silently omitting
 uncertain observations. These probability buckets use one latest observation
-per 20-ms transport frame and differ from the supervisor's 10-ms permissions.
+per 20-ms transport frame and differ from the worker's 10-ms control counts.
 
-The matched `APM3` worker additionally reports aligned numeric control evidence.
+The matched `APM4` worker additionally reports aligned numeric control evidence.
 `controlFrames20Ms` is the denominator for `controlCleanRms` (root mean squared
 pre-gain cleaned RMS) and `controlNativeMeanGainDb` (arithmetic mean of block
-gain in dB); native gain extrema and supervisory ceiling extrema are retained.
+gain in dB); native gain extrema are retained.
 `controlReceivedRms` uses the matching pre-APM frames that actually returned,
 with denominator `controlReceivedFrames20Ms`, so a remaining input backlog at
 close does not skew the raw/clean comparison. The existing output RMS covers
 these returned PCM frames as well.
-`controlSpeechFrames10Ms`, `controlUncertainFrames10Ms`, and
-`controlNonspeechFrames10Ms` count the supervisor's actual learning states.
-`controlCeilingHoldFrames10Ms`, `controlCeilingAttenuateFrames10Ms`, and
-`controlCeilingRecoverFrames10Ms` count target movements, not inferred audible
-gain changes. `controlInputClippedFrames10Ms` and `controlInputMutedFrames10Ms`
+`controlHighProbabilityFrames10Ms`, `controlMidProbabilityFrames10Ms`, and
+`controlLowProbabilityFrames10Ms` count the probability buckets (at least
+0.95, 0.3 to below 0.95, below 0.3).
+`controlInputClippedFrames10Ms` and `controlInputMutedFrames10Ms`
 help distinguish clipped/muted input from ambiguous acoustic evidence.
-Both three-state groups sum to twice `controlFrames20Ms`. All measurements
+The three probability counts sum to twice `controlFrames20Ms`. All measurements
 remain diagnostic-only; no per-frame history, waveform, new store or separate
 retention policy is introduced. Existing logger retention applies. A hard
 process termination can still prevent the final summary from being written.
-Plugin and STT worker must be deployed/rolled back together: APM3 rejects old
+Plugin and STT worker must be deployed/rolled back together: APM4 rejects old
 workers instead of guessing their frame layout.
 Neither event contains audio, transcript text, URLs, exception messages, model
 or participant identifiers. Logger failures never interrupt media handling.

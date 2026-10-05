@@ -34,12 +34,9 @@ describe.skipIf(!python)("native live speech worker contract", () => {
         expect(Number.isFinite(frame.gainDb)).toBe(true);
         expect(frame.control).toBeDefined();
         expect(
-          frame.control!.speechFrames +
-            frame.control!.uncertainFrames +
-            frame.control!.nonspeechFrames,
-        ).toBe(2);
-        expect(
-          frame.control!.holdFrames + frame.control!.attenuateFrames + frame.control!.recoverFrames,
+          frame.control!.highProbabilityFrames +
+            frame.control!.midProbabilityFrames +
+            frame.control!.lowProbabilityFrames,
         ).toBe(2);
       }
     } finally {

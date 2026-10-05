@@ -69,12 +69,14 @@ def main():
                         help="also replay quiet/loud/quiet phases without resetting processors")
     parser.add_argument("--slew-db-per-second", type=float, default=6.0)
     parser.add_argument("--headroom-db", type=float, default=8.0)
+    parser.add_argument("--noise-limit-dbfs", type=float, default=-50.0)
     args = parser.parse_args()
     if not args.input and not args.synthetic_noise:
         parser.error("provide input or select synthetic noise")
     if len(args.input) > 32:
         parser.error("at most 32 recordings")
     settings = SpeechControlConfig(headroom_db=args.headroom_db,
+                                   max_output_noise_level_dbfs=args.noise_limit_dbfs,
                                    max_gain_change_db_per_second=args.slew_db_per_second)
     cases = [(f"recording-{index + 1}", read_audio(path)) for index, path in enumerate(args.input)]
     if args.synthetic_noise:

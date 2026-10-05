@@ -19,9 +19,9 @@ function mockChild() {
 }
 
 function metadata(): Buffer {
-  const data = Buffer.alloc(56);
-  data.writeFloatLE(2, 32); // Two nonspeech analysis frames.
-  data.writeFloatLE(2, 36); // Two unchanged supervisory ceilings.
+  const data = Buffer.alloc(32);
+  data.writeFloatLE(2, 20); // Two low-probability analysis frames.
+  data.writeFloatLE(2, 28); // Two muted analysis frames.
   return data;
 }
 
@@ -40,7 +40,7 @@ describe("live speech processor", () => {
       onError: vi.fn(),
     });
     const connected = processor.connect();
-    child.stdout.write(Buffer.from("APM3"));
+    child.stdout.write(Buffer.from("APM4"));
     await connected;
     processor.send(Buffer.alloc(37, 0xff));
     await vi.advanceTimersByTimeAsync(2_000);
@@ -62,7 +62,7 @@ describe("live speech processor", () => {
       onError: vi.fn(),
     });
     const connected = processor.connect();
-    child.stdout.write(Buffer.from("APM3"));
+    child.stdout.write(Buffer.from("APM4"));
     await connected;
     const original = Buffer.alloc(1280);
     for (let i = 0; i < original.length; i += 2) original.writeInt16LE(i < 640 ? 8192 : -16384, i);
@@ -70,11 +70,10 @@ describe("live speech processor", () => {
     processor.send(original.subarray(117, 643));
     processor.send(original.subarray(643));
     const processed = Buffer.concat([responseFrame(), responseFrame()]);
-    for (const offset of [0, 696]) {
+    for (const offset of [0, 672]) {
       processed.writeFloatLE(0.9, offset + 640);
       processed.writeFloatLE(offset === 0 ? 12 : -6, offset + 644);
       processed.writeFloatLE(offset === 0 ? 0.125 : 0.25, offset + 648);
-      processed.writeFloatLE(offset === 0 ? 12 : 0, offset + 652);
     }
     child.stdout.write(processed.subarray(0, 649));
     child.stdout.write(processed.subarray(649));
@@ -84,7 +83,6 @@ describe("live speech processor", () => {
     ]);
     expect(onFrame.mock.calls.map(([frame]) => frame.gainDb)).toEqual([12, -6]);
     expect(onFrame.mock.calls.map(([frame]) => frame.control.cleanRms)).toEqual([0.125, 0.25]);
-    expect(onFrame.mock.calls.map(([frame]) => frame.control.nativeGainDb)).toEqual([12, 0]);
     processor.close();
   });
 
@@ -97,7 +95,7 @@ describe("live speech processor", () => {
     });
     const connected = processor.connect();
     const rejection = expect(connected).rejects.toThrow("invalid handshake");
-    child.stdout.write(Buffer.from("APM2"));
+    child.stdout.write(Buffer.from("APM3"));
     await rejection;
     expect(child.kill).toHaveBeenCalledOnce();
   });
@@ -112,11 +110,11 @@ describe("live speech processor", () => {
       onError,
     });
     const connected = processor.connect();
-    child.stdout.write(Buffer.from("APM3"));
+    child.stdout.write(Buffer.from("APM4"));
     await connected;
     processor.send(Buffer.alloc(640));
     const response = responseFrame();
-    response.writeFloatLE(count, 672);
+    response.writeFloatLE(count, 660);
     child.stdout.write(response);
     expect(onFrame).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledOnce();
@@ -133,7 +131,7 @@ describe("live speech processor", () => {
       onError,
     });
     const connected = processor.connect();
-    child.stdout.write(Buffer.from("APM3"));
+    child.stdout.write(Buffer.from("APM4"));
     await connected;
     processor.send(Buffer.alloc(640));
     await vi.advanceTimersByTimeAsync(1999);
@@ -162,7 +160,7 @@ describe("live speech processor", () => {
       expect.objectContaining({ windowsHide: true }),
     );
     child.stdout.write(Buffer.from("AP"));
-    child.stdout.write(Buffer.from("M3"));
+    child.stdout.write(Buffer.from("M4"));
     await connected;
     const frame = Buffer.alloc(640, 17);
     child.stdin.on("data", (input: Buffer) => {
@@ -196,7 +194,7 @@ describe("live speech processor", () => {
       onError,
     });
     const connected = processor.connect();
-    child.stdout.write(Buffer.from("APM3"));
+    child.stdout.write(Buffer.from("APM4"));
     await connected;
     processor.send(Buffer.alloc(640 * 101));
     expect(onError).toHaveBeenCalledOnce();
@@ -213,7 +211,7 @@ describe("live speech processor", () => {
       onError,
     });
     const connected = processor.connect();
-    child.stdout.write(Buffer.from("APM3"));
+    child.stdout.write(Buffer.from("APM4"));
     await connected;
     processor.send(Buffer.alloc(640));
     const response = responseFrame();
