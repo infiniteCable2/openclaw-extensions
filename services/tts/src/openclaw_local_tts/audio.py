@@ -4,6 +4,7 @@ import subprocess
 import time
 import wave
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from io import BytesIO
 from pathlib import Path
 
@@ -113,28 +114,45 @@ class FfmpegAudioEncoder:
                 "pipe:0",
                 *output_args,
             ]
-            process = subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-            )
-            deadline = time.monotonic() + self.timeout_seconds
-            data: bytes | None = rendered.data
-            try:
-                while True:
-                    checkpoint()
-                    if time.monotonic() >= deadline:
-                        raise subprocess.TimeoutExpired(command, self.timeout_seconds)
+            # One communicator owns stdin/stdout through completion. Retrying
+            # communicate(input=None) after a short timeout can abandon pending
+            # stdin writes on POSIX and leave the codec waiting for more PCM.
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="tts-codec") as io:
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                deadline = time.monotonic() + self.timeout_seconds
+                communication = None
+                try:
+                    communication = io.submit(process.communicate, input=rendered.data)
+                    while True:
+                        checkpoint()
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(command, self.timeout_seconds)
+                        try:
+                            output, _ = communication.result(timeout=min(0.05, remaining))
+                            break
+                        except FutureTimeoutError:
+                            if communication.done():
+                                output, _ = communication.result()
+                                break
+                except BaseException:
+                    process.kill()
+                    # The communicator drains the pipes and reaps the killed
+                    # codec; do not run a second communicate concurrently.
                     try:
-                        output, _ = process.communicate(input=data, timeout=0.05)
-                        break
-                    except subprocess.TimeoutExpired:
-                        data = None
-            except BaseException:
-                process.kill()
-                process.communicate()
-                raise
+                        if communication is None:
+                            process.communicate()
+                        else:
+                            communication.result()
+                    except BaseException:
+                        pass
+                    process.wait()
+                    raise
             if process.returncode != 0 or not output:
                 raise RuntimeError("audio encoding failed")
         checkpoint()
