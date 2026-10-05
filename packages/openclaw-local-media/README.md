@@ -14,14 +14,6 @@ falls back to a LAN, cloud, or CPU service. STT uses OpenClaw's bounded OpenAI-c
 transcription transport. TTS accepts at most 64 MiB of generated audio and does
 not include upstream response bodies in errors.
 
-Buffered voice-note requests emit content-free `local_media_tts_voice_note`
-events with a random request id, phase (`start`, `headers`, `complete`, or
-`failed`), elapsed milliseconds, and HTTP status when available. The same id
-appears in the TTS service's voice-note phase logs. No text, audio, voice id,
-or caller identity is logged. If OpenClaw's TTS attempt starts but no plugin
-`start` event appears, inspect provider selection and local-service readiness
-before investigating synthesis.
-
 ## Build and install
 
 ```bash

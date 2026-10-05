@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import struct
-import time
 from contextlib import ExitStack
 from typing import Iterator
 
@@ -177,25 +176,14 @@ def create_app(
     @app.post("/v1/audio/speech")
     def synthesize() -> tuple[Response, int] | Response:
         work: RequestWork | None = None
-        output_format: str | None = None
-        phase = "register"
-        outcome = "failed"
-        started_at = time.monotonic()
         try:
             work = registry.register(request.headers)
-            phase = "parse"
             text, voice, output_format, sample_rate = _parse_synthesis_request(
                 backend,
                 max_text_characters=max_text_characters,
             )
 
-            phase = "admit"
-            if output_format == "opus":
-                app.logger.info("TTS voice-note request_id=%s phase=admit", work.request_id)
             with state.admit(work):
-                phase = "render"
-                if output_format == "opus":
-                    app.logger.info("TTS voice-note request_id=%s phase=render", work.request_id)
                 segments = split_speech_text(text)
                 rendered_segments = list(
                     render_segments(segments, voice=voice, work=work)
@@ -204,9 +192,6 @@ def create_app(
                     rendered_segments,
                     [segment.pause_after_ms for segment in segments],
                 )
-                phase = "encode"
-                if output_format == "opus":
-                    app.logger.info("TTS voice-note request_id=%s phase=encode", work.request_id)
                 audio = encoder.encode(
                     rendered,
                     output_format=output_format,
@@ -214,7 +199,6 @@ def create_app(
                     checkpoint=work.checkpoint,
                 )
                 work.checkpoint()
-            outcome = "ok"
             content_types = {
                 "opus": "audio/ogg",
                 "pcm": "application/octet-stream",
@@ -222,15 +206,12 @@ def create_app(
             }
             return Response(audio, status=200, content_type=content_types[output_format])
         except ServiceError as error:
-            outcome = error.code
             return _error_response(error)
         except BadRequest:
-            outcome = "invalid_request"
             return _error_response(
                 ServiceError("invalid_request", "JSON body is invalid", 400, retryable=False)
             )
         except Exception as error:
-            outcome = "inference_failed"
             app.logger.error("TTS inference failed error_type=%s", type(error).__name__)
             return _error_response(
                 ServiceError(
@@ -243,14 +224,6 @@ def create_app(
         finally:
             if work is not None:
                 registry.finish(work)
-                if output_format == "opus":
-                    app.logger.info(
-                        "TTS voice-note request_id=%s phase=%s outcome=%s elapsed_ms=%d",
-                        work.request_id,
-                        phase,
-                        outcome,
-                        max(0, round((time.monotonic() - started_at) * 1000)),
-                    )
 
     @app.post("/v1/audio/speech/stream")
     def synthesize_stream() -> tuple[Response, int] | Response:

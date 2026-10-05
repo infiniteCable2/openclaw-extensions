@@ -1,4 +1,4 @@
-import type { OpenClawPluginApi, SpeechProviderPlugin } from "openclaw/plugin-sdk/plugin-entry";
+import type { SpeechProviderPlugin } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { requireLoopbackBaseUrl, resolveLoopbackBaseUrl } from "./local-url.js";
 import { createMediaRequestLifecycle } from "./request-lifecycle.js";
@@ -7,25 +7,6 @@ const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_AUDIO_RESPONSE_BYTES = 64 * 1024 * 1024;
 const MAX_VOICE_CATALOG_BYTES = 64 * 1024;
 const VOICE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
-type DiagnosticLogger = Pick<OpenClawPluginApi["logger"], "info">;
-
-function reportVoiceNoteRequest(
-  logger: DiagnosticLogger | undefined,
-  fields: {
-    requestId: string;
-    phase: "start" | "headers" | "complete" | "failed";
-    elapsedMs: number;
-    httpStatus?: number;
-    timedOut?: boolean;
-    failureClass?: "deadline" | "http" | "response" | "transport";
-  },
-): void {
-  try {
-    logger?.info(JSON.stringify({ event: "local_media_tts_voice_note", ...fields }));
-  } catch {
-    // Diagnostics must never change speech delivery or cancellation.
-  }
-}
 
 type SpeechProviderConfig = Record<string, unknown>;
 type SpeechProviderOverrides = Record<string, unknown>;
@@ -81,38 +62,13 @@ async function requestSpeech(params: {
   responseFormat: "opus" | "wav" | "pcm";
   sampleRate?: number;
   timeoutMs: number;
-  requestId?: string;
-  logger?: DiagnosticLogger;
 }): Promise<Buffer> {
   const baseUrl = requireLoopbackBaseUrl(params.providerConfig.baseUrl, "Local media TTS");
   const selection = readSpeechSelection(params.providerConfig, params.overrides);
-  const job = createMediaRequestLifecycle({
-    baseUrl,
-    timeoutMs: params.timeoutMs,
-    requestId: params.requestId,
-  });
-  const startedAt = performance.now();
-  const report = (
-    phase: "start" | "headers" | "complete" | "failed",
-    extra?: {
-      httpStatus?: number;
-      timedOut?: boolean;
-      failureClass?: "deadline" | "http" | "response" | "transport";
-    },
-  ) => {
-    if (params.responseFormat === "opus") {
-      reportVoiceNoteRequest(params.logger, {
-        requestId: job.requestId,
-        phase,
-        elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
-        ...extra,
-      });
-    }
-  };
+  const job = createMediaRequestLifecycle({ baseUrl, timeoutMs: params.timeoutMs });
   let response: Response | undefined;
   try {
     job.signal.throwIfAborted();
-    report("start");
     response = await fetch(`${baseUrl}/audio/speech`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...job.headers },
@@ -126,25 +82,11 @@ async function requestSpeech(params: {
       redirect: "error",
       signal: job.signal,
     });
-    report("headers", { httpStatus: response.status });
     if (!response.ok) {
       throw new Error(`Local media TTS failed with HTTP ${response.status}`);
     }
-    const audio = await readBoundedAudioResponse(response);
-    report("complete", { httpStatus: response.status });
-    return audio;
+    return await readBoundedAudioResponse(response);
   } catch (error) {
-    report("failed", {
-      httpStatus: response?.status,
-      timedOut: job.signal.aborted,
-      failureClass: job.signal.aborted
-        ? "deadline"
-        : response && !response.ok
-          ? "http"
-          : response
-            ? "response"
-            : "transport",
-    });
     await response?.body?.cancel().catch(() => undefined);
     await job.cancel();
     throw error;
@@ -418,7 +360,7 @@ async function readBoundedVoiceCatalog(response: Response): Promise<
   });
 }
 
-export function buildLocalMediaSpeechProvider(logger?: DiagnosticLogger): LocalMediaSpeechProvider {
+export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
   return {
     id: LOCAL_MEDIA_PROVIDER_ID,
     label: "Local media",
@@ -461,8 +403,6 @@ export function buildLocalMediaSpeechProvider(logger?: DiagnosticLogger): LocalM
           overrides: req.providerOverrides,
           responseFormat,
           timeoutMs: req.timeoutMs,
-          requestId: req.requestId,
-          logger,
         }),
         outputFormat: responseFormat,
         fileExtension: voiceNote ? ".ogg" : ".wav",
