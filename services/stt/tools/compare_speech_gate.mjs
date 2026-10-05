@@ -42,7 +42,7 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
     summary[profile] = {
       ...metrics,
       acceptedFrameFraction: accepted / frames.length,
-      highProbabilityFrameFraction: frames.filter((frame) => frame.speechProbability >= 0.85).length / frames.length,
+      highProbabilityFrameFraction: frames.filter((frame) => frame.speechProbability >= 0.95).length / frames.length,
       longestAcceptedMs: longest * 20,
       runsAtLeast160Ms: sustained,
       candidateStartsMs,

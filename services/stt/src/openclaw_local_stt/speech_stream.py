@@ -13,11 +13,10 @@ from .speech_apm import SAMPLE_RATE, create_speech_processor
 
 FRAME_SAMPLES = SAMPLE_RATE // 50
 FRAME_BYTES = FRAME_SAMPLES * 2
-# Fixed ordered float32 metadata. APM3 requires the matching adapter; an older
+# Fixed ordered float32 metadata. APM4 requires the matching adapter; an older
 # worker fails its readiness handshake rather than silently misframing audio.
-CONTROL_FIELDS = ("cleanRms", "nativeGainDb", "minimumCeilingDb", "maximumCeilingDb",
-                  "speechFrames", "uncertainFrames", "nonspeechFrames", "holdFrames",
-                  "attenuateFrames", "recoverFrames", "clippedFrames", "mutedFrames")
+CONTROL_FIELDS = ("cleanRms", "highProbabilityFrames", "midProbabilityFrames",
+                  "lowProbabilityFrames", "clippedFrames", "mutedFrames")
 METADATA_BYTES = (2 + len(CONTROL_FIELDS)) * 4
 
 
@@ -26,7 +25,7 @@ def main() -> int:
     processor = create_speech_processor()
     source = sys.stdin.buffer
     sink = sys.stdout.buffer
-    sink.write(b"APM3")
+    sink.write(b"APM4")
     sink.flush()
     while True:
         frame = source.read(FRAME_BYTES)

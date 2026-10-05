@@ -33,6 +33,18 @@ export function createLiveSpeechGate(config: {
   let lastFeedbackFrame = -FEEDBACK_MAX_AGE_FRAMES;
   let calibrationBlocked = false;
   return {
+    /** Read-only regulator state for deterministic offline traces; never includes media. */
+    snapshot() {
+      return {
+        frame,
+        environment,
+        noiseRms,
+        learnedMinimumOutputRms,
+        originalNoiseRms: originalNoiseRms ?? null,
+        calibrationBlocked,
+        feedbackAgeFrames: frame - lastFeedbackFrame,
+      };
+    },
     captureObservation(): SpeechObservation {
       return { frame, environment };
     },

@@ -53,37 +53,24 @@ Live speech and marked uploads share one `SpeechProcessor`: HPF and NS precede
 one adaptive WebRTC AGC2, all at the native 10-ms cadence. The outer live wire
 still uses 20-ms frames. The public bindings are composed to expose headroom
 and gain/noise limits; no second independent feedback AGC or additional neural
-VAD is run. NS probability is passed explicitly to AGC2; uncertain input gives
-it zero gain-learning probability, not permission for another VAD invocation.
+VAD is run. NS probability is passed explicitly to AGC2, including uncertain
+values; only all-zero input is marked as zero speech evidence.
 Defaults are 12 dB maximum gain, 8 dB headroom, 6 dB/s native symmetric slew,
 and a -50 dBFS estimated output-noise limit. These are native control settings,
 not guarantees of measured SNR or of background-noise rejection. Slowing the
 symmetric slew also slows attenuation during sudden noise, so the native
 6 dB/s rate is retained. The limiter remains responsible for overload.
 
-One per-source `SpeechGainSupervisor` coordinates that native proposal with a
-signed, feed-forward speech-level ceiling. It observes **pre-gain** cleaned
-energy, never its own output, so native amplification cannot make it chase
-itself. Defaults are a -18 dBFS smoothed speech-RMS ceiling and up to 12 dB
-net attenuation, with 24 dB/s downward and 6 dB/s recovery slew. This is an
-upper operating level, not a demand to amplify everything to -18 dBFS.
-Native noise/gain constraints can always choose less. The output selector can
-only attenuate the native limited waveform, with a sample-smoothed multiplier;
-it never reverses native limiting. A falling native proposal cannot compound
-held attenuation below the supervisor's signed floor; a stronger native
-limiter reduction is left intact.
-
-Speech-level updates require NS probability at least 0.85 and nonzero received
-audio without at least 1% near-full-scale samples. Their pre-gain energy
-estimate follows rising levels with a 150-ms time constant and falling levels
-with 400 ms. Ambiguous input cannot teach a new speech level or request native
-gain growth. Existing attenuation is held for one second of untrusted frames;
-afterward negative net gain may recover smoothly toward unity, **not a new
-positive boost**. This bounds the risk of starving quiet speech after a loud
-utterance. The next trusted speech after that gap starts a fresh level estimate.
-These are conservative control permissions, not speaker identity or calibrated
-confidence. Exported capture probability is unchanged: ambiguous audio is not
-muted, gated, delayed or dropped by this supervisor.
+AGC2 is the only gain owner. Its native estimator uses speech evidence, noise
+level and headroom to adjust gain over time, while its limiter protects peaks.
+There is no service-level speech ceiling, uncertainty timer or second gain
+multiplier. A model-free sweep of -50 through -30 dBFS used identical quiet
+voice before/after a 90-second loud balcony-noise pause. Relaxing the limit to
+-40 raised average native gain after the pause from 0 to +2.5 dB, but also
+raised noise-only output and did not increase the live gate's accepted speech
+fraction. The conservative -50 dBFS limit therefore remains the default.
+This does **not** improve the physical input SNR, guarantee STT recognition or
+replace STT/VAD confirmation. Further tuning needs call-level evidence.
 
 The pinned `pywebrtc-audio==0.2.0` binding hardcodes a 15 dB initial gain even
 when the maximum is lower. Startup advances only the gain stage through
@@ -95,16 +82,15 @@ there is no new HTTP or OpenClaw configuration surface.
 
 The same installed runtime also exposes an internal per-call module,
 `python -m openclaw_local_stt.speech_stream`, for realtime clients. Its binary
-protocol is an `APM3` readiness marker followed by ordered 20 ms mono PCM16
+protocol is an `APM4` readiness marker followed by ordered 20 ms mono PCM16
 frames at 16 kHz; each input frame yields one 640-byte output frame followed by
-14 little-endian float32 values (56 bytes). In order: latest native 10-ms speech
-probability, applied block gain in dB, pre-gain cleaned RMS, native proposed gain
-including its limiter, minimum/maximum supervisory ceiling, then counts of
-10-ms speech/uncertain/nonspeech frames, ceiling hold/attenuate/recover frames,
-input-clipped frames and input-muted frames. Each state group sums to two;
+8 little-endian float32 values (32 bytes). In order: latest native 10-ms speech
+probability, applied block gain in dB, pre-gain cleaned RMS, then counts of
+10-ms high/mid/low-probability frames, input-clipped frames and input-muted
+frames. The three probability buckets sum to two;
 clipped means at least 1% of received samples at 99.9% full scale, muted means
 all-zero input. These last two counters help explain conservative control,
-not identify a speaker or classify sound conclusively. Old `APM2` workers are
+not identify a speaker or classify sound conclusively. Old `APM3` workers are
 rejected at readiness; deploy and roll back the matched plugin/service pair.
 
 Gain is measured from aligned pre-/post-AGC squared energy
@@ -117,8 +103,8 @@ recording or media-relay path.
 
 Control observations do not change processing decisions. The plugin retains
 only bounded per-call aggregates in its existing log; the worker writes no
-per-frame log, audio recording or separate diagnostic store. Ceiling movement
-describes the supervisor's target, not every native gain/limiter movement.
+per-frame log, audio recording or separate diagnostic store. Reported gain is
+the aligned clean-to-output energy ratio, including native limiter action.
 Raw, cleaned and output levels have distinct meanings; none is a physical SNR
 measurement or the original hardware microphone level.
 
@@ -186,7 +172,8 @@ case labels, not media, filenames, transcripts or paths. It uses no model or
 server. Both APM variants feed the **current** TypeScript gate with its coded
 default thresholds: this isolates the APM change, not an old/new full-system
 or production-configuration comparison. Optional `--headroom-db` and
-`--slew-db-per-second` affect only the candidate in this offline probe.
+`--slew-db-per-second` and `--noise-limit-dbfs` affect only the candidate in
+this offline probe.
 Use `--level-transitions` with an input to additionally replay a bounded excerpt
 at quiet/loud/quiet peak scales 0.05/0.98/0.05. Both native processors and gates
 retain their state across these phases. This deliberately extreme 26-dB switch
@@ -198,17 +185,27 @@ evidence in the final quiet phase. This remains a detector/recovery validation
 gap, not a passing end-to-end recognition result. No CUDA transcription or live
 call was exercised by this model-free probe.
 
-The local 14-recording replay retained zero accepted frames for six noise-only
-recordings and one silence recording in both variants. With the signed ceiling,
-accepted-frame fractions changed by at most 0.31 percentage points across the
-seven speech recordings compared with the combined-binding baseline.
-This is capture-gate evidence, not word-error-rate or live barge-in validation.
+In the local native-only replay with six noise-only recordings, one silence
+recording and seven speech recordings, the real capture gate accepted zero
+frames from all seven non-speech controls. Against the existing combined-binding
+baseline, speech accepted-frame fractions were equal in six cases and differed
+by 0.05 percentage points in one. This is capture-gate evidence, not word-error
+rate or live barge-in validation.
 The four synthetic 26-dB noise-step cases still produced 1.46–2.38-second
 speech-candidate bursts in **both** variants. Spectral probability and energy
 alone do not prove speech; preserve the subsequent VAD/STT confirmation and
 reversible interruption behavior. Do not tune a blanket rejection threshold
 to these few recordings or describe this controller as a clean-source SNR
 estimator.
+
+`tools/trace_speech_control.py` provides a separate 20-ms numerical timeline
+from a consented voice WAV and optional background WAV, without recording media
+or invoking a model. `--noise-limit-dbfs` varies only the native AGC2 setting;
+`--summary` returns phase averages. Pipe its default JSONL into
+`tools/trace_speech_gate.mjs` to measure the actual live gate, and optionally
+render that numeric result with `tools/plot_speech_trace.mjs`. The matched
+before/after quiet-voice phases deliberately reuse identical samples across a
+90-second loud-noise pause; they test state recovery, not intelligibility.
 
 ### Offline noise/level matrix
 

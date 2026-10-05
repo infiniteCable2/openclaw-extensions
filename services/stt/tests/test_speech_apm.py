@@ -115,11 +115,8 @@ def test_explicit_native_probability_and_one_gain_owner(monkeypatch):
     assert processor.gain_db == pytest.approx(20 * math.log10(2))
     assert processor.control == pytest.approx({
         "cleanRms": math.sqrt(0.05 ** 2 / 2),
-        "nativeGainDb": 20 * math.log10(2),
-        "minimumCeilingDb": -18 - 20 * math.log10(0.05),
-        "maximumCeilingDb": -18 - 20 * math.log10(0.05),
-        "speechFrames": 1, "uncertainFrames": 0, "nonspeechFrames": 1,
-        "holdFrames": 1, "attenuateFrames": 1, "recoverFrames": 0,
+        "highProbabilityFrames": 0, "midProbabilityFrames": 1,
+        "lowProbabilityFrames": 1,
         "clippedFrames": 0, "mutedFrames": 1,
     })
     np.testing.assert_array_equal(result, audio)
@@ -127,8 +124,7 @@ def test_explicit_native_probability_and_one_gain_owner(monkeypatch):
 
 def test_control_settings_are_bounded():
     for settings in ({"max_gain_db": 20}, {"headroom_db": float("nan")},
-                     {"max_gain_change_db_per_second": 0}, {"speech_ceiling_dbfs": 0},
-                     {"max_attenuation_db": 30}, {"attenuation_db_per_second": float("nan")},
-                     {"recovery_db_per_second": 0}):
+                     {"max_gain_change_db_per_second": 0},
+                     {"max_output_noise_level_dbfs": -20}):
         with pytest.raises(ValueError):
             SpeechControlConfig(**settings)

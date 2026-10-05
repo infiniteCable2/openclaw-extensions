@@ -4,8 +4,8 @@ import { createLiveSpeechDiagnostics } from "./live-speech-diagnostics.js";
 describe("live speech diagnostics", () => {
   it("separates high and low probability gain without labeling either as ground truth", () => {
     const diagnostics = createLiveSpeechDiagnostics();
-    diagnostics.observe({ speechProbability: 0.9, gainDb: 3 });
-    diagnostics.observe({ speechProbability: 0.9, gainDb: 5 });
+    diagnostics.observe({ speechProbability: 0.99, gainDb: 3 });
+    diagnostics.observe({ speechProbability: 0.99, gainDb: 5 });
     diagnostics.observe({ speechProbability: 0.5, gainDb: 6 });
     for (let index = 0; index < 50; index += 1) {
       diagnostics.observe({ speechProbability: 0.1, gainDb: 4 + index / 10 });
@@ -36,34 +36,22 @@ describe("live speech diagnostics", () => {
     const diagnostics = createLiveSpeechDiagnostics();
     const control = {
       cleanRms: 0.1,
-      nativeGainDb: 6,
-      minimumCeilingDb: -6,
-      maximumCeilingDb: -5,
-      speechFrames: 1,
-      uncertainFrames: 1,
-      nonspeechFrames: 0,
-      holdFrames: 1,
-      attenuateFrames: 1,
-      recoverFrames: 0,
+      highProbabilityFrames: 1,
+      midProbabilityFrames: 1,
+      lowProbabilityFrames: 0,
       clippedFrames: 1,
       mutedFrames: 0,
     };
     diagnostics.observe({ speechProbability: 0.5, gainDb: -5, originalRms: 0.2, control });
     diagnostics.observe({
-      speechProbability: 0.9,
+      speechProbability: 0.99,
       gainDb: -4,
       originalRms: 0.4,
       control: {
         ...control,
         cleanRms: 0.2,
-        nativeGainDb: 3,
-        minimumCeilingDb: -5,
-        maximumCeilingDb: -4,
-        speechFrames: 2,
-        uncertainFrames: 0,
-        holdFrames: 0,
-        attenuateFrames: 0,
-        recoverFrames: 2,
+        highProbabilityFrames: 2,
+        midProbabilityFrames: 0,
         clippedFrames: 0,
       },
     });
@@ -73,17 +61,12 @@ describe("live speech diagnostics", () => {
         controlReceivedFrames20Ms: 2,
         controlReceivedRms: Math.sqrt(0.1),
         controlCleanRms: Math.sqrt(0.025),
-        controlNativeMeanGainDb: 4.5,
-        controlNativeMinGainDb: 3,
-        controlNativeMaxGainDb: 6,
-        controlMinimumCeilingDb: -6,
-        controlMaximumCeilingDb: -4,
-        controlSpeechFrames10Ms: 3,
-        controlUncertainFrames10Ms: 1,
-        controlNonspeechFrames10Ms: 0,
-        controlCeilingHoldFrames10Ms: 1,
-        controlCeilingAttenuateFrames10Ms: 1,
-        controlCeilingRecoverFrames10Ms: 2,
+        controlNativeMeanGainDb: -4.5,
+        controlNativeMinGainDb: -5,
+        controlNativeMaxGainDb: -4,
+        controlHighProbabilityFrames10Ms: 3,
+        controlMidProbabilityFrames10Ms: 1,
+        controlLowProbabilityFrames10Ms: 0,
         controlInputClippedFrames10Ms: 1,
         controlInputMutedFrames10Ms: 0,
       }),
@@ -101,7 +84,7 @@ describe("live speech diagnostics", () => {
     for (let index = 0; index < 50; index += 1) {
       diagnostics.observe({ speechProbability: 0.1, gainDb: 5 });
     }
-    diagnostics.observe({ speechProbability: 0.9, gainDb: 8 });
+    diagnostics.observe({ speechProbability: 0.99, gainDb: 8 });
     for (let index = 0; index < 49; index += 1) {
       diagnostics.observe({ speechProbability: 0.1, gainDb: 9 });
     }
