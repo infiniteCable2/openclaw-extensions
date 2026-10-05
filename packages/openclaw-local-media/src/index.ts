@@ -15,6 +15,6 @@ export default definePluginEntry({
     api.registerRealtimeTranscriptionProvider(
       buildLocalRealtimeTranscriptionProvider(api.runtime.llm.acquireLocalService, api.logger),
     );
-    api.registerSpeechProvider(buildLocalMediaSpeechProvider());
+    api.registerSpeechProvider(buildLocalMediaSpeechProvider(api.logger));
   },
 });

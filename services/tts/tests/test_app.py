@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable, Iterator
 
@@ -101,6 +102,29 @@ def test_voice_note_uses_selected_voice_without_reloading_model(service) -> None
     assert first.content_type == second.content_type == "audio/ogg"
     assert backend.calls == [("Hallo", "astrid"), ("Guten Tag", "nova")]
     assert [call[1:] for call in encoder.calls] == [("opus", None), ("opus", None)]
+
+
+def test_voice_note_diagnostics_do_not_log_speech_content(service, caplog) -> None:
+    client, _backend, _encoder = service
+    request_id = "123e4567-e89b-42d3-a456-426614174000"
+    with caplog.at_level(logging.INFO):
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "input": "PRIVATE_SYNTHETIC_TEXT",
+                "model": "chatterbox",
+                "voice": "nova",
+                "response_format": "opus",
+            },
+            headers={"X-OpenClaw-Request-Id": request_id},
+        )
+
+    assert response.status_code == 200
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(f"request_id={request_id} phase=render" in message for message in messages)
+    assert any(f"request_id={request_id} phase=encode" in message for message in messages)
+    assert any(f"request_id={request_id} phase=encode outcome=ok" in message for message in messages)
+    assert all("PRIVATE_SYNTHETIC_TEXT" not in message for message in messages)
 
 
 def test_voice_catalog_is_public_but_contains_no_reference_paths(service) -> None:

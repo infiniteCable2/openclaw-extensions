@@ -43,6 +43,11 @@ Closing an unstarted streaming response releases its reserved admission too.
 See `contracts/local-media-v1` for the additive request lifecycle contract,
 pre-arrival cancellation, bounded ID retirement and failure semantics.
 
+The buffered Opus endpoint logs the opaque request id when it enters admission,
+rendering, and encoding, then records its final phase, outcome code, and elapsed
+milliseconds. These events distinguish queue, model, and codec stalls without
+logging text, audio, voice selection, or caller identity.
+
 ## Development
 
 ```bash
