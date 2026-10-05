@@ -5,8 +5,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function configuredProvider() {
-  const provider = buildLocalMediaSpeechProvider();
+function configuredProvider(logger?: Parameters<typeof buildLocalMediaSpeechProvider>[0]) {
+  const provider = buildLocalMediaSpeechProvider(logger);
   const providerConfig = provider.resolveConfig?.({
     cfg: {} as never,
     rawConfig: {
@@ -162,6 +162,62 @@ describe("local media speech provider", () => {
       voice: "nova",
       response_format: "opus",
     });
+  });
+
+  it("reports only request identity, stage, status, and duration for voice notes", async () => {
+    const logger = { info: vi.fn() };
+    const coreRequestId = "79205b99-2122-4bf0-a90b-24d276cc88cf";
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(new Uint8Array([1, 2, 3]), {
+          status: 200,
+          headers: { "content-type": "audio/ogg" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { provider, providerConfig } = configuredProvider(logger);
+
+    await provider.synthesize({
+      text: "PRIVATE_SYNTHETIC_TEXT",
+      cfg: {} as never,
+      providerConfig,
+      target: "voice-note",
+      requestId: coreRequestId,
+      timeoutMs: 1_000,
+    });
+
+    const events = logger.info.mock.calls.map(([message]) => JSON.parse(message as string));
+    expect(events.map((event) => event.phase)).toEqual(["start", "headers", "complete"]);
+    const requestId = (fetchMock.mock.calls[0]?.[1] as RequestInit).headers as Record<
+      string,
+      string
+    >;
+    expect(events.every((event) => event.requestId === requestId["X-OpenClaw-Request-Id"])).toBe(
+      true,
+    );
+    expect(events.every((event) => event.requestId === coreRequestId)).toBe(true);
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_SYNTHETIC_TEXT");
+  });
+
+  it("classifies a voice-note HTTP failure without logging the speech text", async () => {
+    const logger = { info: vi.fn() };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 408 })));
+    const { provider, providerConfig } = configuredProvider(logger);
+
+    await expect(
+      provider.synthesize({
+        text: "PRIVATE_SYNTHETIC_TEXT",
+        cfg: {} as never,
+        providerConfig,
+        target: "voice-note",
+        timeoutMs: 1_000,
+      }),
+    ).rejects.toThrow("HTTP 408");
+
+    const events = logger.info.mock.calls.map(([message]) => JSON.parse(message as string));
+    expect(events.map((event) => event.phase)).toEqual(["start", "headers", "failed"]);
+    expect(events.at(-1)).toMatchObject({ httpStatus: 408, failureClass: "http" });
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_SYNTHETIC_TEXT");
   });
 
   it("requests fixed-rate PCM for telephony", async () => {

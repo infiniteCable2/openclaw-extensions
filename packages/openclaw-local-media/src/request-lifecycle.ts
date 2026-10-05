@@ -6,13 +6,17 @@ export function createMediaRequestLifecycle(params: {
   baseUrl: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  requestId?: string;
 }) {
   const baseUrl = requireLoopbackBaseUrl(params.baseUrl, "Local media request");
   if (!Number.isFinite(params.timeoutMs) || params.timeoutMs <= 0) {
     throw new Error("Local media request deadline expired");
   }
   const timeoutMs = Math.min(300_000, Math.ceil(params.timeoutMs));
-  const requestId = randomUUID();
+  const requestId = params.requestId ?? randomUUID();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(requestId)) {
+    throw new Error("Local media request ID must be a UUIDv4");
+  }
   const deadline = performance.now() + timeoutMs;
   const controller = new AbortController();
   let finished = false;
@@ -52,6 +56,7 @@ export function createMediaRequestLifecycle(params: {
   params.signal?.addEventListener("abort", abort, { once: true });
   if (params.signal?.aborted) abort();
   return {
+    requestId,
     signal: controller.signal,
     get headers() {
       return {
