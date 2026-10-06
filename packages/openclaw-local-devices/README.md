@@ -6,7 +6,7 @@ The backends use local, documented receiver and smart-home interfaces:
 
 - Govee LAN API: status, power, brightness, RGB color, and color temperature over UDP.
 - FRITZ! Smart Home REST API: status, power, and measured power for a configured switchable unit.
-- Denon CEOL: power, volume, mute, CD/tuner/optical/analog input, FM/DAB band and station movement, configured DAB station by name, tone/balance, and HEOS playback. Denon control runs over TCP 23, HEOS metadata/playback/mute over TCP 1255, and volume/mute/tone/band alternatives over local UPnP port 60006.
+- Denon CEOL: power, volume, mute, CD/tuner/optical/analog input, FM/DAB band and station movement, cached DAB station selection, tone/balance, and HEOS playback. Denon control runs over TCP 23, HEOS metadata/playback/mute over TCP 1255, and volume/mute/tone/band alternatives over local UPnP port 60006.
 
 The receiver tool exposes one logical action per function. `via` can explicitly choose a documented
 interface for volume, mute, source or radio band; the default route changes interface only when
@@ -16,7 +16,7 @@ These are alternative command interfaces, not a promise of fully independent fai
 readback and power-on still require Denon control on TCP 23. UPnP band readback works independently
 once the receiver is already on, but the plugin will not guess power state after losing TCP 23.
 
-The plugin registers `local_device_status` and `local_device_control` only for explicitly allowed
+The plugin registers `local_device_status`, `local_device_dab_stations`, and `local_device_control` only for explicitly allowed
 agent IDs. It never scans arbitrary hosts during agent tool execution, never returns device network
 addresses or private hardware identifiers to the model, and does not depend on Voicecore.
 
@@ -69,9 +69,6 @@ directly in `openclaw.json`.
                 id: "receiver_living_room",
                 name: "Receiver Wohnzimmer",
                 address: "192.168.1.57",
-                dabStations: [
-                  { id: "energy_berlin", name: "ENERGY Berlin", reportedName: "ENERGY B" },
-                ],
               },
             ],
           },
@@ -82,7 +79,7 @@ directly in `openclaw.json`.
 }
 ```
 
-Also allow both tool names in the effective `tools.allow` policy of each intended agent. Do not add
+Also allow all three tool names in the effective `tools.allow` policy of each intended agent. Do not add
 them to `example_other`, `ops`, or a global/default allowlist. The plugin-side `allowedAgentIds` is a second,
 independent gate; both gates must permit the tool.
 
@@ -96,9 +93,18 @@ Gateway is stopped, and run `openclaw secrets audit --check` after setup.
 - Govee devices must be configured by private IPv4 address and have LAN control enabled.
 - The FRITZ! base URL may only be `fritz.box` or a private IPv4 HTTP(S) origin.
 - At most 16 devices are accepted across all providers.
-- Denon station selection walks up to 24 existing DAB entries and confirms each step by HEOS.
-  It does not create or overwrite presets. If the station list changes or the requested entry is
-  outside that bound, the tool reports failure and the receiver may remain on the last station.
+- DAB status and list reads never retune the receiver. If no cached list exists, the agent must
+  offer an audible, roughly two-minute `refresh_dab_stations` operation and wait for the user's
+  approval. Refresh requires the receiver to be on, playing the DAB tuner. The plugin walks at most
+  128 station steps, confirms names through HEOS, and stores the resulting bounded catalog in
+  OpenClaw's persistent plugin state. It does not create or overwrite presets.
+- A catalog with uncertain steps is marked partial. Duplicate or uncertain short names are listed
+  but not offered for direct selection. Selection uses a cached station ID and confirms each tuner
+  step; if the requested station is not found, the cache is marked stale and the agent should offer
+  another user-approved refresh. A failed or cancelled walk can leave the receiver on another
+  station. Refresh is never triggered automatically by a status read or failed selection.
+- Remove legacy `denon.devices[].dabStations` entries before activating this plugin version. They
+  are no longer accepted; station names must come from a receiver scan, not static configuration.
 - FM tuning commands use the receiver's `TFAN` wire scale (MHz × 100). On this CEOL, `TFAN?`
   can keep reporting an old frequency even after the receiver audibly changes stations, so FM
   frequency and tuning confirmation come from HEOS now-playing metadata instead. If HEOS does
@@ -111,8 +117,8 @@ Gateway is stopped, and run `openclaw secrets audit --check` after setup.
 - Control tools are marked side-effecting and non-replay-safe.
 - Unsupported device capabilities fail closed instead of falling through to another provider.
 
-Device discovery is an administrator-only installation step. It is intentionally not available as
-an agent tool.
+LAN device discovery is an administrator-only installation step. DAB station-list refresh is a
+separate, user-approved operation on an already configured receiver; it never scans LAN hosts.
 
 ## Future backends
 

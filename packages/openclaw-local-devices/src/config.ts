@@ -118,33 +118,13 @@ function parseDenonDevices(value: unknown): DenonDeviceConfig[] {
   return value.map((item, index) => {
     const label = `denon.devices[${index}]`;
     const record = asRecord(item, label);
-    rejectUnknownKeys(record, ["id", "name", "address", "dabStations"], label);
+    rejectUnknownKeys(record, ["id", "name", "address"], label);
     const id = deviceId(record.id, `${label}.id`);
     const address = requiredString(record.address, `${label}.address`, 15);
     if (!isPrivateIpv4(address)) {
       throw new LocalDeviceError("invalid_config", `${label}.address must be a private IPv4 address`);
     }
-    const rawStations = record.dabStations ?? [];
-    if (!Array.isArray(rawStations) || rawStations.length > 16) {
-      throw new LocalDeviceError("invalid_config", `${label}.dabStations may contain at most 16 stations`);
-    }
-    const dabStations = rawStations.map((item, stationIndex) => {
-      const stationLabel = `${label}.dabStations[${stationIndex}]`;
-      const station = asRecord(item, stationLabel);
-      rejectUnknownKeys(station, ["id", "name", "reportedName"], stationLabel);
-      return {
-        id: deviceId(station.id, `${stationLabel}.id`),
-        name: requiredString(station.name, `${stationLabel}.name`, 80),
-        reportedName: requiredString(station.reportedName, `${stationLabel}.reportedName`, 80),
-      };
-    });
-    if (new Set(dabStations.map((station) => station.id)).size !== dabStations.length) {
-      throw new LocalDeviceError("invalid_config", `${label}.dabStations ids must be unique`);
-    }
-    if (new Set(dabStations.map((station) => station.reportedName)).size !== dabStations.length) {
-      throw new LocalDeviceError("invalid_config", `${label}.dabStations reportedName values must be unique`);
-    }
-    return { id, name: displayName(record.name, id, `${label}.name`), address, dabStations };
+    return { id, name: displayName(record.name, id, `${label}.name`), address };
   });
 }
 

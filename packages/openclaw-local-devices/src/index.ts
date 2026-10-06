@@ -1,10 +1,14 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import { parseLocalDevicesConfig } from "./config.js";
+import { DabFileCatalogStore } from "./dab-file-store.js";
 import {
   buildBackends,
   controlSchema,
   createToolsForAgent,
+  dabStationsSchema,
   statusSchema,
 } from "./tools.js";
 import type { DeviceBackend, LocalDevicesConfig } from "./types.js";
@@ -25,14 +29,16 @@ if (!manifest.configSchema || typeof manifest.configSchema !== "object") {
 const runtimes = new WeakMap<object, Runtime>();
 
 function resolveTool(
-  api: { pluginConfig?: unknown },
+  api: OpenClawPluginApi,
   agentId: string | undefined,
   toolName: string,
 ) {
   let runtime = runtimes.get(api);
   if (!runtime) {
     const config = parseLocalDevicesConfig(api.pluginConfig);
-    runtime = { config, backends: buildBackends(config) };
+    const stateDir = api.runtime.state.resolveStateDir(process.env);
+    const dabCatalogStore = new DabFileCatalogStore(join(stateDir, "local-devices", "dab-catalog-v1"));
+    runtime = { config, backends: buildBackends(config, dabCatalogStore) };
     runtimes.set(api, runtime);
   }
   return createToolsForAgent(runtime.config, runtime.backends, agentId)?.find(
@@ -58,6 +64,15 @@ export default defineToolPlugin({
       optional: true,
       factory: ({ api, toolContext }) =>
         resolveTool(api, toolContext.agentId, "local_device_status"),
+    }),
+    tool({
+      name: "local_device_dab_stations",
+      label: "DAB Station List",
+      description: "Read cached DAB station names without changing the receiver.",
+      parameters: dabStationsSchema as never,
+      optional: true,
+      factory: ({ api, toolContext }) =>
+        resolveTool(api, toolContext.agentId, "local_device_dab_stations"),
     }),
     tool({
       name: "local_device_control",

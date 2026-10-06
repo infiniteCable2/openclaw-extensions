@@ -16,7 +16,6 @@ export type DenonDeviceConfig = {
   id: string;
   name: string;
   address: string;
-  dabStations: readonly { id: string; name: string; reportedName: string }[];
 };
 
 export type LocalDevicesConfig = {
@@ -59,7 +58,13 @@ export type DeviceStatus = {
     balance?: number;
     sources: readonly string[];
     playback?: "play" | "pause" | "stop";
-    configuredStations: readonly { id: string; name: string }[];
+    dabCatalog: {
+      state: "missing" | "scanning" | "ready" | "partial" | "stale" | "unavailable";
+      stationCount: number;
+      scannedAt?: number;
+      uncertainSteps?: number;
+      guidance?: string;
+    };
     alternatives: Readonly<Record<string, readonly string[]>>;
   };
 };
@@ -78,6 +83,7 @@ export type ReceiverAction =
   | { type: "select_band"; band: "dab" | "fm"; via?: "telnet" | "upnp" }
   | { type: "station_next" | "station_previous" }
   | { type: "select_dab_station"; station: string }
+  | { type: "refresh_dab_stations" }
   | { type: "tune_fm"; frequencyMHz: number }
   | { type: "set_bass" | "set_treble"; level: number }
   | { type: "set_balance"; balance: number }

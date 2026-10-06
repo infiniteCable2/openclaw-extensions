@@ -8,10 +8,21 @@
   },
   "version": "0.1.0",
   "contracts": {
-    "tools": ["local_device_status", "local_device_control"]
+    "tools": ["local_device_status", "local_device_dab_stations", "local_device_control"]
   },
   "toolMetadata": {
     "local_device_status": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false,
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.local-devices.config",
+          "required": ["allowedAgentIds"]
+        }
+      ]
+    },
+    "local_device_dab_stations": {
       "optional": true,
       "replaySafe": true,
       "sideEffecting": false,
@@ -160,21 +171,7 @@
               "properties": {
                 "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
                 "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-                "address": { "type": "string", "format": "ipv4" },
-                "dabStations": {
-                  "type": "array",
-                  "maxItems": 16,
-                  "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": ["id", "name", "reportedName"],
-                    "properties": {
-                      "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
-                      "name": { "type": "string", "minLength": 1, "maxLength": 80 },
-                      "reportedName": { "type": "string", "minLength": 1, "maxLength": 80 }
-                    }
-                  }
-                }
+                "address": { "type": "string", "format": "ipv4" }
               }
             }
           }
