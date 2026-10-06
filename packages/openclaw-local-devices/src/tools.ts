@@ -1,8 +1,9 @@
 import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { FritzSmartHomeBackend } from "./fritz.js";
+import { DenonCeolBackend } from "./denon.js";
 import { GoveeLanBackend, GoveeLanStatusCoordinator, readGoveeStatuses } from "./govee.js";
-import type { DeviceAction, DeviceBackend, DeviceStatus, LocalDevicesConfig } from "./types.js";
+import type { DeviceBackend, DeviceStatus, LocalDeviceAction, LocalDevicesConfig } from "./types.js";
 import { LocalDeviceError } from "./types.js";
 
 export const statusSchema = {
@@ -29,13 +30,22 @@ export const controlSchema = {
     },
     action: {
       type: "string",
-      enum: ["turn_on", "turn_off", "set_brightness", "set_color", "set_color_temperature"],
+      enum: ["turn_on", "turn_off", "set_brightness", "set_color", "set_color_temperature", "set_volume", "set_mute", "select_source", "select_band", "station_next", "station_previous", "select_dab_station", "tune_fm", "set_bass", "set_treble", "set_balance", "play", "pause", "stop", "track_next", "track_previous"],
     },
     brightness: { type: "integer", minimum: 1, maximum: 100 },
     red: { type: "integer", minimum: 0, maximum: 255 },
     green: { type: "integer", minimum: 0, maximum: 255 },
     blue: { type: "integer", minimum: 0, maximum: 255 },
     kelvin: { type: "integer", minimum: 2000, maximum: 9000 },
+    volume: { type: "integer", minimum: 0, maximum: 60 },
+    muted: { type: "boolean" },
+    source: { type: "string", enum: ["cd", "tuner", "optical1", "optical2", "analog"] },
+    band: { type: "string", enum: ["dab", "fm"] },
+    station: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" },
+    frequencyMHz: { type: "number", minimum: 87.5, maximum: 108 },
+    level: { type: "integer", minimum: -10, maximum: 10 },
+    balance: { type: "integer", minimum: -50, maximum: 50 },
+    via: { type: "string", enum: ["telnet", "upnp", "heos"] },
   },
 } satisfies AnyAgentTool["parameters"];
 
@@ -62,8 +72,34 @@ function integer(value: unknown, label: string, minimum: number, maximum: number
   return value;
 }
 
-export function parseDeviceAction(raw: unknown): DeviceAction {
+function choice<T extends string>(value: unknown, values: readonly T[], label: string): T {
+  if (typeof value !== "string" || !values.includes(value as T)) {
+    throw new LocalDeviceError("invalid_request", `${label} must be one of ${values.join(", ")}`);
+  }
+  return value as T;
+}
+
+function selectedMethod(value: unknown): "telnet" | "upnp" | "heos" | undefined {
+  return value === undefined ? undefined : choice(value, ["telnet", "upnp", "heos"] as const, "via");
+}
+
+function actionMethod<T extends "telnet" | "upnp" | "heos">(
+  value: "telnet" | "upnp" | "heos" | undefined,
+  allowed: readonly T[],
+): T | undefined {
+  if (value === undefined) return undefined;
+  if (!allowed.includes(value as T)) {
+    throw new LocalDeviceError("invalid_request", `via must be one of ${allowed.join(", ")}`);
+  }
+  return value as T;
+}
+
+export function parseDeviceAction(raw: unknown): LocalDeviceAction {
   const params = record(raw);
+  const via = selectedMethod(params.via);
+  if (via !== undefined && !["set_volume", "set_mute", "select_source", "select_band"].includes(String(params.action))) {
+    throw new LocalDeviceError("invalid_request", "via is not supported for this action");
+  }
   switch (params.action) {
     case "turn_on":
       return { type: "turn_on" };
@@ -86,6 +122,41 @@ export function parseDeviceAction(raw: unknown): DeviceAction {
         type: "set_color_temperature",
         kelvin: integer(params.kelvin, "kelvin", 2000, 9000),
       };
+    case "set_volume":
+      return { type: "set_volume", volume: integer(params.volume, "volume", 0, 60), via: actionMethod(via, ["telnet", "upnp"]) };
+    case "set_mute":
+      if (typeof params.muted !== "boolean") throw new LocalDeviceError("invalid_request", "muted must be a boolean");
+      return { type: "set_mute", muted: params.muted, via: actionMethod(via, ["telnet", "upnp", "heos"]) };
+    case "select_source":
+      return { type: "select_source", source: choice(params.source, ["cd", "tuner", "optical1", "optical2", "analog"], "source"), via: actionMethod(via, ["heos", "telnet"]) };
+    case "select_band":
+      return { type: "select_band", band: choice(params.band, ["dab", "fm"], "band"), via: actionMethod(via, ["telnet", "upnp"]) };
+    case "station_next":
+    case "station_previous":
+    case "play":
+    case "pause":
+    case "stop":
+    case "track_next":
+    case "track_previous":
+      return { type: params.action };
+    case "select_dab_station":
+      if (typeof params.station !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(params.station)) {
+        throw new LocalDeviceError("invalid_request", "station must be a configured station id");
+      }
+      return { type: "select_dab_station", station: params.station };
+    case "tune_fm":
+      if (typeof params.frequencyMHz !== "number" || !Number.isFinite(params.frequencyMHz) || params.frequencyMHz < 87.5 || params.frequencyMHz > 108) {
+        throw new LocalDeviceError("invalid_request", "frequencyMHz must be an FM frequency from 87.5 to 108 in 0.1 MHz steps");
+      }
+      if (Math.abs(params.frequencyMHz * 10 - Math.round(params.frequencyMHz * 10)) > 1e-6) {
+        throw new LocalDeviceError("invalid_request", "frequencyMHz must use 0.1 MHz steps");
+      }
+      return { type: "tune_fm", frequencyMHz: params.frequencyMHz };
+    case "set_bass":
+    case "set_treble":
+      return { type: params.action, level: integer(params.level, "level", -10, 10) };
+    case "set_balance":
+      return { type: "set_balance", balance: integer(params.balance, "balance", -50, 50) };
     default:
       throw new LocalDeviceError("invalid_request", "action is not supported");
   }
@@ -111,6 +182,9 @@ export function buildBackends(config: LocalDevicesConfig): Map<string, DeviceBac
         config.requestTimeoutMs,
       ),
     );
+  }
+  for (const device of config.denon?.devices ?? []) {
+    backends.set(device.id, new DenonCeolBackend(device, config.requestTimeoutMs));
   }
   return backends;
 }
@@ -168,7 +242,7 @@ export function createLocalDeviceTools(backends: ReadonlyMap<string, DeviceBacke
     name: "local_device_status",
     label: "Local Device Status",
     description:
-      "Read the current state of configured local Govee lights and FRITZ! Smart Home devices. Never discovers arbitrary LAN hosts.",
+      "Read configured local lights, sockets and Denon receivers, including receiver capabilities and interface alternatives. Never discovers arbitrary LAN hosts.",
     parameters: statusSchema,
     executionMode: "sequential",
     execute: async (_toolCallId, rawParams, signal) => {
@@ -196,7 +270,7 @@ export function createLocalDeviceTools(backends: ReadonlyMap<string, DeviceBacke
     name: "local_device_control",
     label: "Local Device Control",
     description:
-      "Control one configured local light or socket. Supports power for all devices and brightness, RGB color, or color temperature only for Govee lights.",
+      "Control a configured local light, socket or Denon CEOL receiver. Receiver actions include volume, mute, input, DAB/FM, configured DAB station, tone and HEOS playback. Read local_device_status for supported actions and interface alternatives; via selects an explicit interface when available.",
     parameters: controlSchema,
     executionMode: "sequential",
     execute: async (_toolCallId, rawParams, signal) => {

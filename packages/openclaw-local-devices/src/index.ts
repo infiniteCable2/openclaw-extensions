@@ -43,7 +43,7 @@ function resolveTool(
 export default defineToolPlugin({
   id: "local-devices",
   name: "Local Devices",
-  description: "Bounded local control of configured Govee and FRITZ! Smart Home devices.",
+  description: "Bounded local control of configured lights, sockets and Denon CEOL receivers.",
   activation: {
     onStartup: false,
     onConfigPaths: ["plugins.entries.local-devices.config"],
@@ -62,7 +62,7 @@ export default defineToolPlugin({
     tool({
       name: "local_device_control",
       label: "Local Device Control",
-      description: "Control one configured local light or socket.",
+      description: "Control one configured local light, socket or receiver.",
       parameters: controlSchema as never,
       optional: true,
       factory: ({ api, toolContext }) =>

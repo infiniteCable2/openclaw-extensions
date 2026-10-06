@@ -4,6 +4,7 @@ import {
   LocalDeviceError,
   type FritzDeviceConfig,
   type GoveeDeviceConfig,
+  type DenonDeviceConfig,
   type LocalDevicesConfig,
 } from "./types.js";
 
@@ -110,10 +111,48 @@ function parseFritzDevices(value: unknown): FritzDeviceConfig[] {
   });
 }
 
+function parseDenonDevices(value: unknown): DenonDeviceConfig[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 16) {
+    throw new LocalDeviceError("invalid_config", "denon.devices must contain between 1 and 16 devices");
+  }
+  return value.map((item, index) => {
+    const label = `denon.devices[${index}]`;
+    const record = asRecord(item, label);
+    rejectUnknownKeys(record, ["id", "name", "address", "dabStations"], label);
+    const id = deviceId(record.id, `${label}.id`);
+    const address = requiredString(record.address, `${label}.address`, 15);
+    if (!isPrivateIpv4(address)) {
+      throw new LocalDeviceError("invalid_config", `${label}.address must be a private IPv4 address`);
+    }
+    const rawStations = record.dabStations ?? [];
+    if (!Array.isArray(rawStations) || rawStations.length > 16) {
+      throw new LocalDeviceError("invalid_config", `${label}.dabStations may contain at most 16 stations`);
+    }
+    const dabStations = rawStations.map((item, stationIndex) => {
+      const stationLabel = `${label}.dabStations[${stationIndex}]`;
+      const station = asRecord(item, stationLabel);
+      rejectUnknownKeys(station, ["id", "name", "reportedName"], stationLabel);
+      return {
+        id: deviceId(station.id, `${stationLabel}.id`),
+        name: requiredString(station.name, `${stationLabel}.name`, 80),
+        reportedName: requiredString(station.reportedName, `${stationLabel}.reportedName`, 80),
+      };
+    });
+    if (new Set(dabStations.map((station) => station.id)).size !== dabStations.length) {
+      throw new LocalDeviceError("invalid_config", `${label}.dabStations ids must be unique`);
+    }
+    if (new Set(dabStations.map((station) => station.reportedName)).size !== dabStations.length) {
+      throw new LocalDeviceError("invalid_config", `${label}.dabStations reportedName values must be unique`);
+    }
+    return { id, name: displayName(record.name, id, `${label}.name`), address, dabStations };
+  });
+}
+
 function rejectDuplicateIds(config: LocalDevicesConfig): void {
   const ids = [
     ...(config.govee?.devices.map((device) => device.id) ?? []),
     ...(config.fritz?.devices.map((device) => device.id) ?? []),
+    ...(config.denon?.devices.map((device) => device.id) ?? []),
   ];
   if (new Set(ids).size !== ids.length) {
     throw new LocalDeviceError("invalid_config", "device ids must be unique across providers");
@@ -122,11 +161,15 @@ function rejectDuplicateIds(config: LocalDevicesConfig): void {
   if (new Set(goveeAddresses).size !== goveeAddresses.length) {
     throw new LocalDeviceError("invalid_config", "Govee device addresses must be unique");
   }
+  const denonAddresses = config.denon?.devices.map((device) => device.address) ?? [];
+  if (new Set(denonAddresses).size !== denonAddresses.length) {
+    throw new LocalDeviceError("invalid_config", "Denon device addresses must be unique");
+  }
 }
 
 export function parseLocalDevicesConfig(value: unknown): LocalDevicesConfig {
   const root = asRecord(value, "plugin config");
-  rejectUnknownKeys(root, ["allowedAgentIds", "requestTimeoutMs", "govee", "fritz"], "plugin config");
+  rejectUnknownKeys(root, ["allowedAgentIds", "requestTimeoutMs", "govee", "fritz", "denon"], "plugin config");
   if (!Array.isArray(root.allowedAgentIds) || root.allowedAgentIds.length < 1 || root.allowedAgentIds.length > 16) {
     throw new LocalDeviceError("invalid_config", "allowedAgentIds must contain between 1 and 16 agent ids");
   }
@@ -157,11 +200,16 @@ export function parseLocalDevicesConfig(value: unknown): LocalDevicesConfig {
       devices: parseFritzDevices(fritz.devices),
     };
   }
-  if (!parsed.govee && !parsed.fritz) {
+  if (root.denon !== undefined) {
+    const denon = asRecord(root.denon, "denon");
+    rejectUnknownKeys(denon, ["devices"], "denon");
+    parsed.denon = { devices: parseDenonDevices(denon.devices) };
+  }
+  if (!parsed.govee && !parsed.fritz && !parsed.denon) {
     throw new LocalDeviceError("invalid_config", "at least one device provider must be configured");
   }
   rejectDuplicateIds(parsed);
-  const deviceCount = (parsed.govee?.devices.length ?? 0) + (parsed.fritz?.devices.length ?? 0);
+  const deviceCount = (parsed.govee?.devices.length ?? 0) + (parsed.fritz?.devices.length ?? 0) + (parsed.denon?.devices.length ?? 0);
   if (deviceCount > 16) {
     throw new LocalDeviceError("invalid_config", "at most 16 devices may be configured across all providers");
   }

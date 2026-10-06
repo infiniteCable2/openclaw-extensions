@@ -1,7 +1,7 @@
 {
   "id": "local-devices",
   "name": "Local Devices",
-  "description": "Bounded local control of configured Govee and FRITZ! Smart Home devices.",
+  "description": "Bounded local control of configured lights, sockets and Denon CEOL receivers.",
   "activation": {
     "onStartup": false,
     "onConfigPaths": ["plugins.entries.local-devices.config"]
@@ -143,11 +143,48 @@
             }
           }
         }
+      },
+      "denon": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["devices"],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "address"],
+              "properties": {
+                "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+                "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+                "address": { "type": "string", "format": "ipv4" },
+                "dabStations": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["id", "name", "reportedName"],
+                    "properties": {
+                      "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+                      "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+                      "reportedName": { "type": "string", "minLength": 1, "maxLength": 80 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "anyOf": [
       { "required": ["govee"] },
-      { "required": ["fritz"] }
+      { "required": ["fritz"] },
+      { "required": ["denon"] }
     ]
   }
 }

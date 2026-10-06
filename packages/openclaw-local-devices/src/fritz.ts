@@ -1,7 +1,7 @@
 import { createHash, pbkdf2 } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
-import type { DeviceAction, DeviceBackend, DeviceStatus, FritzDeviceConfig } from "./types.js";
+import type { DeviceBackend, DeviceStatus, FritzDeviceConfig, LocalDeviceAction } from "./types.js";
 import { LocalDeviceError } from "./types.js";
 
 const ZERO_SID = "0000000000000000";
@@ -280,7 +280,7 @@ export class FritzSmartHomeBackend implements DeviceBackend {
     return parseUnitStatus(this.device, await this.apiRequest("GET", undefined, signal));
   }
 
-  async control(action: DeviceAction, signal?: AbortSignal): Promise<DeviceStatus> {
+  async control(action: LocalDeviceAction, signal?: AbortSignal): Promise<DeviceStatus> {
     if (action.type !== "turn_on" && action.type !== "turn_off") {
       throw new LocalDeviceError("unsupported_action", "FRITZ! socket supports only turn_on and turn_off");
     }

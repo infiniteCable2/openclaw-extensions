@@ -2,10 +2,19 @@
 
 Native, bounded OpenClaw tools for configured devices on the Gateway LAN.
 
-The first stable backends deliberately cover only documented interfaces:
+The backends use local, documented receiver and smart-home interfaces:
 
 - Govee LAN API: status, power, brightness, RGB color, and color temperature over UDP.
 - FRITZ! Smart Home REST API: status, power, and measured power for a configured switchable unit.
+- Denon CEOL: power, volume, mute, CD/tuner/optical/analog input, FM/DAB band and station movement, configured DAB station by name, tone/balance, and HEOS playback. Denon control runs over TCP 23, HEOS metadata/playback/mute over TCP 1255, and volume/mute/tone/band alternatives over local UPnP port 60006.
+
+The receiver tool exposes one logical action per function. `via` can explicitly choose a documented
+interface for volume, mute, source or radio band; the default route changes interface only when
+the first connection fails before a command is sent. If a command was sent but its result is
+uncertain, the tool reports that uncertainty and does not replay a potentially duplicate action.
+These are alternative command interfaces, not a promise of fully independent failover: power
+readback and power-on still require Denon control on TCP 23. UPnP band readback works independently
+once the receiver is already on, but the plugin will not guess power state after losing TCP 23.
 
 The plugin registers `local_device_status` and `local_device_control` only for explicitly allowed
 agent IDs. It never scans arbitrary hosts during agent tool execution, never returns device network
@@ -54,6 +63,18 @@ directly in `openclaw.json`.
               { id: "socket_lamp", name: "Steckdosenlampe", uid: "configured-unit-id" },
             ],
           },
+          denon: {
+            devices: [
+              {
+                id: "receiver_living_room",
+                name: "Receiver Wohnzimmer",
+                address: "192.168.1.57",
+                dabStations: [
+                  { id: "energy_berlin", name: "ENERGY Berlin", reportedName: "ENERGY B" },
+                ],
+              },
+            ],
+          },
         },
       },
     },
@@ -75,6 +96,12 @@ Gateway is stopped, and run `openclaw secrets audit --check` after setup.
 - Govee devices must be configured by private IPv4 address and have LAN control enabled.
 - The FRITZ! base URL may only be `fritz.box` or a private IPv4 HTTP(S) origin.
 - At most 16 devices are accepted across all providers.
+- Denon station selection walks up to 24 existing DAB entries and confirms each step by HEOS.
+  It does not create or overwrite presets. If the station list changes or the requested entry is
+  outside that bound, the tool reports failure and the receiver may remain on the last station.
+- Receiver status lists the supported input names and interface alternatives. It intentionally
+  does not expose account settings, firmware operations, network configuration, or arbitrary
+  HEOS service searches to an agent.
 - Status responses are bounded and projected onto a small, non-sensitive schema.
 - Control tools are marked side-effecting and non-replay-safe.
 - Unsupported device capabilities fail closed instead of falling through to another provider.

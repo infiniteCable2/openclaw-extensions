@@ -61,6 +61,18 @@ describe("local device config", () => {
     expect(isPrivateIpv4("1.1.1.1")).toBe(false);
   });
 
+  it("accepts a configured receiver and rejects public or duplicate targets", () => {
+    const denon = { devices: [{ id: "receiver_living_room", name: "Receiver Wohnzimmer", address: "192.168.1.57", dabStations: [{ id: "energy_berlin", name: "ENERGY Berlin", reportedName: "ENERGY B" }] }] };
+    const config = parseLocalDevicesConfig({ allowedAgentIds: ["example_owner", "example_member"], denon });
+    expect(config.denon?.devices[0]?.dabStations[0]?.reportedName).toBe("ENERGY B");
+    expect(() => parseLocalDevicesConfig({ allowedAgentIds: ["example_owner"], denon: { devices: [{ id: "receiver", address: "8.8.8.8" }] } })).toThrow(/private IPv4/);
+    expect(() => parseLocalDevicesConfig({ allowedAgentIds: ["example_owner"], denon: { devices: [denon.devices[0], { id: "other", address: "192.168.1.57" }] } })).toThrow(/addresses must be unique/);
+    expect(() => parseLocalDevicesConfig({ allowedAgentIds: ["example_owner"], denon: { devices: [{
+      ...denon.devices[0],
+      dabStations: [...denon.devices[0].dabStations, { id: "duplicate_alias", name: "Another label", reportedName: "ENERGY B" }],
+    }] } })).toThrow(/reportedName values must be unique/);
+  });
+
   it("rejects unknown fields and more than 16 devices in total", () => {
     expect(() =>
       parseLocalDevicesConfig({
