@@ -1,6 +1,6 @@
 import net from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { buildDabCatalog, enableLegacyDabNameSelection, hasRepeatedDabPrefix, isValidDabCatalog, MAX_DAB_STEPS, type DabCatalog, type DabCatalogStore } from "./dab-catalog.js";
+import { buildDabCatalog, enableLegacyDabNameSelection, findRepeatedDabCycle, isValidDabCatalog, MAX_DAB_STEPS, type DabCatalog, type DabCatalogStore } from "./dab-catalog.js";
 import { moveDabWithRecovery, navigateDabByName } from "./dab-navigation.js";
 import type { DenonDeviceConfig, DeviceBackend, DeviceStatus, LocalDeviceAction } from "./types.js";
 import { LocalDeviceError } from "./types.js";
@@ -484,8 +484,9 @@ export class DenonCeolBackend implements DeviceBackend {
         }
         consecutiveUncertain = 0;
         names.push(next);
-        if (hasRepeatedDabPrefix(names)) {
-          names.splice(-3);
+        const cycle = findRepeatedDabCycle(names);
+        if (cycle) {
+          names.splice(0, names.length, ...names.slice(cycle.start, cycle.start + cycle.length));
           completedCycle = true;
           break;
         }

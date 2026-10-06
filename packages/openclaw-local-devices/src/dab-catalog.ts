@@ -32,9 +32,19 @@ export function enableLegacyDabNameSelection(catalog: DabCatalog): DabCatalog {
     : station) };
 }
 
-/** A single repeated name is not evidence of wrapping when names may duplicate. */
-export function hasRepeatedDabPrefix(names: readonly string[]): boolean {
-  return names.length >= 6 && names.slice(-3).every((name, index) => name === names[index]);
+/** A repeated run of names identifies a cycle even if the first metadata was stale. */
+export function findRepeatedDabCycle(names: readonly string[]): { start: number; length: number } | undefined {
+  const window = 6;
+  if (names.length < window * 2) return undefined;
+  const suffixStart = names.length - window;
+  for (let start = suffixStart - window; start >= 0; start--) {
+    const length = suffixStart - start;
+    if (length < window) continue;
+    if (names.slice(start, start + window).every((name, offset) => name === names[suffixStart + offset])) {
+      return { start, length };
+    }
+  }
+  return undefined;
 }
 
 export function isValidDabCatalog(value: unknown, address: string): value is DabCatalog {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDabCatalog, enableLegacyDabNameSelection, hasRepeatedDabPrefix, isValidDabCatalog } from "./dab-catalog.js";
+import { buildDabCatalog, enableLegacyDabNameSelection, findRepeatedDabCycle, isValidDabCatalog } from "./dab-catalog.js";
 
 describe("DAB station catalog", () => {
   it("keeps duplicate names in scan order with copy-style labels and explicit relative selection", () => {
@@ -43,9 +43,18 @@ describe("DAB station catalog", () => {
     expect(noAnchor.stations.every((station) => station.selectable)).toBe(true);
   });
 
-  it("does not mistake an equal short name for a completed cycle", () => {
-    expect(hasRepeatedDabPrefix(["A", "B", "C", "A"])).toBe(false);
-    expect(hasRepeatedDabPrefix(["A", "B", "C", "A", "B"])).toBe(false);
-    expect(hasRepeatedDabPrefix(["A", "B", "C", "D", "A", "B", "C"])).toBe(true);
+  it("does not mistake one repeated name or short run for a completed cycle", () => {
+    expect(findRepeatedDabCycle(["A", "B", "C", "A"])).toBeUndefined();
+    expect(findRepeatedDabCycle(["A", "B", "C", "D", "A", "B", "C"])).toBeUndefined();
+  });
+
+  it("recognizes a cycle after stale initial metadata without duplicating its rows", () => {
+    const cycle = ["A", "B", "C", "D", "E", "F", "G"];
+    const names = ["old", "stale", ...cycle, ...cycle.slice(0, 6)];
+    expect(findRepeatedDabCycle(names)).toEqual({ start: 2, length: 7 });
+    const match = findRepeatedDabCycle(names)!;
+    expect(names.slice(match.start, match.start + match.length)).toEqual(cycle);
+    expect(findRepeatedDabCycle(["old", "stale", ...cycle, ...cycle, ...cycle.slice(0, 6)]))
+      .toEqual({ start: 9, length: 7 });
   });
 });
