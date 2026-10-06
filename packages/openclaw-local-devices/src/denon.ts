@@ -102,13 +102,12 @@ async function telnet(
 }
 
 async function telnetSnapshot(device: DenonDeviceConfig, timeoutMs: number, signal?: AbortSignal): Promise<string[]> {
-  return await tcpCommand(device.address, 23, "TM?\rTFDA?\rTFAN?\rPW?\rMV?\rMU?\rSI?\r", timeoutMs, signal,
+  return await tcpCommand(device.address, 23, "TM?\rTFDA?\rPW?\rMV?\rMU?\rSI?\r", timeoutMs, signal,
     (lines) => {
       if (!["PW", "MV", "MU", "SI"].every((prefix) => lines.some((line) => line.startsWith(prefix)))) return false;
       if (!lines.some((line) => line === "SITUNER")) return true;
       const band = telnetBand(lines);
-      return band === "fm" ? lines.some((line) => line.startsWith("TFAN"))
-        : band === "dab" ? lines.some((line) => line.startsWith("TFDA")) : false;
+      return band === "fm" ? true : band === "dab" ? lines.some((line) => line.startsWith("TFDA")) : false;
     });
 }
 
@@ -117,10 +116,10 @@ export function telnetBand(lines: readonly string[]): "dab" | "fm" | undefined {
     : lines.some((line) => line === "TMANFM") ? "fm" : undefined;
 }
 
-export function decodeFmFrequency(line: string | undefined): number | undefined {
-  const raw = line?.match(/^TFAN(\d{6})$/)?.[1];
-  if (!raw) return undefined;
-  const frequency = Number(raw) / 100;
+export function decodeHeosFmFrequency(station: string | undefined): number | undefined {
+  const match = station?.match(/^FM\s+(\d{2,3})[.,](\d{1,2})\s*MHz$/i);
+  if (!match) return undefined;
+  const frequency = Number(`${match[1]}.${match[2].padEnd(2, "0")}`);
   return frequency >= 87.5 && frequency <= 108 ? frequency : undefined;
 }
 
@@ -256,8 +255,9 @@ export class DenonCeolBackend implements DeviceBackend {
     const band = telnetBand(telnetLines);
     const upnpBand = result<string>(8)?.match(/&lt;bandMode&gt;(DAB|FM)&lt;\/bandMode&gt;/)?.[1];
     const dab = line("TFDA")?.match(/^TFDA([0-9]{1,2}[A-D])(?:\s|$)/);
-    const fmFrequencyMHz = decodeFmFrequency(line("TFAN"));
     const resolvedBand = band ?? (upnpBand === "DAB" ? "dab" : upnpBand === "FM" ? "fm" : undefined);
+    const fmFrequencyMHz = power === "PWON" && resolvedBand === "fm"
+      ? decodeHeosFmFrequency(result<string>(1)) : undefined;
     const bass = Number(xmlValue(result<string>(2) ?? "", "CurrentBass"));
     const treble = Number(xmlValue(result<string>(3) ?? "", "CurrentTreble"));
     const balance = Number(xmlValue(result<string>(4) ?? "", "CurrentBalance"));
