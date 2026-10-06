@@ -18,6 +18,16 @@ export type DenonDeviceConfig = {
   address: string;
 };
 
+export type LinkedDeviceConfig = {
+  id: string;
+  name: string;
+  provider: string;
+  statusTool: string;
+  controlTool: string;
+  observeTool?: string;
+  guideTool?: string;
+};
+
 export type LocalDevicesConfig = {
   allowedAgentIds: ReadonlySet<string>;
   requestTimeoutMs: number;
@@ -32,6 +42,21 @@ export type LocalDevicesConfig = {
   };
   denon?: {
     devices: readonly DenonDeviceConfig[];
+  };
+  linkedDevices?: readonly LinkedDeviceConfig[];
+};
+
+export type LinkedDeviceReference = {
+  id: string;
+  name: string;
+  provider: string;
+  kind: "tool_reference";
+  state: "not_queried";
+  tools: {
+    status: string;
+    control: string;
+    observe?: string;
+    guide?: string;
   };
 };
 
