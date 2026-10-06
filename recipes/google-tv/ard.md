@@ -1,0 +1,3 @@
+# ARD Mediathek on Google TV
+
+Load this guide only for an explicit ARD navigation task. Open the configured ARD app with `google_tv_control(open_app, app=ard)`. Observe Android UI with `google_tv_observe` in `ui` or `screenshot` mode after each uncertain transition. Use D-pad keys and the visible focus/labels; do not rely on a fixed number of key presses. Text search can use `enter_text` when a search field is focused. An app permission prompt may appear; ask before granting a new permission. Do not sign in unless the user requests it. After starting a program, the app may auto-play unrelated content, so re-observe at the end and navigate back to the requested program if needed. A TV ADB screenshot does not show HDMI/Apple TV content.
