@@ -1,8 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DenonCeolBackend } from "./denon.js";
+import { decodeFmFrequency, DenonCeolBackend, encodeFmFrequency, telnetBand } from "./denon.js";
 
 describe("Denon CEOL receiver", () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it("uses the receiver's MHz-times-100 FM wire scale", () => {
+    expect(decodeFmFrequency("TFAN009140")).toBe(91.4);
+    expect(decodeFmFrequency("TFAN010340")).toBe(103.4);
+    expect(decodeFmFrequency("TFAN103400")).toBeUndefined();
+    expect(encodeFmFrequency(91.4)).toBe("009140");
+    expect(encodeFmFrequency(103.4)).toBe("010340");
+    expect(() => encodeFmFrequency(10.34)).toThrow(/FM frequency/);
+  });
+
+  it("finds FM even if a tuning-mode event follows the band event", () => {
+    expect(telnetBand(["TMANFM", "TMANAUTO"])).toBe("fm");
+    expect(telnetBand(["TMDA", "TMANMANUAL"])).toBe("dab");
+  });
 
   it("rejects an unsupported source transport before any receiver I/O", async () => {
     const backend = new DenonCeolBackend({
