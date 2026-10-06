@@ -4,7 +4,7 @@ import { FritzSmartHomeBackend } from "./fritz.js";
 import { DenonCeolBackend } from "./denon.js";
 import type { DabCatalogStore } from "./dab-catalog.js";
 import { GoveeLanBackend, GoveeLanStatusCoordinator, readGoveeStatuses } from "./govee.js";
-import type { DeviceBackend, DeviceStatus, LocalDeviceAction, LocalDevicesConfig } from "./types.js";
+import type { DeviceBackend, DeviceStatus, LinkedDeviceConfig, LinkedDeviceReference, LocalDeviceAction, LocalDevicesConfig } from "./types.js";
 import { LocalDeviceError } from "./types.js";
 
 export const statusSchema = {
@@ -248,12 +248,32 @@ async function readSelectedStatuses(
   });
 }
 
-export function createLocalDeviceTools(backends: ReadonlyMap<string, DeviceBackend>): AnyAgentTool[] {
+function linkedReference(device: LinkedDeviceConfig): LinkedDeviceReference {
+  return {
+    id: device.id,
+    name: device.name,
+    provider: device.provider,
+    kind: "tool_reference",
+    state: "not_queried",
+    tools: {
+      status: device.statusTool,
+      control: device.controlTool,
+      ...(device.observeTool ? { observe: device.observeTool } : {}),
+      ...(device.guideTool ? { guide: device.guideTool } : {}),
+    },
+  };
+}
+
+export function createLocalDeviceTools(
+  backends: ReadonlyMap<string, DeviceBackend>,
+  linkedDevices: readonly LinkedDeviceConfig[] = [],
+): AnyAgentTool[] {
+  const linkedById = new Map(linkedDevices.map((device) => [device.id, device]));
   const statusTool: AnyAgentTool = {
     name: "local_device_status",
     label: "Local Device Status",
     description:
-      "Read configured local lights, sockets and Denon receivers, including receiver capabilities and interface alternatives. Never discovers arbitrary LAN hosts.",
+      "Read configured local lights, sockets and Denon receivers, plus references to separately owned devices such as Google TV. A tool_reference is not live status: use its listed status tool. Never discovers arbitrary LAN hosts.",
     parameters: statusSchema,
     executionMode: "sequential",
     execute: async (_toolCallId, rawParams, signal) => {
@@ -265,15 +285,19 @@ export function createLocalDeviceTools(backends: ReadonlyMap<string, DeviceBacke
         });
       }
       const selected = requested
-        ? ([[requested, backends.get(requested)]] as const)
+        ? (backends.has(requested) ? ([[requested, backends.get(requested)]] as const) : [])
         : [...backends.entries()];
-      if (requested && !selected[0]?.[1]) {
+      const linked = requested ? linkedById.get(requested) : undefined;
+      const references = requested
+        ? (linked ? [linkedReference(linked)] : [])
+        : linkedDevices.map(linkedReference);
+      if (requested && selected.length === 0 && references.length === 0) {
         return jsonResult({
           ok: false,
           error: { code: "unknown_device", message: "Configured device was not found" },
         });
       }
-      return jsonResult({ ok: true, devices: await readSelectedStatuses(selected, signal) });
+      return jsonResult({ ok: true, devices: [...await readSelectedStatuses(selected, signal), ...references] });
     },
   };
 
@@ -302,7 +326,7 @@ export function createLocalDeviceTools(backends: ReadonlyMap<string, DeviceBacke
     name: "local_device_control",
     label: "Local Device Control",
     description:
-      "Control a configured local light, socket or Denon CEOL receiver. For DAB station selection, first read local_device_dab_stations and use a selectable station id. Duplicate labels navigate to the next same-named station in the shorter cached direction; the exact duplicate remains unverified (dabSelection.confirmed=false). dabStep.confirmed=false means a single step was not proven. refresh_dab_stations audibly cycles stations for roughly two to four minutes: ask for consent first; it requires active DAB playback. If selection reports dab_catalog_stale, propose another refresh. Never scan automatically on a status read. via selects an explicit interface when available.",
+      "Control a configured local light, socket or Denon CEOL receiver. Linked devices listed by local_device_status must use their own control tool, not this one. For DAB station selection, first read local_device_dab_stations and use a selectable station id. Duplicate labels navigate to the next same-named station in the shorter cached direction; the exact duplicate remains unverified (dabSelection.confirmed=false). dabStep.confirmed=false means a single step was not proven. refresh_dab_stations audibly cycles stations for roughly two to four minutes: ask for consent first; it requires active DAB playback. If selection reports dab_catalog_stale, propose another refresh. Never scan automatically on a status read. via selects an explicit interface when available.",
     parameters: controlSchema,
     executionMode: "sequential",
     execute: async (_toolCallId, rawParams, signal) => {
@@ -311,6 +335,10 @@ export function createLocalDeviceTools(backends: ReadonlyMap<string, DeviceBacke
         const deviceId = typeof params.device === "string" ? params.device : "";
         const backend = backends.get(deviceId);
         if (!backend) {
+          const linked = linkedById.get(deviceId);
+          if (linked) {
+            return jsonResult({ ok: false, error: { code: "linked_device", message: `Use ${linked.controlTool} for this device.` }, device: linkedReference(linked) });
+          }
           throw new LocalDeviceError("unknown_device", "Configured device was not found");
         }
         const device = await backend.control(parseDeviceAction(params), signal);
@@ -330,6 +358,6 @@ export function createToolsForAgent(
   agentId: string | undefined,
 ): AnyAgentTool[] | null {
   return agentId && config.allowedAgentIds.has(agentId)
-    ? createLocalDeviceTools(backends)
+    ? createLocalDeviceTools(backends, config.linkedDevices)
     : null;
 }

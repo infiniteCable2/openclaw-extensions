@@ -54,6 +54,39 @@ describe("local device tools", () => {
     expect(result.details).toEqual({ ok: true, devices: [status] });
   });
 
+  it("lists a linked TV without claiming live state or duplicating control", async () => {
+    const withTv: LocalDevicesConfig = {
+      ...config,
+      linkedDevices: [{
+        id: "wohnzimmer_tv", name: "Fernseher (Wohnzimmer)", provider: "google-tv",
+        statusTool: "google_tv_status", controlTool: "google_tv_control",
+        observeTool: "google_tv_observe", guideTool: "google_tv_guide",
+      }],
+    };
+    const lamp = { id: "lamp", name: "Lamp", provider: "govee" as const, available: true, power: "on" as const };
+    const backend: DeviceBackend = { provider: "govee", status: vi.fn(async () => lamp), control: vi.fn(async () => lamp) };
+    const backends = new Map([["lamp", backend]]);
+    const example_owner = createToolsForAgent(withTv, backends, "example_owner") ?? [];
+    const example_member = createToolsForAgent(withTv, backends, "example_member") ?? [];
+    expect(createToolsForAgent(withTv, new Map(), "example_other")).toBeNull();
+    const reference = {
+      id: "wohnzimmer_tv", name: "Fernseher (Wohnzimmer)", provider: "google-tv",
+      kind: "tool_reference", state: "not_queried",
+      tools: { status: "google_tv_status", control: "google_tv_control", observe: "google_tv_observe", guide: "google_tv_guide" },
+    };
+    for (const tools of [example_owner, example_member]) {
+      const status = tools.find((tool) => tool.name === "local_device_status") as AnyAgentTool;
+      const all = await status.execute("call-1", {});
+      const selected = await status.execute("call-2", { device: "wohnzimmer_tv" });
+      expect(all.details).toEqual({ ok: true, devices: [lamp, reference] });
+      expect(selected.details).toEqual({ ok: true, devices: [reference] });
+      const control = tools.find((tool) => tool.name === "local_device_control") as AnyAgentTool;
+      expect((await control.execute("call-3", { device: "wohnzimmer_tv", action: "turn_on" })).details).toMatchObject({
+        ok: false, error: { code: "linked_device" },
+      });
+    }
+  });
+
   it("reads a cached DAB list without contacting the receiver", async () => {
     const catalog = buildDabCatalog("127.0.0.1", ["ENERGY B", "Jazz"], 2, 0, true, 1234);
     const backend = new DenonCeolBackend(

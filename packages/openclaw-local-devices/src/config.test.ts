@@ -72,6 +72,14 @@ describe("local device config", () => {
     }] } })).toThrow(/dabStations is not supported/);
   });
 
+  it("accepts a linked device reference but rejects duplicate ids", () => {
+    const linkedDevices = [{ id: "wohnzimmer_tv", name: "Fernseher (Wohnzimmer)", provider: "google-tv", statusTool: "google_tv_status", controlTool: "google_tv_control" }];
+    const parsed = parseLocalDevicesConfig({ allowedAgentIds: ["example_owner", "example_member"], govee: { devices: [{ id: "light", address: "192.168.1.25" }] }, linkedDevices });
+    expect(parsed.linkedDevices).toEqual(linkedDevices);
+    expect(() => parseLocalDevicesConfig({ allowedAgentIds: ["example_owner"], govee: { devices: [{ id: "wohnzimmer_tv", address: "192.168.1.25" }] }, linkedDevices })).toThrow(/unique/);
+    expect(() => parseLocalDevicesConfig({ allowedAgentIds: ["example_owner"], govee: { devices: [{ id: "light", address: "192.168.1.25" }] }, linkedDevices: [{ ...linkedDevices[0], statusTool: "unknown-tool!" }] })).toThrow(/tool name/);
+  });
+
   it("rejects unknown fields and more than 16 devices in total", () => {
     expect(() =>
       parseLocalDevicesConfig({

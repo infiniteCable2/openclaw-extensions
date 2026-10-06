@@ -20,6 +20,12 @@ The plugin registers `local_device_status`, `local_device_dab_stations`, and `lo
 agent IDs. It never scans arbitrary hosts during agent tool execution, never returns device network
 addresses or private hardware identifiers to the model, and does not depend on Voicecore.
 
+`linkedDevices` may place a reference to a separately owned device in the `local_device_status`
+inventory. It does not contact or control that device. The returned `kind: "tool_reference"` and
+`state: "not_queried"` distinguish the reference from live status and name the owning tools.
+Those tools must be independently installed and permitted for the same agents. This is a small
+discovery bridge, not a second implementation of the device or a cross-plugin status contract.
+
 ## Build and test
 
 From the `openclaw-extensions` workspace root:
@@ -72,6 +78,13 @@ directly in `openclaw.json`.
               },
             ],
           },
+          linkedDevices: [
+            {
+              id: "wohnzimmer_tv", name: "Fernseher (Wohnzimmer)", provider: "google-tv",
+              statusTool: "google_tv_status", controlTool: "google_tv_control",
+              observeTool: "google_tv_observe", guideTool: "google_tv_guide",
+            },
+          ],
         },
       },
     },
