@@ -1,6 +1,6 @@
 import net from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { buildDabCatalog, hasRepeatedDabPrefix, isValidDabCatalog, MAX_DAB_STEPS, type DabCatalog, type DabCatalogStore } from "./dab-catalog.js";
+import { buildDabCatalog, enableLegacyDabNameSelection, hasRepeatedDabPrefix, isValidDabCatalog, MAX_DAB_STEPS, type DabCatalog, type DabCatalogStore } from "./dab-catalog.js";
 import { moveDabWithRecovery, navigateDabByName } from "./dab-navigation.js";
 import type { DenonDeviceConfig, DeviceBackend, DeviceStatus, LocalDeviceAction } from "./types.js";
 import { LocalDeviceError } from "./types.js";
@@ -242,7 +242,8 @@ export class DenonCeolBackend implements DeviceBackend {
 
   private async cachedCatalog(): Promise<DabCatalog | undefined> {
     const value = await this.catalogStore.lookup(this.configuredDevice.id);
-    return isValidDabCatalog(value, this.configuredDevice.address) ? value : undefined;
+    if (!isValidDabCatalog(value, this.configuredDevice.address)) return undefined;
+    return enableLegacyDabNameSelection(value);
   }
 
   async stationCatalog(): Promise<{
@@ -417,7 +418,7 @@ export class DenonCeolBackend implements DeviceBackend {
         send: async (direction) => { await telnet(this.configuredDevice, `TFDA${direction}`, "TFDA", Math.min(this.timeoutMs, 125), signal); },
         changed: async (previous) => await this.changedStation(previous, 6_000, signal),
         current: async () => await currentStation(this.configuredDevice, this.timeoutMs, signal),
-      });
+      }, new Map(catalog.stations.map((station) => [station.name, station.occurrences])));
     } catch (error) {
       if (error instanceof LocalDeviceError && error.code === "dab_catalog_stale") await this.markCatalogStale();
       throw error;

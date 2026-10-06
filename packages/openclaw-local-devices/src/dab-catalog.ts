@@ -25,6 +25,13 @@ export type DabCatalogStore = {
   register(key: string, value: DabCatalog): Promise<void>;
 };
 
+/** Old v1 scans collapsed duplicate rows but retained their occurrence count. */
+export function enableLegacyDabNameSelection(catalog: DabCatalog): DabCatalog {
+  return { ...catalog, stations: catalog.stations.map((station) => station.occurrences > 1 && station.selectionMode === undefined
+    ? { ...station, selectable: true, selectionMode: "relative_unverified" as const }
+    : station) };
+}
+
 /** A single repeated name is not evidence of wrapping when names may duplicate. */
 export function hasRepeatedDabPrefix(names: readonly string[]): boolean {
   return names.length >= 6 && names.slice(-3).every((name, index) => name === names[index]);
