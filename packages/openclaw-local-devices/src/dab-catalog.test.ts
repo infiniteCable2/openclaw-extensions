@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDabCatalog, hasRepeatedDabPrefix, isValidDabCatalog } from "./dab-catalog.js";
+import { buildDabCatalog, enableLegacyDabNameSelection, hasRepeatedDabPrefix, isValidDabCatalog } from "./dab-catalog.js";
 
 describe("DAB station catalog", () => {
   it("keeps duplicate names in scan order with copy-style labels and explicit relative selection", () => {
@@ -18,6 +18,20 @@ describe("DAB station catalog", () => {
     const catalog = buildDabCatalog("192.168.1.57", ["ENERGY B"], 1, 0, false, 1234);
     expect(isValidDabCatalog({ ...catalog, stations: [{ ...catalog.stations[0], id: "../secret" }] }, "192.168.1.57")).toBe(false);
     expect(isValidDabCatalog({ ...catalog, observedSteps: 9999 }, "192.168.1.57")).toBe(false);
+  });
+
+  it("makes old collapsed duplicates selectable by name without inventing a second row", () => {
+    const old = buildDabCatalog("192.168.1.57", ["A", "pure fm", "B", "pure fm"], 4, 1, false, 1234);
+    const collapsed = { ...old, stations: [
+      { id: "dab_001", name: "A", occurrences: 1, selectable: true },
+      { id: "dab_002", name: "pure fm", occurrences: 2, selectable: false },
+      { id: "dab_003", name: "B", occurrences: 1, selectable: true },
+    ] };
+    expect(isValidDabCatalog(collapsed, "192.168.1.57")).toBe(true);
+    const compatible = enableLegacyDabNameSelection(collapsed);
+    expect(compatible.stations).toHaveLength(3);
+    expect(compatible.stations[1]).toMatchObject({ name: "pure fm", occurrences: 2, selectable: true, selectionMode: "relative_unverified" });
+    expect(collapsed.stations[1]?.selectable).toBe(false);
   });
 
   it("leaves uncertain unique names unselectable but permits relative duplicate selection", () => {

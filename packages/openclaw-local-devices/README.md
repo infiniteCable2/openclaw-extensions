@@ -106,6 +106,9 @@ Gateway is stopped, and run `openclaw secrets audit --check` after setup.
   Unique uncertain names are not offered for selection. A failed or cancelled walk can leave the
   receiver on another station. If the requested name cannot be found, the cache is marked stale;
   the agent should offer a user-approved refresh. Refresh never runs on a status read.
+- Older caches that collapsed equal names remain readable. Their repeated-name entry supports
+  name-only selection, but the cache lacks the second position, so direction is less reliable and
+  `_2` appears only after a new user-approved scan.
 - Remove legacy `denon.devices[].dabStations` entries before activating this plugin version. They
   are no longer accepted; station names must come from a receiver scan, not static configuration.
 - FM tuning commands use the receiver's `TFAN` wire scale (MHz × 100). On this CEOL, `TFAN?`

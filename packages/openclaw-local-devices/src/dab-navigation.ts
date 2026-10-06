@@ -33,21 +33,26 @@ export type DabNamedSelectionPorts = {
 /** Move to the next matching *name*. A duplicate ordinal is never claimed as a service ID. */
 export async function navigateDabByName(
   names: readonly string[], initial: string, target: string, ports: DabNamedSelectionPorts,
+  knownOccurrences: ReadonlyMap<string, number> = new Map(),
 ): Promise<{ direction: DabDirection; steps: number; confirmed: boolean }> {
   const direction = nearestDabDirection(names, initial, target);
-  if (initial === target && names.filter((name) => name === target).length === 1) {
+  const uniqueNames = new Set(names);
+  const count = (name: string) => Math.max(names.filter((candidate) => candidate === name).length, knownOccurrences.get(name) ?? 0);
+  if (initial === target && count(target) === 1) {
     return { direction, steps: 0, confirmed: true };
   }
   let current = initial;
   let unverifiedSteps = 0;
-  const maxUnverified = Math.min(4, names.length - new Set(names).size);
-  for (let step = 1; step <= Math.min(128, Math.max(names.length, 2)); step++) {
+  const maxUnverified = Math.min(4, [...uniqueNames].reduce((total, name) => total + Math.max(0, count(name) - 1), 0));
+  const maxSteps = Math.min(128, Math.max(2, [...uniqueNames].reduce((total, name) => total + count(name), 0)));
+  for (let step = 1; step <= maxSteps; step++) {
     await ports.send(direction);
     try {
       current = await ports.changed(current);
     } catch (error) {
       if (!(error instanceof LocalDeviceError) || error.code !== "receiver_unconfirmed") throw error;
-      if (!mayStepToSameName(names, current, direction) || ++unverifiedSteps > maxUnverified) {
+      const legacyDuplicate = count(current) > names.filter((name) => name === current).length;
+      if ((!mayStepToSameName(names, current, direction) && !legacyDuplicate) || ++unverifiedSteps > maxUnverified) {
         throw new LocalDeviceError("receiver_unconfirmed", "DAB step was not confirmed; the receiver may have moved");
       }
       // A same-name step is plausible, but HEOS cannot prove which service is playing.

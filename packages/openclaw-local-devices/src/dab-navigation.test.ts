@@ -46,6 +46,27 @@ describe("DAB next-name navigation", () => {
     expect(sent).toEqual(["UP"]);
   });
 
+  it("advances a legacy de-duplicated cache entry with known repeated names", async () => {
+    const sent: string[] = [];
+    const result = await navigateDabByName(["A", "pure fm", "B"], "pure fm", "pure fm", {
+      send: async (direction) => { sent.push(direction); },
+      changed: async () => { throw unconfirmed(); },
+      current: async () => "pure fm",
+    }, new Map([["pure fm", 2]]));
+    expect(result).toEqual({ direction: "UP", steps: 1, confirmed: false });
+    expect(sent).toEqual(["UP"]);
+  });
+
+  it("keeps traversing a legacy duplicate after leaving its first occurrence", async () => {
+    const next = ["B", "A", "pure fm"];
+    const result = await navigateDabByName(["A", "pure fm", "B"], "pure fm", "pure fm", {
+      send: async () => {},
+      changed: async () => next.shift() ?? "unexpected",
+      current: async () => "pure fm",
+    }, new Map([["pure fm", 2]]));
+    expect(result).toEqual({ direction: "UP", steps: 3, confirmed: true });
+  });
+
   it("uses the closer previous direction for a unique name", async () => {
     const sent: string[] = [];
     const result = await navigateDabByName(["A", "B", "C", "D"], "D", "C", {

@@ -281,7 +281,7 @@ export function createLocalDeviceTools(backends: ReadonlyMap<string, DeviceBacke
     name: "local_device_dab_stations",
     label: "DAB Station List",
     description:
-      "Read the receiver's cached DAB station names without retuning it. Equal names have scan-order display labels _2, _3, etc.; these are not proven service IDs. Selecting one navigates to the next station with that name, not necessarily that exact labeled occurrence. If missing or stale, explain that refresh audibly cycles stations for roughly two to four minutes; ask the user before invoking refresh_dab_stations. Never refresh as part of a read request.",
+      "Read the receiver's cached DAB station names without retuning it. New scans give equal names scan-order display labels _2, _3, etc.; old caches may show one repeated-name entry until refreshed. These are not proven service IDs. Selecting one navigates to the next station with that name, not necessarily that exact labeled occurrence. If missing or stale, explain that refresh audibly cycles stations for roughly two to four minutes; ask the user before invoking refresh_dab_stations. Never refresh as part of a read request.",
     parameters: dabStationsSchema,
     executionMode: "sequential",
     execute: async (_toolCallId, rawParams) => {
