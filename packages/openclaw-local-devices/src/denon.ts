@@ -103,7 +103,33 @@ async function telnet(
 
 async function telnetSnapshot(device: DenonDeviceConfig, timeoutMs: number, signal?: AbortSignal): Promise<string[]> {
   return await tcpCommand(device.address, 23, "TM?\rTFDA?\rTFAN?\rPW?\rMV?\rMU?\rSI?\r", timeoutMs, signal,
-    (lines) => ["PW", "MV", "MU", "SI"].every((prefix) => lines.some((line) => line.startsWith(prefix))));
+    (lines) => {
+      if (!["PW", "MV", "MU", "SI"].every((prefix) => lines.some((line) => line.startsWith(prefix)))) return false;
+      if (!lines.some((line) => line === "SITUNER")) return true;
+      const band = telnetBand(lines);
+      return band === "fm" ? lines.some((line) => line.startsWith("TFAN"))
+        : band === "dab" ? lines.some((line) => line.startsWith("TFDA")) : false;
+    });
+}
+
+export function telnetBand(lines: readonly string[]): "dab" | "fm" | undefined {
+  return lines.some((line) => line === "TMDA") ? "dab"
+    : lines.some((line) => line === "TMANFM") ? "fm" : undefined;
+}
+
+export function decodeFmFrequency(line: string | undefined): number | undefined {
+  const raw = line?.match(/^TFAN(\d{6})$/)?.[1];
+  if (!raw) return undefined;
+  const frequency = Number(raw) / 100;
+  return frequency >= 87.5 && frequency <= 108 ? frequency : undefined;
+}
+
+export function encodeFmFrequency(frequencyMHz: number): string {
+  if (!Number.isFinite(frequencyMHz) || frequencyMHz < 87.5 || frequencyMHz > 108
+      || Math.abs(frequencyMHz * 10 - Math.round(frequencyMHz * 10)) > 1e-6) {
+    throw new LocalDeviceError("invalid_request", "FM frequency must be 87.5 to 108 in 0.1 MHz steps");
+  }
+  return String(Math.round(frequencyMHz * 100)).padStart(6, "0");
 }
 
 async function heos(
@@ -227,10 +253,11 @@ export class DenonCeolBackend implements DeviceBackend {
     const power = line("PW");
     const volume = Number(line("MV")?.slice(2) ?? xmlValue(result<string>(5) ?? "", "CurrentVolume"));
     const muteValue = line("MU") ?? xmlValue(result<string>(6) ?? "", "CurrentMute");
-    const band = line("TM");
+    const band = telnetBand(telnetLines);
     const upnpBand = result<string>(8)?.match(/&lt;bandMode&gt;(DAB|FM)&lt;\/bandMode&gt;/)?.[1];
-    const dab = line("TFDA")?.match(/^TFDA([0-9]{1,2}[A-D])\s/);
-    const fmRaw = line("TFAN")?.match(/^TFAN(\d{6})/);
+    const dab = line("TFDA")?.match(/^TFDA([0-9]{1,2}[A-D])(?:\s|$)/);
+    const fmFrequencyMHz = decodeFmFrequency(line("TFAN"));
+    const resolvedBand = band ?? (upnpBand === "DAB" ? "dab" : upnpBand === "FM" ? "fm" : undefined);
     const bass = Number(xmlValue(result<string>(2) ?? "", "CurrentBass"));
     const treble = Number(xmlValue(result<string>(3) ?? "", "CurrentTreble"));
     const balance = Number(xmlValue(result<string>(4) ?? "", "CurrentBalance"));
@@ -242,12 +269,11 @@ export class DenonCeolBackend implements DeviceBackend {
         ...(Number.isInteger(volume) && volume >= 0 && volume <= 60 ? { volume } : {}),
         ...(muteValue !== undefined ? { muted: muteValue === "MUON" || muteValue === "1" } : {}),
         ...(line("SI") ? { source: line("SI")?.slice(2).toLowerCase() } : {}),
-        ...(band === "TMDA" || (!band && upnpBand === "DAB")
-          ? { band: "dab" as const }
-          : band?.includes("FM") || (!band && upnpBand === "FM") ? { band: "fm" as const } : {}),
-        ...(power === "PWON" && typeof result<string>(1) === "string" ? { station: result<string>(1) } : {}),
-        ...(dab ? { dabChannel: dab[1] } : {}),
-        ...(fmRaw ? { fmFrequencyMHz: Number(fmRaw[1]) / 1000 } : {}),
+        ...(resolvedBand ? { band: resolvedBand } : {}),
+        ...(power === "PWON" && resolvedBand === "dab" && typeof result<string>(1) === "string"
+          ? { station: result<string>(1) } : {}),
+        ...(resolvedBand === "dab" && dab ? { dabChannel: dab[1] } : {}),
+        ...(resolvedBand === "fm" && fmFrequencyMHz !== undefined ? { fmFrequencyMHz } : {}),
         ...(Number.isInteger(bass) ? { bass: bass - 10 } : {}),
         ...(Number.isInteger(treble) ? { treble: treble - 10 } : {}),
         ...(Number.isInteger(balance) ? { balance: balance - 50 } : {}),
@@ -400,8 +426,8 @@ export class DenonCeolBackend implements DeviceBackend {
         throw new LocalDeviceError("station_not_found", "DAB station was not found in 24 receiver steps; the receiver may now be on another station");
       }
       case "tune_fm": {
+        const encoded = encodeFmFrequency(action.frequencyMHz);
         await this.control({ type: "select_band", band: "fm" }, signal);
-        const encoded = String(Math.round(action.frequencyMHz * 1000)).padStart(6, "0");
         await telnet(device, `TFAN${encoded}`, "TFAN", timeout, signal);
         return await this.confirmed((status) => status.receiver?.fmFrequencyMHz === action.frequencyMHz, signal);
       }
