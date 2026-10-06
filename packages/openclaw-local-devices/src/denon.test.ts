@@ -1,16 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { decodeFmFrequency, DenonCeolBackend, encodeFmFrequency, telnetBand } from "./denon.js";
+import { decodeHeosFmFrequency, DenonCeolBackend, encodeFmFrequency, telnetBand } from "./denon.js";
 
 describe("Denon CEOL receiver", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("uses the receiver's MHz-times-100 FM wire scale", () => {
-    expect(decodeFmFrequency("TFAN009140")).toBe(91.4);
-    expect(decodeFmFrequency("TFAN010340")).toBe(103.4);
-    expect(decodeFmFrequency("TFAN103400")).toBeUndefined();
+  it("uses the receiver's MHz-times-100 FM write scale", () => {
     expect(encodeFmFrequency(91.4)).toBe("009140");
     expect(encodeFmFrequency(103.4)).toBe("010340");
     expect(() => encodeFmFrequency(10.34)).toThrow(/FM frequency/);
+  });
+
+  it("reads FM frequency from HEOS rather than stale Telnet status", () => {
+    expect(decodeHeosFmFrequency("FM 103.40MHz")).toBe(103.4);
+    expect(decodeHeosFmFrequency("FM 104,60 MHz")).toBe(104.6);
+    expect(decodeHeosFmFrequency("FM 91.45MHz")).toBe(91.45);
+    expect(decodeHeosFmFrequency("FM 10.34MHz")).toBeUndefined();
+    expect(decodeHeosFmFrequency("BRF 91.4")).toBeUndefined();
+    expect(decodeHeosFmFrequency("Denon CEOL - Tuner")).toBeUndefined();
   });
 
   it("finds FM even if a tuning-mode event follows the band event", () => {

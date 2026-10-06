@@ -99,10 +99,11 @@ Gateway is stopped, and run `openclaw secrets audit --check` after setup.
 - Denon station selection walks up to 24 existing DAB entries and confirms each step by HEOS.
   It does not create or overwrite presets. If the station list changes or the requested entry is
   outside that bound, the tool reports failure and the receiver may remain on the last station.
-- FM frequency uses the receiver's `TFAN` control/readback scale (MHz × 100). A fresh `TFAN?`
-  readback is authoritative for FM tuning; HEOS now-playing text is used only for DAB station
-  names because its FM display can lag or disagree. In standby, tuner fields describe the last
-  selected setting, not active playback.
+- FM tuning commands use the receiver's `TFAN` wire scale (MHz × 100). On this CEOL, `TFAN?`
+  can keep reporting an old frequency even after the receiver audibly changes stations, so FM
+  frequency and tuning confirmation come from HEOS now-playing metadata instead. If HEOS does
+  not expose a parseable FM frequency, the plugin leaves it unknown rather than reporting the
+  stale Telnet value. In standby, no active FM frequency is reported.
 - Receiver status lists the supported input names and interface alternatives. It intentionally
   does not expose account settings, firmware operations, network configuration, or arbitrary
   HEOS service searches to an agent.
