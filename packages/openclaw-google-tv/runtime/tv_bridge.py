@@ -2,11 +2,14 @@
 """One-request bounded bridge. Never prints credentials, ADB diagnostics, or raw UI XML."""
 
 import asyncio
-import base64
 import json
 import os
+import socket
+import stat
 import subprocess
 import sys
+import tempfile
+import time
 import xml.etree.ElementTree as ET
 
 from androidtvremote2 import AndroidTVRemote
@@ -19,6 +22,7 @@ KEYS = {
 }
 MAX_SCREENSHOT_BYTES = 3_000_000
 MAX_UI_BYTES = 300_000
+REMOTE_PORT = 6466
 
 
 def result(**value):
@@ -39,6 +43,29 @@ def adb_run(device, *args, timeout=10, max_bytes=MAX_UI_BYTES):
     if proc.returncode or len(proc.stdout) > max_bytes:
         return None
     return proc.stdout
+
+
+def save_screenshot(image, directory, max_age_seconds):
+    try:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        root = os.lstat(directory)
+        if not stat.S_ISDIR(root.st_mode):
+            return None
+        if os.name == "posix" and (root.st_uid != os.geteuid() or root.st_mode & 0o077):
+            return None
+        now = time.time()
+        for entry in os.scandir(directory):
+            if not entry.name.startswith("tv-shot-") or not entry.name.endswith(".png"):
+                continue
+            info = entry.stat(follow_symlinks=False)
+            if stat.S_ISREG(info.st_mode) and (os.name != "posix" or info.st_uid == os.geteuid()) and now - info.st_mtime > max_age_seconds:
+                os.unlink(entry.path)
+        fd, path = tempfile.mkstemp(prefix="tv-shot-", suffix=".png", dir=directory)
+        with os.fdopen(fd, "wb") as output:
+            output.write(image)
+        return path
+    except OSError:
+        return None
 
 
 def adb_operation(device, request):
@@ -71,7 +98,10 @@ def adb_operation(device, request):
         image = adb_run(device, "exec-out", "screencap", "-p", timeout=8, max_bytes=MAX_SCREENSHOT_BYTES)
         if not image or not image.startswith(b"\x89PNG\r\n\x1a\n"):
             return {"ok": False, "code": "screenshot_unavailable", "scope": "android_surface_only"}
-        return {"ok": True, "scope": "android_surface_only", "mimeType": "image/png", "imageBase64": base64.b64encode(image).decode("ascii")}
+        path = save_screenshot(image, request["screenshotDirectory"], request["screenshotMaxAgeSeconds"])
+        if not path:
+            return {"ok": False, "code": "screenshot_storage_unavailable"}
+        return {"ok": True, "scope": "android_surface_only", "mimeType": "image/png", "path": path, "bytes": len(image)}
     if operation == "ui":
         # stdout-only dump fails on some TVs; use an exact per-process temporary path.
         path = f"/sdcard/Download/openclaw-ui-{os.getpid()}.xml"
@@ -98,10 +128,46 @@ def adb_operation(device, request):
     return {"ok": False, "code": "invalid_operation"}
 
 
+async def remote_port_available(host):
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, REMOTE_PORT), timeout=0.6)
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except (OSError, asyncio.TimeoutError):
+        return False
+
+
+def send_wake_packet(wake):
+    mac = bytes.fromhex(wake["macAddress"].replace(":", ""))
+    if len(mac) != 6 or mac[0] & 1:
+        raise ValueError("invalid wake address")
+    packet = b"\xff" * 6 + mac * 16
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+        udp.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        if udp.sendto(packet, (wake["broadcastAddress"], 9)) != len(packet):
+            raise OSError("short wake packet")
+
+
 async def remote_operation(device, request):
     operation = request["operation"]
     remote = AndroidTVRemote("OpenClaw Google TV", device["remoteCertPath"], device["remoteKeyPath"], device["host"], enable_ime=False, enable_voice=False)
     try:
+        wake_sent = False
+        if operation == "power" and request.get("power") == "on" and device.get("wake"):
+            if not await remote_port_available(device["host"]):
+                try:
+                    send_wake_packet(device["wake"])
+                except (OSError, ValueError):
+                    return {"ok": False, "code": "wake_send_failed"}
+                wake_sent = True
+                deadline = time.monotonic() + max(1, (request["timeoutMs"] - 11000) / 1000)
+                while time.monotonic() < deadline:
+                    await asyncio.sleep(0.5)
+                    if await remote_port_available(device["host"]):
+                        break
+                else:
+                    return {"ok": False, "code": "wake_no_remote", "wakeSent": True}
         await asyncio.wait_for(remote.async_connect(), timeout=8)
         await asyncio.sleep(0.25)
         power = "on" if remote.is_on is True else "off" if remote.is_on is False else "unknown"
@@ -117,7 +183,7 @@ async def remote_operation(device, request):
             if power == "unknown":
                 return {"ok": False, "code": "power_state_unknown"}
             if power == desired:
-                return {"ok": True, "sent": False, "confirmed": True, "power": power}
+                return {"ok": True, "sent": wake_sent, "wakeSent": wake_sent, "confirmed": True, "power": power}
             # This SHARP implementation ignores SLEEP; a guarded POWER toggle was
             # physically verified in both directions. Never toggle from unknown.
             remote.send_key_command("POWER")
@@ -134,7 +200,7 @@ async def remote_operation(device, request):
             return {"ok": False, "code": "invalid_operation"}
         await asyncio.sleep(0.7)
         confirmed = operation == "power" and remote.is_on is not None and (remote.is_on is True) == (request["power"] == "on")
-        return {"ok": True, "sent": True, "confirmed": confirmed, "via": "remote", "power": "on" if remote.is_on is True else "off" if remote.is_on is False else "unknown", "currentApp": remote.current_app or None}
+        return {"ok": True, "sent": True, "wakeSent": wake_sent, "confirmed": confirmed, "via": "remote", "power": "on" if remote.is_on is True else "off" if remote.is_on is False else "unknown", "currentApp": remote.current_app or None}
     except Exception:
         return {"ok": False, "code": "remote_unavailable"}
     finally:

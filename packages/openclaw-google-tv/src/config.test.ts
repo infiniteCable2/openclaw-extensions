@@ -19,6 +19,17 @@ describe("TV configuration", () => {
     expect(config.allowedAgentIds.has("example_other")).toBe(false);
     expect(config.devices.get("wohnzimmer_tv")?.apps[0]?.via).toBe("adb");
     expect(config.devices.get("wohnzimmer_tv")?.adb?.serverPort).toBe(5038);
+    expect(config.powerOnTimeoutMs).toBe(30000);
+    expect(config.screenshotMaxAgeSeconds).toBe(900);
+    expect(config.screenshotDirectory).toContain("media");
+  });
+  it("accepts an explicit bounded Wake-on-WLAN target and screenshot directory", () => {
+    const config = parseTvConfig({ ...valid, screenshotDirectory: "/var/lib/openclaw/media/google-tv", devices: [{ ...valid.devices[0], wake: { macAddress: "02:11:22:33:44:55", broadcastAddress: "192.168.1.255" } }] });
+    expect(config.devices.get("wohnzimmer_tv")?.wake?.macAddress).toBe("02:11:22:33:44:55");
+    expect(config.screenshotDirectory).toBe("/var/lib/openclaw/media/google-tv");
+  });
+  it("rejects a multicast Wake-on-WLAN address", () => {
+    expect(() => parseTvConfig({ ...valid, devices: [{ ...valid.devices[0], wake: { macAddress: "01:11:22:33:44:55", broadcastAddress: "192.168.1.255" } }] })).toThrow("unicast MAC");
   });
   it("rejects public target addresses", () => {
     expect(() => parseTvConfig({ ...valid, devices: [{ ...valid.devices[0], host: "8.8.8.8" }] })).toThrow("private IPv4");

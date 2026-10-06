@@ -18,7 +18,8 @@ export function callBridge(config: TvConfig, device: TvDevice, request: BridgeRe
     let output = "";
     let exceeded = false;
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill(); }, config.requestTimeoutMs);
+    const timeoutMs = request.operation === "power" && request.power === "on" ? config.powerOnTimeoutMs : config.requestTimeoutMs;
+    const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
     const onAbort = () => child.kill();
     signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.setEncoding("utf8");
@@ -42,6 +43,6 @@ export function callBridge(config: TvConfig, device: TvDevice, request: BridgeRe
       }
     });
     child.stdin.on("error", () => { /* child exit is handled above */ });
-    child.stdin.end(JSON.stringify({ ...request, device, timeoutMs: config.requestTimeoutMs }));
+    child.stdin.end(JSON.stringify({ ...request, device, timeoutMs, screenshotDirectory: config.screenshotDirectory, screenshotMaxAgeSeconds: config.screenshotMaxAgeSeconds }));
   });
 }
