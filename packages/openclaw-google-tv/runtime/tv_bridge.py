@@ -114,9 +114,13 @@ async def remote_operation(device, request):
             desired = request.get("power")
             if desired not in ("on", "off"):
                 return {"ok": False, "code": "invalid_power"}
+            if power == "unknown":
+                return {"ok": False, "code": "power_state_unknown"}
             if power == desired:
                 return {"ok": True, "sent": False, "confirmed": True, "power": power}
-            remote.send_key_command("WAKEUP" if desired == "on" else "SLEEP")
+            # This SHARP implementation ignores SLEEP; a guarded POWER toggle was
+            # physically verified in both directions. Never toggle from unknown.
+            remote.send_key_command("POWER")
         elif operation == "key":
             key = KEYS.get(request.get("key"))
             if not key:
