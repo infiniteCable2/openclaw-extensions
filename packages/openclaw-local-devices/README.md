@@ -98,11 +98,14 @@ Gateway is stopped, and run `openclaw secrets audit --check` after setup.
   approval. Refresh requires the receiver to be on, playing the DAB tuner. The plugin walks at most
   128 station steps, confirms names through HEOS, and stores the resulting bounded catalog in
   OpenClaw's persistent plugin state. It does not create or overwrite presets.
-- A catalog with uncertain steps is marked partial. Duplicate or uncertain short names are listed
-  but not offered for direct selection. Selection uses a cached station ID and confirms each tuner
-  step; if the requested station is not found, the cache is marked stale and the agent should offer
-  another user-approved refresh. A failed or cancelled walk can leave the receiver on another
-  station. Refresh is never triggered automatically by a status read or failed selection.
+- A catalog with uncertain steps is marked partial. Duplicate short names retain scan-order labels
+  (`name`, `name_2`, etc.), but those labels are not service IDs. Selecting either duplicate seeks
+  the *next* station with that displayed name; the shorter direction is estimated from the cache.
+  From one duplicate, selection can therefore move to another, but the receiver cannot prove which
+  one. The result reports `dabSelection.confirmed=false` rather than claiming an exact match.
+  Unique uncertain names are not offered for selection. A failed or cancelled walk can leave the
+  receiver on another station. If the requested name cannot be found, the cache is marked stale;
+  the agent should offer a user-approved refresh. Refresh never runs on a status read.
 - Remove legacy `denon.devices[].dabStations` entries before activating this plugin version. They
   are no longer accepted; station names must come from a receiver scan, not static configuration.
 - FM tuning commands use the receiver's `TFAN` wire scale (MHz × 100). On this CEOL, `TFAN?`

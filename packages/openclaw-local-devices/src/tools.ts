@@ -281,7 +281,7 @@ export function createLocalDeviceTools(backends: ReadonlyMap<string, DeviceBacke
     name: "local_device_dab_stations",
     label: "DAB Station List",
     description:
-      "Read the receiver's cached DAB station names without retuning it. If missing or stale, explain that refresh takes about two minutes and audibly cycles stations; ask the user before invoking refresh_dab_stations. Never refresh as part of a read request.",
+      "Read the receiver's cached DAB station names without retuning it. Equal names have scan-order display labels _2, _3, etc.; these are not proven service IDs. Selecting one navigates to the next station with that name, not necessarily that exact labeled occurrence. If missing or stale, explain that refresh audibly cycles stations for roughly two to four minutes; ask the user before invoking refresh_dab_stations. Never refresh as part of a read request.",
     parameters: dabStationsSchema,
     executionMode: "sequential",
     execute: async (_toolCallId, rawParams) => {
@@ -302,7 +302,7 @@ export function createLocalDeviceTools(backends: ReadonlyMap<string, DeviceBacke
     name: "local_device_control",
     label: "Local Device Control",
     description:
-      "Control a configured local light, socket or Denon CEOL receiver. For DAB station selection, first read local_device_dab_stations and use its station id. refresh_dab_stations is a separate, audible, about-two-minute operation: ask the user for consent first; it requires active DAB playback. If selection reports dab_catalog_stale, propose another refresh. Never scan automatically on a status read. via selects an explicit interface when available.",
+      "Control a configured local light, socket or Denon CEOL receiver. For DAB station selection, first read local_device_dab_stations and use a selectable station id. Duplicate labels navigate to the next same-named station in the shorter cached direction; the exact duplicate remains unverified (dabSelection.confirmed=false). dabStep.confirmed=false means a single step was not proven. refresh_dab_stations audibly cycles stations for roughly two to four minutes: ask for consent first; it requires active DAB playback. If selection reports dab_catalog_stale, propose another refresh. Never scan automatically on a status read. via selects an explicit interface when available.",
     parameters: controlSchema,
     executionMode: "sequential",
     execute: async (_toolCallId, rawParams, signal) => {

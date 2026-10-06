@@ -53,6 +53,8 @@ export type DeviceStatus = {
     station?: string;
     dabChannel?: string;
     fmFrequencyMHz?: number;
+    dabStep?: { direction: "next" | "previous"; confirmed: boolean };
+    dabSelection?: { stationId: string; label: string; direction: "next" | "previous"; steps: number; confirmed: boolean; method: "relative" };
     bass?: number;
     treble?: number;
     balance?: number;

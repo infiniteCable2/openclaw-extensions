@@ -3,6 +3,8 @@ export const MAX_DAB_STEPS = 128;
 export type DabCatalogStation = {
   id: string;
   name: string;
+  label?: string;
+  selectionMode?: "name_confirmed" | "relative_unverified";
   occurrences: number;
   selectable: boolean;
 };
@@ -23,6 +25,11 @@ export type DabCatalogStore = {
   register(key: string, value: DabCatalog): Promise<void>;
 };
 
+/** A single repeated name is not evidence of wrapping when names may duplicate. */
+export function hasRepeatedDabPrefix(names: readonly string[]): boolean {
+  return names.length >= 6 && names.slice(-3).every((name, index) => name === names[index]);
+}
+
 export function isValidDabCatalog(value: unknown, address: string): value is DabCatalog {
   if (!value || typeof value !== "object") return false;
   const catalog = value as Partial<DabCatalog>;
@@ -37,6 +44,8 @@ export function isValidDabCatalog(value: unknown, address: string): value is Dab
     && catalog.stations.every((entry) => entry && typeof entry.id === "string"
       && /^dab_[0-9]{3}$/.test(entry.id) && typeof entry.name === "string"
       && entry.name.length > 0 && entry.name.length <= 80
+      && (entry.label === undefined || (typeof entry.label === "string" && entry.label.length <= 84))
+      && (entry.selectionMode === undefined || entry.selectionMode === "name_confirmed" || entry.selectionMode === "relative_unverified")
       && Number.isInteger(entry.occurrences) && entry.occurrences >= 1
       && entry.occurrences <= MAX_DAB_STEPS && typeof entry.selectable === "boolean")
     && new Set(catalog.stations.map((entry) => entry.id)).size === catalog.stations.length;
@@ -55,11 +64,21 @@ export function buildDabCatalog(
   for (const name of observedNames) {
     if (name && name.length <= 80) counts.set(name, (counts.get(name) ?? 0) + 1);
   }
-  const stations = [...counts].map(([name, occurrences], index) => ({
-    id: `dab_${String(index + 1).padStart(3, "0")}`,
-    name,
-    occurrences,
-    selectable: occurrences === 1 && !ambiguousNames.has(name),
-  }));
+  const seenNames = new Map<string, number>();
+  const stations = observedNames.flatMap<DabCatalogStation>((name, index) => {
+    if (!name || name.length > 80) return [];
+    const occurrences = counts.get(name) ?? 1;
+    const ordinal = (seenNames.get(name) ?? 0) + 1;
+    seenNames.set(name, ordinal);
+    const nameConfirmed = occurrences === 1 && !ambiguousNames.has(name);
+    return [{
+      id: `dab_${String(index + 1).padStart(3, "0")}`,
+      name,
+      label: ordinal === 1 ? name : `${name}_${ordinal}`,
+      selectionMode: nameConfirmed ? "name_confirmed" : "relative_unverified",
+      occurrences,
+      selectable: nameConfirmed || occurrences > 1,
+    }];
+  });
   return { version: 1, address, scannedAt, complete, stale: false, observedSteps, uncertainSteps, stations };
 }
