@@ -1,5 +1,6 @@
 import net from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { buildDabCatalog, isValidDabCatalog, MAX_DAB_STEPS, type DabCatalog, type DabCatalogStore } from "./dab-catalog.js";
 import type { DenonDeviceConfig, DeviceBackend, DeviceStatus, LocalDeviceAction } from "./types.js";
 import { LocalDeviceError } from "./types.js";
 
@@ -229,8 +230,61 @@ const alternatives: NonNullable<DeviceStatus["receiver"]>["alternatives"] = {
 
 export class DenonCeolBackend implements DeviceBackend {
   readonly provider = "denon" as const;
+  private scanningDab = false;
+  private activeControls = 0;
 
-  constructor(readonly configuredDevice: DenonDeviceConfig, private readonly timeoutMs: number) {}
+  constructor(
+    readonly configuredDevice: DenonDeviceConfig,
+    private readonly timeoutMs: number,
+    private readonly catalogStore: DabCatalogStore,
+  ) {}
+
+  private async cachedCatalog(): Promise<DabCatalog | undefined> {
+    const value = await this.catalogStore.lookup(this.configuredDevice.id);
+    return isValidDabCatalog(value, this.configuredDevice.address) ? value : undefined;
+  }
+
+  async stationCatalog(): Promise<{
+    device: string;
+    state: NonNullable<DeviceStatus["receiver"]>["dabCatalog"]["state"];
+    scannedAt?: number;
+    complete: boolean;
+    uncertainSteps: number;
+    stations: DabCatalog["stations"];
+    guidance?: string;
+  }> {
+    let catalog: DabCatalog | undefined;
+    let cacheUnavailable = false;
+    try {
+      catalog = await this.cachedCatalog();
+    } catch (error) {
+      if (!(error instanceof LocalDeviceError) || error.code !== "dab_cache_unavailable") throw error;
+      cacheUnavailable = true;
+    }
+    const state = this.scanningDab ? "scanning" : !catalog ? "missing"
+      : catalog.stale ? "stale" : catalog.complete && catalog.uncertainSteps === 0 ? "ready" : "partial";
+    const resolvedState = cacheUnavailable ? "unavailable" : state;
+    const guidance = resolvedState === "unavailable"
+      ? "The DAB cache could not be read. Other receiver controls remain available; ask an administrator to inspect the cache before refreshing."
+      : resolvedState === "missing" || resolvedState === "stale"
+      ? "Ask the user before refreshing the DAB list. Refresh audibly cycles every station and takes about two minutes."
+      : resolvedState === "partial" ? "The list contains uncertain steps; do not claim it is complete. Offer a refresh if a station is missing."
+        : undefined;
+    return {
+      device: this.configuredDevice.id,
+      state: resolvedState,
+      ...(catalog ? { scannedAt: catalog.scannedAt } : {}),
+      complete: catalog?.complete ?? false,
+      uncertainSteps: catalog?.uncertainSteps ?? 0,
+      stations: catalog?.stations ?? [],
+      ...(guidance ? { guidance } : {}),
+    };
+  }
+
+  private async markCatalogStale(): Promise<void> {
+    const catalog = await this.cachedCatalog();
+    if (catalog && !catalog.stale) await this.catalogStore.register(this.configuredDevice.id, { ...catalog, stale: true });
+  }
 
   async status(signal?: AbortSignal): Promise<DeviceStatus> {
     const device = this.configuredDevice;
@@ -262,6 +316,7 @@ export class DenonCeolBackend implements DeviceBackend {
     const treble = Number(xmlValue(result<string>(3) ?? "", "CurrentTreble"));
     const balance = Number(xmlValue(result<string>(4) ?? "", "CurrentBalance"));
     const available = queries.some((result) => result.status === "fulfilled");
+    const catalog = await this.stationCatalog();
     return {
       id: device.id, name: device.name, provider: "denon", available,
       power: power === "PWON" ? "on" : power === "PWSTANDBY" ? "off" : "unknown",
@@ -279,7 +334,13 @@ export class DenonCeolBackend implements DeviceBackend {
         ...(Number.isInteger(balance) ? { balance: balance - 50 } : {}),
         sources: Object.keys(INPUTS),
         ...(result<"play" | "pause" | "stop">(7) ? { playback: result<"play" | "pause" | "stop">(7) } : {}),
-        configuredStations: device.dabStations.map(({ id, name }) => ({ id, name })),
+        dabCatalog: {
+          state: catalog.state,
+          stationCount: catalog.stations.length,
+          ...(catalog.scannedAt ? { scannedAt: catalog.scannedAt } : {}),
+          ...(catalog.uncertainSteps ? { uncertainSteps: catalog.uncertainSteps } : {}),
+          ...(catalog.guidance ? { guidance: catalog.guidance } : {}),
+        },
         alternatives,
       },
     };
@@ -325,6 +386,15 @@ export class DenonCeolBackend implements DeviceBackend {
     throw new LocalDeviceError("receiver_unconfirmed", "DAB station metadata is not ready; no station change was sent");
   }
 
+  private async settledDabStation(signal?: AbortSignal): Promise<string> {
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const name = await currentStation(this.configuredDevice, this.timeoutMs, signal);
+      if (name && !/^FM\s+\d/i.test(name)) return name;
+      await delay(250, undefined, { signal });
+    }
+    throw new LocalDeviceError("receiver_unconfirmed", "DAB station metadata is not ready");
+  }
+
   private async changedStation(previous: string, signal?: AbortSignal): Promise<string> {
     for (let attempt = 0; attempt < 24; attempt++) {
       await delay(250, undefined, { signal });
@@ -334,7 +404,88 @@ export class DenonCeolBackend implements DeviceBackend {
     throw new LocalDeviceError("receiver_unconfirmed", "DAB station change was not confirmed; the tuner may have moved");
   }
 
+  private async advanceDab(direction: "UP" | "DOWN", previous: string, signal?: AbortSignal): Promise<string> {
+    await telnet(this.configuredDevice, `TFDA${direction}`, "TFDA", Math.min(this.timeoutMs, 125), signal);
+    return await this.changedStation(previous, signal);
+  }
+
+  private async refreshDabStations(signal?: AbortSignal): Promise<DeviceStatus> {
+    if (this.scanningDab || this.activeControls > 0) {
+      throw new LocalDeviceError("receiver_busy", "Receiver controls must finish before refreshing its DAB list");
+    }
+    this.scanningDab = true;
+    const scanSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(240_000)]) : AbortSignal.timeout(240_000);
+    try {
+      const before = await this.status(scanSignal);
+      if (before.power !== "on" || before.receiver?.source !== "tuner" || before.receiver?.band !== "dab") {
+        throw new LocalDeviceError("dab_scan_requires_tuner", "Select and start DAB playback before refreshing its station list");
+      }
+      let initial: string;
+      try {
+        initial = await this.settledDabStation(scanSignal);
+      } catch (error) {
+        if (!(error instanceof LocalDeviceError) || error.code !== "receiver_unconfirmed") throw error;
+        await telnet(this.configuredDevice, "TFDAUP", "TFDA", Math.min(this.timeoutMs, 125), scanSignal);
+        initial = await this.settledDabStation(scanSignal);
+      }
+      const names = [initial];
+      const ambiguousNames = new Set<string>();
+      let previous = initial;
+      let uncertainSteps = 0;
+      let consecutiveUncertain = 0;
+      let completedCycle = false;
+      let observedSteps = 0;
+      for (let step = 1; step <= MAX_DAB_STEPS; step++) {
+        if (scanSignal.aborted) throw new LocalDeviceError("scan_interrupted", "DAB list refresh was interrupted; the receiver may be on another station");
+        observedSteps = step;
+        let next: string;
+        try {
+          next = await this.advanceDab("UP", previous, scanSignal);
+        } catch (error) {
+          if (!(error instanceof LocalDeviceError) || error.code !== "receiver_unconfirmed") throw error;
+          uncertainSteps++;
+          consecutiveUncertain++;
+          ambiguousNames.add(previous);
+          if (consecutiveUncertain >= 3) break;
+          continue;
+        }
+        consecutiveUncertain = 0;
+        if (next === initial && step > 1) {
+          completedCycle = true;
+          break;
+        }
+        names.push(next);
+        previous = next;
+      }
+      if (names.length < 2) throw new LocalDeviceError("scan_incomplete", "DAB list refresh found fewer than two station names");
+      const catalog = buildDabCatalog(this.configuredDevice.address, names, observedSteps, uncertainSteps, completedCycle, Date.now(), ambiguousNames);
+      await this.catalogStore.register(this.configuredDevice.id, catalog);
+      this.scanningDab = false;
+      return await this.status(signal);
+    } catch (error) {
+      if (scanSignal.aborted) {
+        throw new LocalDeviceError("scan_interrupted", "DAB list refresh was interrupted; the receiver may be on another station");
+      }
+      throw error;
+    } finally {
+      this.scanningDab = false;
+    }
+  }
+
   async control(action: LocalDeviceAction, signal?: AbortSignal): Promise<DeviceStatus> {
+    if (action.type === "refresh_dab_stations") return await this.refreshDabStations(signal);
+    if (this.scanningDab) {
+      throw new LocalDeviceError("receiver_busy", "Receiver controls are paused while its DAB list is being refreshed");
+    }
+    this.activeControls++;
+    try {
+      return await this.controlAction(action, signal);
+    } finally {
+      this.activeControls--;
+    }
+  }
+
+  private async controlAction(action: LocalDeviceAction, signal?: AbortSignal): Promise<DeviceStatus> {
     const device = this.configuredDevice;
     const timeout = this.timeoutMs;
     switch (action.type) {
@@ -406,24 +557,38 @@ export class DenonCeolBackend implements DeviceBackend {
           : status.receiver?.station !== undefined && status.receiver.station !== previousStation, signal);
       }
       case "select_dab_station": {
-        const target = device.dabStations.find((station) => station.id === action.station);
-        if (!target) throw new LocalDeviceError("unknown_station", "Configured DAB station was not found");
+        const catalog = await this.cachedCatalog();
+        if (!catalog) throw new LocalDeviceError("dab_catalog_missing", "DAB station list is missing. Ask the user before refreshing it; refresh audibly cycles all stations.");
+        if (catalog.stale) throw new LocalDeviceError("dab_catalog_stale", "Cached DAB station list is stale. Ask the user whether to refresh it.");
+        const target = catalog.stations.find((station) => station.id === action.station);
+        if (!target) throw new LocalDeviceError("unknown_station", "DAB station is not in the cached list. Ask the user whether to refresh it.");
+        if (!target.selectable) throw new LocalDeviceError("ambiguous_station", "Multiple DAB stations share this displayed name; direct selection is not reliable");
         await this.ensureOn(signal);
         const before = await this.status(signal);
         if (before.receiver?.source !== "tuner" || before.receiver?.band !== "dab") await this.control({ type: "select_band", band: "dab" }, signal);
-        const initialStation = await this.settledStation(signal);
-        if (initialStation === target.reportedName) return await this.status(signal);
-        // DAB service IDs are not exposed by the receiver. Walk its station list only after
-        // HEOS confirms each advance, so a delayed tuner change cannot skip stations.
+        const initialStation = await this.settledDabStation(signal);
+        if (initialStation === target.name) return await this.status(signal);
+        // The receiver exposes a current short name, not a service id or random-access list.
+        // Keep every relative step confirmed before sending another one.
         let previous = initialStation;
-        for (let step = 0; step < 24; step++) {
-          await telnet(device, "TFDAUP", "TFDA", Math.min(timeout, 800), signal);
-          const next = await this.changedStation(previous, signal);
-          if (next === target.reportedName) return await this.status(signal);
+        let uncertainSteps = 0;
+        for (let step = 0; step < MAX_DAB_STEPS; step++) {
+          let next: string;
+          try {
+            next = await this.advanceDab("UP", previous, signal);
+          } catch (error) {
+            if (!(error instanceof LocalDeviceError) || error.code !== "receiver_unconfirmed") throw error;
+            uncertainSteps++;
+            if (uncertainSteps >= 3) break;
+            continue;
+          }
+          uncertainSteps = 0;
+          if (next === target.name) return await this.status(signal);
           if (next === initialStation) break;
           previous = next;
         }
-        throw new LocalDeviceError("station_not_found", "DAB station was not found in 24 receiver steps; the receiver may now be on another station");
+        await this.markCatalogStale();
+        throw new LocalDeviceError("dab_catalog_stale", "DAB station was not found while traversing the receiver. Ask the user whether to refresh the station list; the receiver may now be on another station.");
       }
       case "tune_fm": {
         const encoded = encodeFmFrequency(action.frequencyMHz);

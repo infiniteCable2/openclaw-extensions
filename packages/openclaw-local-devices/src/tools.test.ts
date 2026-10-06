@@ -1,6 +1,8 @@
 import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { describe, expect, it, vi } from "vitest";
 import { createToolsForAgent, parseDeviceAction } from "./tools.js";
+import { buildDabCatalog } from "./dab-catalog.js";
+import { DenonCeolBackend } from "./denon.js";
 import type { DeviceBackend, LocalDevicesConfig } from "./types.js";
 
 const config: LocalDevicesConfig = {
@@ -12,6 +14,7 @@ describe("local device tools", () => {
   it("is absent outside the explicit agent allowlist", () => {
     expect(createToolsForAgent(config, new Map(), "steffen")?.map((tool) => tool.name)).toEqual([
       "local_device_status",
+      "local_device_dab_stations",
       "local_device_control",
     ]);
     expect(createToolsForAgent(config, new Map(), "bodo")).toBeNull();
@@ -24,7 +27,8 @@ describe("local device tools", () => {
     expect(() => parseDeviceAction({ action: "set_color", red: 1, green: 2 })).toThrow(/blue/);
     expect(() => parseDeviceAction({ action: "set_brightness", brightness: 0 })).toThrow(/1 to 100/);
     expect(parseDeviceAction({ action: "set_volume", volume: 10, via: "upnp" })).toEqual({ type: "set_volume", volume: 10, via: "upnp" });
-    expect(parseDeviceAction({ action: "select_dab_station", station: "energy_berlin" })).toEqual({ type: "select_dab_station", station: "energy_berlin" });
+    expect(parseDeviceAction({ action: "select_dab_station", station: "dab_001" })).toEqual({ type: "select_dab_station", station: "dab_001" });
+    expect(parseDeviceAction({ action: "refresh_dab_stations" })).toEqual({ type: "refresh_dab_stations" });
     expect(() => parseDeviceAction({ action: "select_dab_station" })).toThrow(/station/);
     expect(() => parseDeviceAction({ action: "station_next", via: "heos" })).toThrow(/via/);
     expect(() => parseDeviceAction({ action: "set_volume", volume: 10, via: "heos" })).toThrow(/via/);
@@ -48,5 +52,18 @@ describe("local device tools", () => {
     const result = await tool.execute("call-1", { device: "lamp" });
 
     expect(result.details).toEqual({ ok: true, devices: [status] });
+  });
+
+  it("reads a cached DAB list without contacting the receiver", async () => {
+    const catalog = buildDabCatalog("127.0.0.1", ["ENERGY B", "Jazz"], 2, 0, true, 1234);
+    const backend = new DenonCeolBackend(
+      { id: "receiver", name: "Receiver", address: "127.0.0.1" },
+      100,
+      { lookup: vi.fn(async () => catalog), register: vi.fn(async () => undefined) },
+    );
+    const tools = createToolsForAgent(config, new Map([["receiver", backend]]), "steffen") ?? [];
+    const tool = tools.find((candidate) => candidate.name === "local_device_dab_stations") as AnyAgentTool;
+    const result = await tool.execute("call-2", { device: "receiver" });
+    expect(result.details).toMatchObject({ ok: true, catalog: { state: "ready", stations: catalog.stations } });
   });
 });

@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildDabCatalog } from "./dab-catalog.js";
 import { decodeHeosFmFrequency, DenonCeolBackend, encodeFmFrequency, telnetBand } from "./denon.js";
+import { LocalDeviceError } from "./types.js";
+
+const emptyStore = { lookup: async () => undefined, register: async () => undefined };
 
 describe("Denon CEOL receiver", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -29,8 +33,7 @@ describe("Denon CEOL receiver", () => {
       id: "receiver_living_room",
       name: "Receiver (Wohnzimmer)",
       address: "127.0.0.1",
-      dabStations: [],
-    }, 100);
+    }, 100, emptyStore);
     await expect(backend.control({ type: "select_source", source: "optical1", via: "telnet" }))
       .rejects.toMatchObject({ code: "unsupported_method" });
   });
@@ -47,10 +50,38 @@ describe("Denon CEOL receiver", () => {
       id: "receiver_living_room",
       name: "Receiver (Wohnzimmer)",
       address: "127.0.0.1",
-      dabStations: [],
-    }, 100);
+    }, 100, emptyStore);
     const status = await backend.status();
     expect(status.power).toBe("unknown");
     expect(status.receiver?.band).toBe("dab");
+    expect(status.receiver?.dabCatalog.state).toBe("missing");
+  });
+
+  it("does not touch the receiver when a DAB list is missing or stale", async () => {
+    const device = { id: "receiver", name: "Receiver", address: "127.0.0.1" };
+    const missing = new DenonCeolBackend(device, 100, emptyStore);
+    await expect(missing.control({ type: "select_dab_station", station: "dab_001" }))
+      .rejects.toMatchObject({ code: "dab_catalog_missing" });
+    const stale = buildDabCatalog("127.0.0.1", ["ENERGY B"], 1, 0, true, 1234);
+    const backend = new DenonCeolBackend(device, 100, {
+      lookup: async () => ({ ...stale, stale: true }), register: async () => undefined,
+    });
+    await expect(backend.control({ type: "select_dab_station", station: "dab_001" }))
+      .rejects.toMatchObject({ code: "dab_catalog_stale" });
+  });
+
+  it("keeps receiver status readable when the station cache is unavailable", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("<Response/>", { status: 200 })));
+    const backend = new DenonCeolBackend(
+      { id: "receiver", name: "Receiver", address: "127.0.0.1" },
+      100,
+      {
+        lookup: async () => { throw new LocalDeviceError("dab_cache_unavailable", "unreadable cache"); },
+        register: async () => undefined,
+      },
+    );
+    const status = await backend.status();
+    expect(status.receiver?.dabCatalog.state).toBe("unavailable");
+    expect(status.receiver?.dabCatalog.guidance).toMatch(/administrator/);
   });
 });

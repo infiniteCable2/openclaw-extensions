@@ -2,6 +2,7 @@ import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { FritzSmartHomeBackend } from "./fritz.js";
 import { DenonCeolBackend } from "./denon.js";
+import type { DabCatalogStore } from "./dab-catalog.js";
 import { GoveeLanBackend, GoveeLanStatusCoordinator, readGoveeStatuses } from "./govee.js";
 import type { DeviceBackend, DeviceStatus, LocalDeviceAction, LocalDevicesConfig } from "./types.js";
 import { LocalDeviceError } from "./types.js";
@@ -18,6 +19,15 @@ export const statusSchema = {
   },
 } satisfies AnyAgentTool["parameters"];
 
+export const dabStationsSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["device"],
+  properties: {
+    device: { type: "string", pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" },
+  },
+} satisfies AnyAgentTool["parameters"];
+
 export const controlSchema = {
   type: "object",
   additionalProperties: false,
@@ -30,7 +40,7 @@ export const controlSchema = {
     },
     action: {
       type: "string",
-      enum: ["turn_on", "turn_off", "set_brightness", "set_color", "set_color_temperature", "set_volume", "set_mute", "select_source", "select_band", "station_next", "station_previous", "select_dab_station", "tune_fm", "set_bass", "set_treble", "set_balance", "play", "pause", "stop", "track_next", "track_previous"],
+      enum: ["turn_on", "turn_off", "set_brightness", "set_color", "set_color_temperature", "set_volume", "set_mute", "select_source", "select_band", "station_next", "station_previous", "select_dab_station", "refresh_dab_stations", "tune_fm", "set_bass", "set_treble", "set_balance", "play", "pause", "stop", "track_next", "track_previous"],
     },
     brightness: { type: "integer", minimum: 1, maximum: 100 },
     red: { type: "integer", minimum: 0, maximum: 255 },
@@ -133,6 +143,7 @@ export function parseDeviceAction(raw: unknown): LocalDeviceAction {
       return { type: "select_band", band: choice(params.band, ["dab", "fm"], "band"), via: actionMethod(via, ["telnet", "upnp"]) };
     case "station_next":
     case "station_previous":
+    case "refresh_dab_stations":
     case "play":
     case "pause":
     case "stop":
@@ -162,7 +173,7 @@ export function parseDeviceAction(raw: unknown): LocalDeviceAction {
   }
 }
 
-export function buildBackends(config: LocalDevicesConfig): Map<string, DeviceBackend> {
+export function buildBackends(config: LocalDevicesConfig, dabCatalogStore: DabCatalogStore): Map<string, DeviceBackend> {
   const backends = new Map<string, DeviceBackend>();
   const goveeStatusCoordinator = new GoveeLanStatusCoordinator();
   for (const device of config.govee?.devices ?? []) {
@@ -184,7 +195,7 @@ export function buildBackends(config: LocalDevicesConfig): Map<string, DeviceBac
     );
   }
   for (const device of config.denon?.devices ?? []) {
-    backends.set(device.id, new DenonCeolBackend(device, config.requestTimeoutMs));
+    backends.set(device.id, new DenonCeolBackend(device, config.requestTimeoutMs, dabCatalogStore));
   }
   return backends;
 }
@@ -266,11 +277,32 @@ export function createLocalDeviceTools(backends: ReadonlyMap<string, DeviceBacke
     },
   };
 
+  const dabStationsTool: AnyAgentTool = {
+    name: "local_device_dab_stations",
+    label: "DAB Station List",
+    description:
+      "Read the receiver's cached DAB station names without retuning it. If missing or stale, explain that refresh takes about two minutes and audibly cycles stations; ask the user before invoking refresh_dab_stations. Never refresh as part of a read request.",
+    parameters: dabStationsSchema,
+    executionMode: "sequential",
+    execute: async (_toolCallId, rawParams) => {
+      try {
+        const deviceId = record(rawParams).device;
+        if (typeof deviceId !== "string") throw new LocalDeviceError("invalid_request", "device must be a configured receiver id");
+        const backend = backends.get(deviceId);
+        if (!backend) throw new LocalDeviceError("unknown_device", "Configured device was not found");
+        if (!(backend instanceof DenonCeolBackend)) throw new LocalDeviceError("unsupported_action", "Device has no DAB station list");
+        return jsonResult({ ok: true, catalog: await backend.stationCatalog() });
+      } catch (error) {
+        return jsonResult({ ok: false, error: safeError(error) });
+      }
+    },
+  };
+
   const controlTool: AnyAgentTool = {
     name: "local_device_control",
     label: "Local Device Control",
     description:
-      "Control a configured local light, socket or Denon CEOL receiver. Receiver actions include volume, mute, input, DAB/FM, configured DAB station, tone and HEOS playback. Read local_device_status for supported actions and interface alternatives; via selects an explicit interface when available.",
+      "Control a configured local light, socket or Denon CEOL receiver. For DAB station selection, first read local_device_dab_stations and use its station id. refresh_dab_stations is a separate, audible, about-two-minute operation: ask the user for consent first; it requires active DAB playback. If selection reports dab_catalog_stale, propose another refresh. Never scan automatically on a status read. via selects an explicit interface when available.",
     parameters: controlSchema,
     executionMode: "sequential",
     execute: async (_toolCallId, rawParams, signal) => {
@@ -289,7 +321,7 @@ export function createLocalDeviceTools(backends: ReadonlyMap<string, DeviceBacke
     },
   };
 
-  return [statusTool, controlTool];
+  return [statusTool, dabStationsTool, controlTool];
 }
 
 export function createToolsForAgent(
