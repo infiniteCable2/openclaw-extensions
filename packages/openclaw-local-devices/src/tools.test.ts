@@ -23,6 +23,11 @@ describe("local device tools", () => {
     expect(parseDeviceAction({ action: "turn_off" })).toEqual({ type: "turn_off" });
     expect(() => parseDeviceAction({ action: "set_color", red: 1, green: 2 })).toThrow(/blue/);
     expect(() => parseDeviceAction({ action: "set_brightness", brightness: 0 })).toThrow(/1 to 100/);
+    expect(parseDeviceAction({ action: "set_volume", volume: 10, via: "upnp" })).toEqual({ type: "set_volume", volume: 10, via: "upnp" });
+    expect(parseDeviceAction({ action: "select_dab_station", station: "energy_berlin" })).toEqual({ type: "select_dab_station", station: "energy_berlin" });
+    expect(() => parseDeviceAction({ action: "select_dab_station" })).toThrow(/station/);
+    expect(() => parseDeviceAction({ action: "station_next", via: "heos" })).toThrow(/via/);
+    expect(() => parseDeviceAction({ action: "set_volume", volume: 10, via: "heos" })).toThrow(/via/);
   });
 
   it("returns projected status from a configured backend", async () => {

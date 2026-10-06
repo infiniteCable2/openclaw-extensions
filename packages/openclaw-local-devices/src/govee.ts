@@ -1,5 +1,5 @@
 import dgram, { type RemoteInfo, type Socket } from "node:dgram";
-import type { DeviceAction, DeviceBackend, DeviceStatus, GoveeDeviceConfig } from "./types.js";
+import type { DeviceAction, DeviceBackend, DeviceStatus, GoveeDeviceConfig, LocalDeviceAction } from "./types.js";
 import { LocalDeviceError } from "./types.js";
 
 const GOVEE_RESPONSE_PORT = 4002;
@@ -71,7 +71,7 @@ export function encodeGoveePtRealPayload(frames: readonly Buffer[]): Buffer {
   return commandPayload("ptReal", { command: commands });
 }
 
-export function encodeGoveeAction(action: DeviceAction): Buffer {
+export function encodeGoveeAction(action: LocalDeviceAction): Buffer {
   switch (action.type) {
     case "turn_on":
       return commandPayload("turn", { value: 1 });
@@ -89,6 +89,8 @@ export function encodeGoveeAction(action: DeviceAction): Buffer {
         color: { r: 0, g: 0, b: 0 },
         colorTemInKelvin: action.kelvin,
       });
+    default:
+      throw new LocalDeviceError("unsupported_action", "Govee light does not support this action");
   }
 }
 
@@ -297,7 +299,7 @@ export class GoveeLanBackend implements DeviceBackend {
     return statuses.get(this.device.id) ?? unavailable(this.device);
   }
 
-  async control(action: DeviceAction, signal?: AbortSignal): Promise<DeviceStatus> {
+  async control(action: LocalDeviceAction, signal?: AbortSignal): Promise<DeviceStatus> {
     throwIfCancelled(signal);
     const payload = encodeGoveeAction(action);
     const socket = this.socketFactory();

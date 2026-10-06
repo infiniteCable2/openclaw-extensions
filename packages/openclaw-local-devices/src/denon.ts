@@ -1,0 +1,433 @@
+import net from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
+import type { DenonDeviceConfig, DeviceBackend, DeviceStatus, LocalDeviceAction } from "./types.js";
+import { LocalDeviceError } from "./types.js";
+
+const ACT = "urn:schemas-denon-com:service:ACT:1";
+const RENDER = "urn:schemas-upnp-org:service:RenderingControl:1";
+const INPUTS = {
+  cd: "inputs/cd",
+  tuner: "inputs/tuner",
+  optical1: "inputs/optical_in_1",
+  optical2: "inputs/optical_in_2",
+  analog: "inputs/analog_in_1",
+} as const;
+const MAX_RESPONSE_BYTES = 64 * 1024;
+
+type Interface = "telnet" | "heos" | "upnp";
+type Response = { heos?: { command?: string; result?: string; message?: string }; payload?: unknown };
+
+function abortSignal(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function xmlValue(xml: string, name: string): string | undefined {
+  return xml.match(new RegExp(`<(?:(?:\\w+):)?${name}>([^<]{0,256})</(?:(?:\\w+):)?${name}>`))?.[1];
+}
+
+/** One short lived connection per command. A connection failure is the only safe automatic retry boundary. */
+async function tcpCommand(
+  address: string,
+  port: number,
+  command: string,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+  complete: (lines: readonly string[]) => boolean,
+): Promise<string[]> {
+  return await new Promise<string[]>((resolve, reject) => {
+    const socket = net.createConnection({ host: address, port });
+    const lines: string[] = [];
+    let buffer = "";
+    let sent = false;
+    let finished = false;
+    const finish = (error?: Error) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      socket.destroy();
+      error ? reject(error) : resolve(lines);
+    };
+    const onAbort = () => finish(new LocalDeviceError("cancelled", "Receiver request was cancelled"));
+    const timer = setTimeout(() =>
+      finish(new LocalDeviceError(sent ? "receiver_unconfirmed" : "receiver_unavailable", "Receiver did not answer in time")), timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) return onAbort();
+    socket.on("connect", () => {
+      sent = true;
+      socket.write(command);
+    });
+    socket.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      if (buffer.length > MAX_RESPONSE_BYTES) {
+        finish(new LocalDeviceError("receiver_response", "Receiver response exceeded its size limit"));
+        return;
+      }
+      const parts = buffer.split(/[\r\n]+/);
+      buffer = parts.pop() ?? "";
+      lines.push(...parts.filter(Boolean));
+      if (complete(lines)) finish();
+    });
+    socket.on("error", () => finish(new LocalDeviceError(sent ? "receiver_unconfirmed" : "receiver_unavailable", "Receiver connection failed")));
+    socket.on("close", () => {
+      if (!finished) finish(new LocalDeviceError(sent ? "receiver_unconfirmed" : "receiver_unavailable", "Receiver closed the connection"));
+    });
+  });
+}
+
+async function telnet(
+  device: DenonDeviceConfig,
+  command: string,
+  expected: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  try {
+    const lines = await tcpCommand(device.address, 23, `${command}\r`, timeoutMs, signal,
+      (lines) => lines.some((line) => line.startsWith(expected)));
+    return lines.findLast((line) => line.startsWith(expected)) ?? "";
+  } catch (error) {
+    // A written absolute or relative command may take effect without an immediate event.
+    // The caller must inspect the resulting device state rather than resend it.
+    if (!command.endsWith("?") && error instanceof LocalDeviceError && error.code === "receiver_unconfirmed") return "";
+    throw error;
+  }
+}
+
+async function telnetSnapshot(device: DenonDeviceConfig, timeoutMs: number, signal?: AbortSignal): Promise<string[]> {
+  return await tcpCommand(device.address, 23, "TM?\rTFDA?\rTFAN?\rPW?\rMV?\rMU?\rSI?\r", timeoutMs, signal,
+    (lines) => ["PW", "MV", "MU", "SI"].every((prefix) => lines.some((line) => line.startsWith(prefix))));
+}
+
+async function heos(
+  device: DenonDeviceConfig,
+  command: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const path = command.slice("heos://".length).split("?")[0];
+  const lines = await tcpCommand(device.address, 1255, `${command}\r\n`, timeoutMs, signal,
+    (lines) => lines.some((line) => {
+      try {
+        const response = JSON.parse(line) as Response;
+        return response.heos?.command?.trim() === path && !response.heos.message?.startsWith("command under process");
+      } catch { return false; }
+    }));
+  for (const line of lines.toReversed()) {
+    try {
+      const response = JSON.parse(line) as Response;
+      if (response.heos?.command?.trim() !== path || response.heos.message?.startsWith("command under process")) continue;
+      if (response.heos.result !== "success") throw new LocalDeviceError("receiver_rejected", "Receiver rejected the HEOS command");
+      return response;
+    } catch (error) {
+      if (error instanceof LocalDeviceError) throw error;
+    }
+  }
+  throw new LocalDeviceError("receiver_response", "Receiver returned no matching HEOS response");
+}
+
+async function soap(
+  device: DenonDeviceConfig,
+  service: "act" | "render",
+  action: string,
+  argumentsXml: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<string> {
+  const namespace = service === "act" ? ACT : RENDER;
+  const path = service === "act" ? "/ACT/control" : "/upnp/control/renderer_dvc/RenderingControl";
+  const body = `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:${action} xmlns:u="${namespace}">${argumentsXml}</u:${action}></s:Body></s:Envelope>`;
+  let response: globalThis.Response;
+  try {
+    response = await fetch(`http://${device.address}:60006${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "text/xml", SOAPAction: `"${namespace}#${action}"` },
+      body,
+      signal: abortSignal(signal, timeoutMs),
+    });
+  } catch {
+    throw new LocalDeviceError("receiver_unavailable", "Receiver UPnP service is unavailable");
+  }
+  if (!response.ok) throw new LocalDeviceError("receiver_rejected", "Receiver rejected the UPnP action");
+  const length = Number(response.headers.get("content-length") ?? 0);
+  if (length > MAX_RESPONSE_BYTES) throw new LocalDeviceError("receiver_response", "Receiver UPnP response is too large");
+  const text = await response.text();
+  if (text.length > MAX_RESPONSE_BYTES) throw new LocalDeviceError("receiver_response", "Receiver UPnP response is too large");
+  return text;
+}
+
+const renderArgs = "<InstanceID>0</InstanceID><Channel>Master</Channel>";
+
+async function heosPlayerId(device: DenonDeviceConfig, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+  const players = await heos(device, "heos://player/get_players", timeoutMs, signal);
+  const player = Array.isArray(players.payload)
+    ? players.payload.map(record).find((item) => item.ip === device.address)
+    : undefined;
+  const id = player?.pid;
+  if ((typeof id !== "number" && typeof id !== "string") || !/^-?\d+$/.test(String(id))) {
+    throw new LocalDeviceError("receiver_response", "Configured receiver was absent from HEOS players");
+  }
+  return String(id);
+}
+
+async function currentStation(device: DenonDeviceConfig, timeoutMs: number, signal?: AbortSignal): Promise<string | undefined> {
+  const id = await heosPlayerId(device, timeoutMs, signal);
+  const response = await heos(device, `heos://player/get_now_playing_media?pid=${id}`, timeoutMs, signal);
+  const media = record(response.payload);
+  return typeof media.station === "string" && media.station.length <= 80 && !media.station.startsWith("Denon CEOL - ")
+    ? media.station : undefined;
+}
+
+async function playbackState(device: DenonDeviceConfig, timeoutMs: number, signal?: AbortSignal): Promise<"play" | "pause" | "stop" | undefined> {
+  const id = await heosPlayerId(device, timeoutMs, signal);
+  const response = await heos(device, `heos://player/get_play_state?pid=${id}`, timeoutMs, signal);
+  const state = response.heos?.message?.match(/(?:^|&)state=(play|pause|stop)(?:&|$)/)?.[1];
+  return state === "play" || state === "pause" || state === "stop" ? state : undefined;
+}
+
+const alternatives: NonNullable<DeviceStatus["receiver"]>["alternatives"] = {
+  volume: ["telnet", "upnp"],
+  mute: ["telnet", "upnp", "heos"],
+  source: ["heos", "telnet (CD/Tuner)"],
+  radioBand: ["telnet", "upnp"],
+  dabStation: ["telnet; HEOS confirms station"],
+  tone: ["upnp"],
+  playback: ["heos"],
+};
+
+export class DenonCeolBackend implements DeviceBackend {
+  readonly provider = "denon" as const;
+
+  constructor(readonly configuredDevice: DenonDeviceConfig, private readonly timeoutMs: number) {}
+
+  async status(signal?: AbortSignal): Promise<DeviceStatus> {
+    const device = this.configuredDevice;
+    const queries = await Promise.allSettled([
+      telnetSnapshot(device, this.timeoutMs, signal),
+      currentStation(device, this.timeoutMs, signal),
+      soap(device, "render", "X_GetBass", renderArgs, this.timeoutMs, signal),
+      soap(device, "render", "X_GetTreble", renderArgs, this.timeoutMs, signal),
+      soap(device, "render", "X_GetBalance", renderArgs, this.timeoutMs, signal),
+      soap(device, "render", "GetVolume", renderArgs, this.timeoutMs, signal),
+      soap(device, "render", "GetMute", renderArgs, this.timeoutMs, signal),
+      playbackState(device, this.timeoutMs, signal),
+      soap(device, "act", "GetTunerConfig", "", this.timeoutMs, signal),
+    ]);
+    const result = <T>(index: number): T | undefined => queries[index]?.status === "fulfilled"
+      ? (queries[index].value as T) : undefined;
+    const telnetLines = result<string[]>(0) ?? [];
+    const line = (prefix: string) => telnetLines.findLast((value) => value.startsWith(prefix));
+    const power = line("PW");
+    const volume = Number(line("MV")?.slice(2) ?? xmlValue(result<string>(5) ?? "", "CurrentVolume"));
+    const muteValue = line("MU") ?? xmlValue(result<string>(6) ?? "", "CurrentMute");
+    const band = line("TM");
+    const upnpBand = result<string>(8)?.match(/&lt;bandMode&gt;(DAB|FM)&lt;\/bandMode&gt;/)?.[1];
+    const dab = line("TFDA")?.match(/^TFDA([0-9]{1,2}[A-D])\s/);
+    const fmRaw = line("TFAN")?.match(/^TFAN(\d{6})/);
+    const bass = Number(xmlValue(result<string>(2) ?? "", "CurrentBass"));
+    const treble = Number(xmlValue(result<string>(3) ?? "", "CurrentTreble"));
+    const balance = Number(xmlValue(result<string>(4) ?? "", "CurrentBalance"));
+    const available = queries.some((result) => result.status === "fulfilled");
+    return {
+      id: device.id, name: device.name, provider: "denon", available,
+      power: power === "PWON" ? "on" : power === "PWSTANDBY" ? "off" : "unknown",
+      receiver: {
+        ...(Number.isInteger(volume) && volume >= 0 && volume <= 60 ? { volume } : {}),
+        ...(muteValue !== undefined ? { muted: muteValue === "MUON" || muteValue === "1" } : {}),
+        ...(line("SI") ? { source: line("SI")?.slice(2).toLowerCase() } : {}),
+        ...(band === "TMDA" || (!band && upnpBand === "DAB")
+          ? { band: "dab" as const }
+          : band?.includes("FM") || (!band && upnpBand === "FM") ? { band: "fm" as const } : {}),
+        ...(power === "PWON" && typeof result<string>(1) === "string" ? { station: result<string>(1) } : {}),
+        ...(dab ? { dabChannel: dab[1] } : {}),
+        ...(fmRaw ? { fmFrequencyMHz: Number(fmRaw[1]) / 1000 } : {}),
+        ...(Number.isInteger(bass) ? { bass: bass - 10 } : {}),
+        ...(Number.isInteger(treble) ? { treble: treble - 10 } : {}),
+        ...(Number.isInteger(balance) ? { balance: balance - 50 } : {}),
+        sources: Object.keys(INPUTS),
+        ...(result<"play" | "pause" | "stop">(7) ? { playback: result<"play" | "pause" | "stop">(7) } : {}),
+        configuredStations: device.dabStations.map(({ id, name }) => ({ id, name })),
+        alternatives,
+      },
+    };
+  }
+
+  private async absolute(
+    methods: readonly Interface[],
+    via: Interface | undefined,
+    run: (method: Interface) => Promise<void>,
+  ): Promise<void> {
+    if (via && !methods.includes(via)) throw new LocalDeviceError("unsupported_method", "This control method is unavailable for the requested action");
+    const selected = via ? [via] : methods;
+    for (const [index, method] of selected.entries()) {
+      try { await run(method); return; }
+      catch (error) {
+        if (!(error instanceof LocalDeviceError) || error.code !== "receiver_unavailable" || index === selected.length - 1) throw error;
+      }
+    }
+  }
+
+  private async confirmed(expected: (status: DeviceStatus) => boolean, signal?: AbortSignal): Promise<DeviceStatus> {
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const status = await this.status(signal);
+      if (expected(status)) return status;
+      if (attempt < 15) await delay(250, undefined, { signal });
+    }
+    throw new LocalDeviceError("receiver_unconfirmed", "Receiver did not confirm the requested state");
+  }
+
+  private async ensureOn(signal?: AbortSignal): Promise<void> {
+    if ((await this.status(signal)).power !== "on") {
+      await this.control({ type: "turn_on" }, signal);
+      await delay(1000, undefined, { signal });
+    }
+  }
+
+  private async settledStation(signal?: AbortSignal): Promise<string> {
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const station = await currentStation(this.configuredDevice, this.timeoutMs, signal);
+      if (station) return station;
+      await delay(250, undefined, { signal });
+    }
+    throw new LocalDeviceError("receiver_unconfirmed", "DAB station metadata is not ready; no station change was sent");
+  }
+
+  private async changedStation(previous: string, signal?: AbortSignal): Promise<string> {
+    for (let attempt = 0; attempt < 24; attempt++) {
+      await delay(250, undefined, { signal });
+      const station = await currentStation(this.configuredDevice, this.timeoutMs, signal);
+      if (station && station !== previous) return station;
+    }
+    throw new LocalDeviceError("receiver_unconfirmed", "DAB station change was not confirmed; the tuner may have moved");
+  }
+
+  async control(action: LocalDeviceAction, signal?: AbortSignal): Promise<DeviceStatus> {
+    const device = this.configuredDevice;
+    const timeout = this.timeoutMs;
+    switch (action.type) {
+      case "turn_on":
+      case "turn_off": {
+        const on = action.type === "turn_on";
+        await telnet(device, on ? "PWON" : "PWSTANDBY", "PW", timeout, signal);
+        return await this.confirmed((status) => status.power === (on ? "on" : "off"), signal);
+      }
+      case "set_volume":
+        await this.absolute(["telnet", "upnp"], action.via, async (method) => {
+          if (method === "telnet") await telnet(device, `MV${String(action.volume).padStart(2, "0")}`, "MV", timeout, signal);
+          else await soap(device, "render", "SetVolume", `${renderArgs}<DesiredVolume>${action.volume}</DesiredVolume>`, timeout, signal);
+        });
+        return await this.confirmed((status) => status.receiver?.volume === action.volume, signal);
+      case "set_mute":
+        await this.absolute(["telnet", "upnp", "heos"], action.via, async (method) => {
+          if (method === "telnet") await telnet(device, action.muted ? "MUON" : "MUOFF", "MU", timeout, signal);
+          else if (method === "upnp") await soap(device, "render", "SetMute", `${renderArgs}<DesiredMute>${action.muted ? 1 : 0}</DesiredMute>`, timeout, signal);
+          else {
+            const id = await heosPlayerId(device, timeout, signal);
+            await heos(device, `heos://player/set_mute?pid=${id}&state=${action.muted ? "on" : "off"}`, timeout, signal);
+          }
+        });
+        return await this.confirmed((status) => status.receiver?.muted === action.muted, signal);
+      case "select_source": {
+        const methods: Interface[] = action.source === "cd" || action.source === "tuner" ? ["heos", "telnet"] : ["heos"];
+        if (action.via && !methods.includes(action.via)) {
+          throw new LocalDeviceError("unsupported_method", `Source ${action.source} is not available via ${action.via}`);
+        }
+        await this.ensureOn(signal);
+        await this.absolute(methods, action.via, async (method) => {
+          if (method === "telnet") await telnet(device, `SI${action.source.toUpperCase()}`, "SI", timeout, signal);
+          else {
+            const id = await heosPlayerId(device, timeout, signal);
+            await heos(device, `heos://browse/play_input?pid=${id}&input=${INPUTS[action.source]}`, timeout, signal);
+          }
+        });
+        const expected = { cd: "cd", tuner: "tuner", optical1: "optical1", optical2: "optical2", analog: "analog" }[action.source];
+        return await this.confirmed((status) => status.receiver?.source === expected, signal);
+      }
+      case "select_band":
+        await this.ensureOn(signal);
+        if ((await this.status(signal)).receiver?.source !== "tuner") {
+          await this.control({ type: "select_source", source: "tuner" }, signal);
+        }
+        await this.absolute(["telnet", "upnp"], action.via, async (method) => {
+          if (method === "telnet") await telnet(device, action.band === "dab" ? "TMDA" : "TMANFM", "TM", timeout, signal);
+          else {
+            const inner = `<TunerConfig><bandMode>${action.band.toUpperCase()}</bandMode></TunerConfig>`;
+            const escaped = inner.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+            await soap(device, "act", "SetTunerConfig", `<TunerConfig>${escaped}</TunerConfig>`, timeout, signal);
+          }
+        });
+        return await this.confirmed((status) => status.receiver?.band === action.band, signal);
+      case "station_next":
+      case "station_previous": {
+        await this.ensureOn(signal);
+        const before = await this.status(signal);
+        if (before.receiver?.source !== "tuner" || (before.receiver?.band !== "dab" && before.receiver?.band !== "fm")) {
+          throw new LocalDeviceError("unsupported_action", "Select DAB or FM before changing stations");
+        }
+        const command = before.receiver.band === "dab" ? "TFDA" : "TFAN";
+        const previousStation = before.receiver.band === "dab" ? await this.settledStation(signal) : undefined;
+        await telnet(device, command + (action.type === "station_next" ? "UP" : "DOWN"), command, Math.min(timeout, 800), signal);
+        if (previousStation) await this.changedStation(previousStation, signal);
+        return await this.confirmed((status) => before.receiver?.band === "fm"
+          ? status.receiver?.fmFrequencyMHz !== before.receiver?.fmFrequencyMHz
+          : status.receiver?.station !== undefined && status.receiver.station !== previousStation, signal);
+      }
+      case "select_dab_station": {
+        const target = device.dabStations.find((station) => station.id === action.station);
+        if (!target) throw new LocalDeviceError("unknown_station", "Configured DAB station was not found");
+        await this.ensureOn(signal);
+        const before = await this.status(signal);
+        if (before.receiver?.source !== "tuner" || before.receiver?.band !== "dab") await this.control({ type: "select_band", band: "dab" }, signal);
+        const initialStation = await this.settledStation(signal);
+        if (initialStation === target.reportedName) return await this.status(signal);
+        // DAB service IDs are not exposed by the receiver. Walk its station list only after
+        // HEOS confirms each advance, so a delayed tuner change cannot skip stations.
+        let previous = initialStation;
+        for (let step = 0; step < 24; step++) {
+          await telnet(device, "TFDAUP", "TFDA", Math.min(timeout, 800), signal);
+          const next = await this.changedStation(previous, signal);
+          if (next === target.reportedName) return await this.status(signal);
+          if (next === initialStation) break;
+          previous = next;
+        }
+        throw new LocalDeviceError("station_not_found", "DAB station was not found in 24 receiver steps; the receiver may now be on another station");
+      }
+      case "tune_fm": {
+        await this.control({ type: "select_band", band: "fm" }, signal);
+        const encoded = String(Math.round(action.frequencyMHz * 1000)).padStart(6, "0");
+        await telnet(device, `TFAN${encoded}`, "TFAN", timeout, signal);
+        return await this.confirmed((status) => status.receiver?.fmFrequencyMHz === action.frequencyMHz, signal);
+      }
+      case "set_bass":
+      case "set_treble":
+      case "set_balance": {
+        const field = action.type === "set_bass" ? "Bass" : action.type === "set_treble" ? "Treble" : "Balance";
+        const value = action.type === "set_balance" ? action.balance + 50 : action.level + 10;
+        await soap(device, "render", `X_Set${field}`, `${renderArgs}<Desired${field}>${value}</Desired${field}>`, timeout, signal);
+        return await this.confirmed((status) => (field === "Bass" ? status.receiver?.bass : field === "Treble" ? status.receiver?.treble : status.receiver?.balance) === (action.type === "set_balance" ? action.balance : action.level), signal);
+      }
+      case "play":
+      case "pause":
+      case "stop":
+      case "track_next":
+      case "track_previous": {
+        await this.ensureOn(signal);
+        const status = await this.status(signal);
+        if (status.receiver?.source === "tuner") throw new LocalDeviceError("unsupported_action", "HEOS playback controls are unavailable for live radio");
+        const id = await heosPlayerId(device, timeout, signal);
+        const command = action.type === "track_next" ? "play_next" : action.type === "track_previous" ? "play_previous" : "set_play_state";
+        await heos(device, `heos://player/${command}?pid=${id}${command === "set_play_state" ? `&state=${action.type}` : ""}`, timeout, signal);
+        return await this.status(signal);
+      }
+      default:
+        throw new LocalDeviceError("unsupported_action", "Receiver does not support this action");
+    }
+  }
+}

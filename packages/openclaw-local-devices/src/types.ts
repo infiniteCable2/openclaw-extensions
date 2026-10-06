@@ -12,6 +12,13 @@ export type FritzDeviceConfig = {
   uid: string;
 };
 
+export type DenonDeviceConfig = {
+  id: string;
+  name: string;
+  address: string;
+  dabStations: readonly { id: string; name: string; reportedName: string }[];
+};
+
 export type LocalDevicesConfig = {
   allowedAgentIds: ReadonlySet<string>;
   requestTimeoutMs: number;
@@ -24,18 +31,37 @@ export type LocalDevicesConfig = {
     password: string;
     devices: readonly FritzDeviceConfig[];
   };
+  denon?: {
+    devices: readonly DenonDeviceConfig[];
+  };
 };
 
 export type DeviceStatus = {
   id: string;
   name: string;
-  provider: "govee" | "fritz";
+  provider: "govee" | "fritz" | "denon";
   available: boolean;
   power: "on" | "off" | "unknown";
   brightness?: number;
   color?: { red: number; green: number; blue: number };
   colorTemperatureKelvin?: number;
   powerWatts?: number;
+  receiver?: {
+    volume?: number;
+    muted?: boolean;
+    source?: string;
+    band?: "dab" | "fm";
+    station?: string;
+    dabChannel?: string;
+    fmFrequencyMHz?: number;
+    bass?: number;
+    treble?: number;
+    balance?: number;
+    sources: readonly string[];
+    playback?: "play" | "pause" | "stop";
+    configuredStations: readonly { id: string; name: string }[];
+    alternatives: Readonly<Record<string, readonly string[]>>;
+  };
 };
 
 export type DeviceAction =
@@ -45,10 +71,24 @@ export type DeviceAction =
   | { type: "set_color"; red: number; green: number; blue: number }
   | { type: "set_color_temperature"; kelvin: number };
 
+export type ReceiverAction =
+  | { type: "set_volume"; volume: number; via?: "telnet" | "upnp" }
+  | { type: "set_mute"; muted: boolean; via?: "telnet" | "upnp" | "heos" }
+  | { type: "select_source"; source: "cd" | "tuner" | "optical1" | "optical2" | "analog"; via?: "heos" | "telnet" }
+  | { type: "select_band"; band: "dab" | "fm"; via?: "telnet" | "upnp" }
+  | { type: "station_next" | "station_previous" }
+  | { type: "select_dab_station"; station: string }
+  | { type: "tune_fm"; frequencyMHz: number }
+  | { type: "set_bass" | "set_treble"; level: number }
+  | { type: "set_balance"; balance: number }
+  | { type: "play" | "pause" | "stop" | "track_next" | "track_previous" };
+
+export type LocalDeviceAction = DeviceAction | ReceiverAction;
+
 export interface DeviceBackend {
   readonly provider: DeviceStatus["provider"];
   status(signal?: AbortSignal): Promise<DeviceStatus>;
-  control(action: DeviceAction, signal?: AbortSignal): Promise<DeviceStatus>;
+  control(action: LocalDeviceAction, signal?: AbortSignal): Promise<DeviceStatus>;
 }
 
 export class LocalDeviceError extends Error {
