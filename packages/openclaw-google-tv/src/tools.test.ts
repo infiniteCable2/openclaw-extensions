@@ -5,6 +5,7 @@ import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseTvConfig } from "./config.js";
 import { createTools } from "./tools.js";
+import { parseDeviceRegistry } from "@infinitecable2/openclaw-device-management/policy";
 
 const mocks = vi.hoisted(() => ({
   callBridge: vi.fn(),
@@ -27,15 +28,27 @@ async function setup() {
   const png = Buffer.from("89504e470d0a1a0a010203", "hex");
   await writeFile(path, png);
   const config = parseTvConfig({
-    allowedAgentIds: ["example_owner"], pythonPath: "/usr/bin/python3", screenshotDirectory: directory,
-    devices: [{ id: "tv", name: "TV", host: "192.168.1.106", remoteCertPath: "/cert", remoteKeyPath: "/key" }],
+    pythonPath: "/usr/bin/python3", screenshotDirectory: directory,
+    devices: [{ id: "tv", host: "192.168.1.106", remoteCertPath: "/cert", remoteKeyPath: "/key" }],
   });
-  const tool = createTools(config).find((candidate) => candidate.name === "google_tv_observe") as AnyAgentTool;
+  const registry = parseDeviceRegistry({ devices: [{ id: "tv", name: "TV", kind: "television", siteId: "home_site", room: "Wohnzimmer", provider: "google-tv", capabilities: ["power", "observe"], tools: { status: "google_tv_status", control: "google_tv_control", observe: "google_tv_observe", guide: "google_tv_guide" }, grants: { example_owner: ["read", "control", "observe", "guide"] } }] });
+  const tool = createTools(config, registry, "example_owner").find((candidate) => candidate.name === "google_tv_observe") as AnyAgentTool;
   mocks.callBridge.mockResolvedValue({ ok: true, path, bytes: png.length });
   return { tool, path, png };
 }
 
 describe("Google TV screenshot delivery", () => {
+  it("blocks direct control after a central grant is revoked", async () => {
+    const { tool } = await setup();
+    const config = parseTvConfig({ pythonPath: "/usr/bin/python3", devices: [{ id: "tv", host: "192.168.1.106", remoteCertPath: "/cert", remoteKeyPath: "/key" }] });
+    const initial = parseDeviceRegistry({ devices: [{ id: "tv", name: "TV", kind: "television", siteId: "home_site", room: "Wohnzimmer", provider: "google-tv", capabilities: ["power"], tools: { status: "google_tv_status", control: "google_tv_control" }, grants: { example_owner: ["read", "control"] } }] });
+    const revoked = parseDeviceRegistry({ devices: [{ id: "tv", name: "TV", kind: "television", siteId: "home_site", room: "Wohnzimmer", provider: "google-tv", capabilities: ["power"], tools: { status: "google_tv_status", control: "google_tv_control" }, grants: { example_member: ["read", "control"] } }] });
+    const control = createTools(config, initial, "example_owner", () => revoked).find((candidate) => candidate.name === "google_tv_control")!;
+    const response = await control.execute("revoked", { device: "tv", action: "power_on" });
+    expect(response.details).toMatchObject({ ok: false, error: { code: "device_denied" } });
+    expect(mocks.callBridge).not.toHaveBeenCalled();
+    expect(tool.name).toBe("google_tv_observe");
+  });
   it("returns only a temporary original-file path by default", async () => {
     const { tool, path, png } = await setup();
     const response = await tool.execute("observe-1", { device: "tv", mode: "screenshot" });

@@ -2,6 +2,7 @@ import { lstat, readFile, readdir, unlink } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
+import { assertDeviceGrant, authorizedDevices, type DeviceRegistry } from "@infinitecable2/openclaw-device-management/policy";
 import { callBridge, type BridgeRequest } from "./bridge.js";
 import type { TvConfig, TvDevice } from "./config.js";
 
@@ -59,7 +60,14 @@ async function scheduleScreenshotExpiry(path: string, seconds: number): Promise<
   timer.unref();
 }
 
-export function createTools(config: TvConfig): AnyAgentTool[] {
+export function createTools(config: TvConfig, registry: DeviceRegistry, agentId: string, currentRegistry: () => DeviceRegistry = () => registry): AnyAgentTool[] {
+  for (const device of config.devices.values()) {
+    const managed = registry.get(device.id);
+    if (!managed || managed.provider !== "google-tv") throw new Error(`TV ${device.id} has no matching management entry`);
+    device.name = managed.name;
+  }
+  const permitted = (permission: "read" | "control" | "observe" | "guide") => authorizedDevices(currentRegistry(), agentId)
+    .filter((device) => device.provider === "google-tv" && device.grants.get(agentId)?.has(permission) && config.devices.has(device.id));
   const status: AnyAgentTool = {
     name: "google_tv_status", label: "Google TV Status",
     description: "Read configured Google TV capabilities, power and foreground app. ADB is optional; HDMI video is not observable via TV screenshot. No automatic ADB enablement.",
@@ -67,7 +75,7 @@ export function createTools(config: TvConfig): AnyAgentTool[] {
     execute: async (_id, raw, signal) => {
       const wanted = record(raw).device;
       if (wanted !== undefined && typeof wanted !== "string") return failed("invalid_request", "device must be an id");
-      const devices = wanted === undefined ? [...config.devices.values()] : [config.devices.get(wanted)].filter((v): v is TvDevice => !!v);
+      const devices = permitted("read").filter((device) => wanted === undefined || device.id === wanted).map((device) => config.devices.get(device.id)!);
       if (!devices.length) return failed("unknown_device", "TV is not configured");
       const states = await Promise.all(devices.map(async (device) => ({
         id: device.id, name: device.name,
@@ -84,6 +92,8 @@ export function createTools(config: TvConfig): AnyAgentTool[] {
     parameters: controlSchema, executionMode: "sequential",
     execute: async (_id, raw, signal) => {
       const params = record(raw);
+      try { assertDeviceGrant(currentRegistry(), agentId, String(params.device ?? ""), "google-tv", "control"); }
+      catch { return failed("device_denied", "TV is not available to this agent"); }
       const device = config.devices.get(String(params.device ?? ""));
       if (!device) return failed("unknown_device", "TV is not configured");
       let request: BridgeRequest;
@@ -116,6 +126,8 @@ export function createTools(config: TvConfig): AnyAgentTool[] {
     parameters: observeSchema, executionMode: "sequential",
     execute: async (_id, raw, signal) => {
       const params = record(raw);
+      try { assertDeviceGrant(currentRegistry(), agentId, String(params.device ?? ""), "google-tv", "observe"); }
+      catch { return failed("device_denied", "TV is not available to this agent"); }
       const device = config.devices.get(String(params.device ?? ""));
       if (!device) return failed("unknown_device", "TV is not configured");
       if (params.mode !== "screenshot" && params.mode !== "ui") return failed("invalid_request", "mode must be screenshot or ui");
@@ -156,6 +168,7 @@ export function createTools(config: TvConfig): AnyAgentTool[] {
     description: "List available optional app recipes or load one by id on demand. Recipes are guidance, not automatic context or executable scripts.",
     parameters: guideSchema, executionMode: "sequential",
     execute: async (_id, raw) => {
+      if (permitted("guide").length === 0) return failed("device_denied", "TV guide is not available to this agent");
       if (!config.recipeDirectory) return failed("recipes_not_configured", "No recipe directory is configured");
       const app = record(raw).app;
       const base = resolve(config.recipeDirectory);

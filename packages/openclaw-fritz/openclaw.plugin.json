@@ -1,0 +1,99 @@
+{
+  "id": "fritz",
+  "name": "FRITZ Smart Home",
+  "description": "Bounded FRITZ Smart Home control.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": false,
+    "onConfigPaths": [
+      "plugins.entries.fritz.config",
+      "plugins.entries.device-management.config"
+    ]
+  },
+  "configContracts": {
+    "secretInputs": {
+      "paths": [
+        {
+          "path": "password",
+          "expected": "string",
+          "ownerKind": "capability"
+        }
+      ]
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "username",
+      "password",
+      "devices"
+    ],
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "default": "http://fritz.box"
+      },
+      "username": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "password": {
+        "type": [
+          "string",
+          "object"
+        ],
+        "minLength": 1
+      },
+      "requestTimeoutMs": {
+        "type": "integer",
+        "minimum": 500,
+        "maximum": 15000,
+        "default": 5000
+      },
+      "devices": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "uid"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            },
+            "uid": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            }
+          }
+        }
+      }
+    }
+  },
+  "contracts": {
+    "tools": [
+      "fritz_status",
+      "fritz_control"
+    ]
+  },
+  "toolMetadata": {
+    "fritz_status": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "fritz_control": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    }
+  }
+}

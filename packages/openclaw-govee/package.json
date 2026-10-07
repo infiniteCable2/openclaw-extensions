@@ -1,14 +1,13 @@
 {
-  "name": "@infinitecable2/openclaw-google-tv",
+  "name": "@infinitecable2/openclaw-govee",
   "version": "0.1.0",
   "private": true,
-  "description": "Bounded Google TV control via Remote v2 with optional paired ADB observation",
+  "description": "Bounded Govee LAN control for OpenClaw",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "runtime",
     "openclaw.plugin.json",
     "README.md"
   ],
