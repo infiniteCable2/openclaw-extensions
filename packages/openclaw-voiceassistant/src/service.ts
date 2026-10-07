@@ -82,6 +82,8 @@ export class VoiceassistantService {
   private starting: Promise<void> | undefined;
   private active: ActiveSession | undefined;
   private lastWakeSequence = 0;
+  private lastUnavailableLogAt = 0;
+  private lastUnavailableClass = "";
 
   constructor(
     private readonly api: OpenClawPluginApi,
@@ -121,8 +123,15 @@ export class VoiceassistantService {
     while (!this.abort.signal.aborted) {
       try {
         await this.poll();
+        this.lastUnavailableClass = "";
       } catch (error) {
-        this.context.logger.warn(`voiceassistant poll unavailable: ${error instanceof Error ? error.name : "Error"}`);
+        const errorClass = error instanceof Error ? error.name : "Error";
+        const now = Date.now();
+        if (this.lastUnavailableClass !== errorClass || now - this.lastUnavailableLogAt >= 30_000) {
+          this.context.logger.warn(`voiceassistant poll unavailable: ${errorClass}`);
+          this.lastUnavailableClass = errorClass;
+          this.lastUnavailableLogAt = now;
+        }
         if (this.active) {
           await this.closeSession().catch(() => undefined);
         }
