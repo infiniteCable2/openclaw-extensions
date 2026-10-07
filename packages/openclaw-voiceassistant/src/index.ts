@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { parseVoiceassistantConfig } from "./config.js";
+import { createVoiceassistantDeviceTool } from "./device-tool.js";
 import { createVoiceassistantNodePolicy, VOICEASSISTANT_COMMAND } from "./node-policy.js";
 import { VoiceassistantService } from "./service.js";
 
@@ -29,6 +30,10 @@ export default definePluginEntry({
     });
     api.registerNodeInvokePolicy(createVoiceassistantNodePolicy(config));
     let controller: VoiceassistantService | undefined;
+    api.registerTool({
+      contextVersion: 2,
+      create: (ctx) => createVoiceassistantDeviceTool(ctx, config, () => controller),
+    }, { name: "voiceassistant_device" });
     api.registerService({
       id: "voiceassistant",
       reload: { configPrefixes: ["plugins.entries.voiceassistant.config"] },

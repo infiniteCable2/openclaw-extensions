@@ -41,4 +41,37 @@ describe("voiceassistant node policy", () => {
       action: "clearAudio", bridgeId: "b".repeat(32), outputGeneration: 3,
     } });
   });
+
+  it("limits device settings and power to the paired voiceassistant", async () => {
+    const valid = context({ params: { action: "configure", brightnessPercent: 20, injected: true } });
+    expect((await policy.handle(valid as never)).ok).toBe(true);
+    expect(valid.invokeNode).toHaveBeenCalledWith({ params: {
+      action: "configure", brightnessPercent: 20,
+    } });
+    for (const params of [
+      { action: "configure", brightnessPercent: 101 },
+      { action: "configure", brightnessPercent: 20, volumePercent: 30 },
+      { action: "power", operation: "shutdown" },
+      { action: "power", operation: "sleep", confirm: true },
+    ]) {
+      expect((await policy.handle(context({ params }) as never)).ok).toBe(false);
+    }
+    const approved = context({ params: { action: "power", operation: "restart", confirm: true } });
+    expect((await policy.handle(approved as never)).ok).toBe(true);
+    expect(approved.invokeNode).toHaveBeenCalledWith({ params: {
+      action: "power", operation: "restart", confirm: true,
+    } });
+  });
+
+  it("sends only bounded activity for the current bridge", async () => {
+    const bridgeId = "b".repeat(32);
+    const valid = context({ params: { action: "setActivity", bridgeId, activity: "processing" } });
+    expect((await policy.handle(valid as never)).ok).toBe(true);
+    expect(valid.invokeNode).toHaveBeenCalledWith({ params: {
+      action: "setActivity", bridgeId, activity: "processing",
+    } });
+    expect((await policy.handle(context({ params: {
+      action: "setActivity", bridgeId, activity: "recording",
+    } }) as never)).ok).toBe(false);
+  });
 });
