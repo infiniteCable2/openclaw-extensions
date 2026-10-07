@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "provider": "google-tv",
+  "capabilities": ["power", "remote", "apps", "observe", "guide"],
+  "tools": { "status": "google_tv_status", "control": "google_tv_control", "observe": "google_tv_observe", "guide": "google_tv_guide" }
+}

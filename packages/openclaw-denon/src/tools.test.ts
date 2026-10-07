@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { fileURLToPath } from "node:url";
 import { parseDeviceRegistry } from "@infinitecable2/openclaw-device-management/policy";
 import { createDenonTools } from "./tools.js";
 
-const registry = parseDeviceRegistry({ devices: [{
+const registry = parseDeviceRegistry({ providers: { denon: fileURLToPath(new URL("../", import.meta.url)) }, devices: [{
   id: "receiver", name: "Receiver", kind: "media_receiver", siteId: "astrid", room: "Wohnzimmer", provider: "denon",
-  capabilities: ["power", "dab"], tools: { status: "denon_status", control: "denon_control" },
   grants: { steffen: ["read", "control"] },
 }] });
 

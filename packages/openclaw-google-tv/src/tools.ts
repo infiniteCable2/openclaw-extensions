@@ -46,7 +46,7 @@ function serialized<T>(id: string, task: () => Promise<T>): Promise<T> {
 }
 
 async function invoke(config: TvConfig, device: TvDevice, request: BridgeRequest, signal?: AbortSignal) {
-  return serialized(device.id, () => callBridge(config, device, request, signal));
+  return serialized(device.id, () => signal?.aborted ? Promise.resolve({ ok: false, code: "cancelled" }) : callBridge(config, device, request, signal));
 }
 
 async function scheduleScreenshotExpiry(path: string, seconds: number): Promise<void> {
@@ -61,6 +61,7 @@ async function scheduleScreenshotExpiry(path: string, seconds: number): Promise<
 }
 
 export function createTools(config: TvConfig, registry: DeviceRegistry, agentId: string, currentRegistry: () => DeviceRegistry = () => registry): AnyAgentTool[] {
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(agentId)) throw new Error("Invalid agent identity for TV artifacts");
   for (const device of config.devices.values()) {
     const managed = registry.get(device.id);
     if (!managed || managed.provider !== "google-tv") throw new Error(`TV ${device.id} has no matching management entry`);
@@ -133,10 +134,11 @@ export function createTools(config: TvConfig, registry: DeviceRegistry, agentId:
       if (params.mode !== "screenshot" && params.mode !== "ui") return failed("invalid_request", "mode must be screenshot or ui");
       if (params.delivery !== undefined && params.delivery !== "file" && params.delivery !== "context" && params.delivery !== "both") return failed("invalid_request", "delivery must be file, context, or both");
       if (params.mode !== "screenshot" && params.delivery !== undefined) return failed("invalid_request", "delivery applies only to screenshots");
-      const result = await invoke(config, device, { operation: params.mode }, signal);
+      const captureConfig = { ...config, screenshotDirectory: join(config.screenshotDirectory, "agents", agentId, device.id) };
+      const result = await invoke(captureConfig, device, { operation: params.mode }, signal);
       if (result.ok === true && params.mode === "screenshot") {
         const path = result.path;
-        const directory = resolve(config.screenshotDirectory);
+        const directory = resolve(captureConfig.screenshotDirectory);
         if (typeof path !== "string" || !resolve(path).startsWith(directory + sep)) return failed("invalid_bridge_result", "Screenshot path is outside the configured directory");
         try {
           await scheduleScreenshotExpiry(path, config.screenshotMaxAgeSeconds);

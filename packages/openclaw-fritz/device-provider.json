@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "provider": "fritz",
+  "capabilities": ["power", "power_meter"],
+  "tools": { "status": "fritz_status", "control": "fritz_control" }
+}

@@ -1,10 +1,17 @@
-import { describe, expect, it } from "vitest";
-import { assertDeviceGrant, authorizedDevices, parseDeviceRegistry, publicDevice, registryFromOpenClawConfig } from "./policy.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { assertDeviceGrant, authorizedDevices, loadProviderMetadata, parseDeviceRegistry, publicDevice, registryFromOpenClawConfig } from "./policy.js";
 
-const config = { devices: [{
+const temporary: string[] = [];
+afterEach(() => { for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true }); });
+
+const providers = Object.fromEntries(["google-tv", "denon", "fritz", "govee"].map((provider) => [provider, fileURLToPath(new URL(`../../openclaw-${provider}/`, import.meta.url))]));
+const config = { providers, devices: [{
   id: "wohnzimmer_tv", name: "Fernseher", kind: "television", siteId: "astrid", room: "Wohnzimmer",
-  provider: "google-tv", capabilities: ["power", "remote", "observe"],
-  tools: { status: "google_tv_status", control: "google_tv_control", observe: "google_tv_observe" },
+  provider: "google-tv",
   grants: { steffen: ["read", "control", "observe"], astrid: ["read", "control"] },
 }] };
 
@@ -14,6 +21,7 @@ describe("device management policy", () => {
     expect(authorizedDevices(registry, "steffen")).toHaveLength(1);
     expect(authorizedDevices(registry, "bodo")).toHaveLength(0);
     expect(publicDevice(registry.get("wohnzimmer_tv")!, "astrid").tools).toEqual({ status: "google_tv_status", control: "google_tv_control" });
+    expect(registry.get("wohnzimmer_tv")!.capabilities).toContain("remote");
     expect(() => assertDeviceGrant(registry, "astrid", "wohnzimmer_tv", "google-tv", "observe")).toThrow(/not available/);
     expect(() => assertDeviceGrant(registry, "bodo", "wohnzimmer_tv", "google-tv", "read")).toThrow(/not available/);
     expect(() => assertDeviceGrant(registry, "steffen", "wohnzimmer_tv", "denon", "control")).toThrow(/not available/);
@@ -28,13 +36,32 @@ describe("device management policy", () => {
   });
 
   it("rejects duplicate identities and invalid grants", () => {
-    expect(() => parseDeviceRegistry({ devices: [config.devices[0], config.devices[0]] })).toThrow(/duplicate/);
-    expect(() => parseDeviceRegistry({ devices: [{ ...config.devices[0], grants: { bodo: ["observe"] }, tools: { status: "google_tv_status" } }] })).toThrow(/corresponding/);
+    expect(() => parseDeviceRegistry({ providers, devices: [config.devices[0], config.devices[0]] })).toThrow(/duplicate/);
+    expect(() => parseDeviceRegistry({ providers, devices: [{ ...config.devices[0], provider: "fritz", grants: { bodo: ["observe"] } }] })).toThrow(/corresponding/);
+    expect(() => parseDeviceRegistry({ ...config, devices: [{ ...config.devices[0], tools: { status: "custom" } }] })).toThrow(/not supported/);
+    expect(() => parseDeviceRegistry({ ...config, devices: [{ ...config.devices[0], capabilities: ["custom"] }] })).toThrow(/not supported/);
   });
 
   it("publishes a receiver station catalog only to readers", () => {
-    const registry = parseDeviceRegistry({ devices: [{ ...config.devices[0], kind: "media_receiver", provider: "denon", tools: { status: "denon_status", control: "denon_control", stations: "denon_dab_stations" }, grants: { steffen: ["read", "control"], astrid: ["control"] } }] });
+    const registry = parseDeviceRegistry({ providers, devices: [{ ...config.devices[0], kind: "media_receiver", provider: "denon", grants: { steffen: ["read", "control"], astrid: ["control"] } }] });
     expect(publicDevice(registry.get("wohnzimmer_tv")!, "steffen").tools).toMatchObject({ stations: "denon_dab_stations" });
     expect(publicDevice(registry.get("wohnzimmer_tv")!, "astrid").tools).not.toHaveProperty("stations");
+  });
+
+  it("requires plugin metadata to agree with the native manifest", () => {
+    const root = mkdtempSync(join(tmpdir(), "device-metadata-test-"));
+    temporary.push(root);
+    const metadata = { version: 1, provider: "example", capabilities: ["power"], tools: { status: "example_status" } };
+    writeFileSync(join(root, "device-provider.json"), JSON.stringify(metadata));
+    writeFileSync(join(root, "openclaw.plugin.json"), JSON.stringify({ id: "example", contracts: { tools: ["unrelated_tool"] } }));
+    expect(() => loadProviderMetadata("example", root)).toThrow(/undeclared tool/);
+    writeFileSync(join(root, "openclaw.plugin.json"), JSON.stringify({ id: "example", contracts: { tools: ["example_status"] } }));
+    expect(loadProviderMetadata("example", root).tools.status).toBe("example_status");
+    expect(() => loadProviderMetadata("different", root)).toThrow(/identity/);
+    writeFileSync(join(root, "device-provider.json"), JSON.stringify({ ...metadata, version: 2 }));
+    expect(() => loadProviderMetadata("example", root)).toThrow(/version/);
+    writeFileSync(join(root, "device-provider.json"), " ".repeat(65537));
+    expect(() => loadProviderMetadata("example", root)).toThrow(/invalid device-provider/);
+    expect(() => loadProviderMetadata("example", "relative/path")).toThrow(/absolute/);
   });
 });
