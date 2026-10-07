@@ -6,28 +6,18 @@
   "activation": {
     "onStartup": false,
     "onConfigPaths": [
-      "plugins.entries.google-tv.config"
+      "plugins.entries.google-tv.config",
+      "plugins.entries.device-management.config"
     ]
   },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "required": [
-      "allowedAgentIds",
       "pythonPath",
       "devices"
     ],
     "properties": {
-      "allowedAgentIds": {
-        "type": "array",
-        "minItems": 1,
-        "maxItems": 16,
-        "uniqueItems": true,
-        "items": {
-          "type": "string",
-          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
-        }
-      },
       "pythonPath": {
         "type": "string",
         "minLength": 1
@@ -67,7 +57,6 @@
           "additionalProperties": false,
           "required": [
             "id",
-            "name",
             "host",
             "remoteCertPath",
             "remoteKeyPath"
@@ -76,11 +65,6 @@
             "id": {
               "type": "string",
               "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
-            },
-            "name": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 80
             },
             "host": {
               "type": "string",
@@ -97,10 +81,19 @@
             "wake": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["macAddress", "broadcastAddress"],
+              "required": [
+                "macAddress",
+                "broadcastAddress"
+              ],
               "properties": {
-                "macAddress": { "type": "string", "pattern": "^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$" },
-                "broadcastAddress": { "type": "string", "format": "ipv4" }
+                "macAddress": {
+                  "type": "string",
+                  "pattern": "^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$"
+                },
+                "broadcastAddress": {
+                  "type": "string",
+                  "format": "ipv4"
+                }
               }
             },
             "adb": {

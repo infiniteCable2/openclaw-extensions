@@ -1,0 +1,156 @@
+{
+  "id": "device-management",
+  "name": "Device Management",
+  "description": "Agent-scoped inventory of managed devices, sites and available device tools.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": false,
+    "onConfigPaths": [
+      "plugins.entries.device-management.config"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "devices"
+    ],
+    "properties": {
+      "devices": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 128,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "name",
+            "kind",
+            "siteId",
+            "room",
+            "provider",
+            "capabilities",
+            "tools",
+            "grants"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "light",
+                "switch",
+                "media_receiver",
+                "television"
+              ]
+            },
+            "siteId": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            },
+            "room": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "provider": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            },
+            "capabilities": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              }
+            },
+            "tools": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]*$"
+                },
+                "control": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]*$"
+                },
+                "observe": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]*$"
+                },
+                "guide": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]*$"
+                },
+                "stations": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]*$"
+                }
+              }
+            },
+            "grants": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 32,
+              "propertyNames": {
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "additionalProperties": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "read",
+                    "control",
+                    "observe",
+                    "guide"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "contracts": {
+    "tools": [
+      "device_inventory"
+    ]
+  },
+  "toolMetadata": {
+    "device_inventory": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false,
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.device-management.config",
+          "required": [
+            "devices"
+          ]
+        }
+      ]
+    }
+  }
+}

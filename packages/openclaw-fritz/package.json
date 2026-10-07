@@ -1,8 +1,8 @@
 {
-  "name": "@infinitecable2/openclaw-local-devices",
+  "name": "@infinitecable2/openclaw-fritz",
   "version": "0.1.0",
   "private": true,
-  "description": "Bounded native OpenClaw tools for local Govee, FRITZ! Smart Home and Denon CEOL devices",
+  "description": "Bounded FRITZ! Smart Home control for OpenClaw",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -18,6 +18,9 @@
   },
   "peerDependencies": {
     "openclaw": ">=2026.8.1"
+  },
+  "dependencies": {
+    "@infinitecable2/openclaw-device-management": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "26.3.0",

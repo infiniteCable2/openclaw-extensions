@@ -14,7 +14,6 @@ export type TvDevice = {
   apps: TvApp[];
 };
 export type TvConfig = {
-  allowedAgentIds: Set<string>;
   pythonPath: string;
   recipeDirectory?: string;
   requestTimeoutMs: number;
@@ -50,10 +49,6 @@ function privateIPv4(value: unknown, name: string): string {
 
 export function parseTvConfig(raw: unknown): TvConfig {
   const input = object(raw, "config");
-  const agents = input.allowedAgentIds;
-  if (!Array.isArray(agents) || agents.length < 1 || agents.length > 16) throw new Error("allowedAgentIds must be a nonempty array");
-  const allowedAgentIds = new Set(agents.map((value) => id(value, "agent id")));
-  if (allowedAgentIds.size !== agents.length) throw new Error("duplicate agent id");
   const listed = input.devices;
   if (!Array.isArray(listed) || listed.length < 1 || listed.length > 4) throw new Error("devices must contain 1-4 entries");
   const devices = new Map<string, TvDevice>();
@@ -89,7 +84,7 @@ export function parseTvConfig(raw: unknown): TvConfig {
       apps.push({ id: id(app.id, "app id"), name: string(app.name, "app name"), via, locator: string(app.locator, "app locator") });
     }
     if (new Set(apps.map((app) => app.id)).size !== apps.length) throw new Error("duplicate app id");
-    devices.set(deviceId, { id: deviceId, name: string(device.name, "device name"), host, remoteCertPath: string(device.remoteCertPath, "cert path"), remoteKeyPath: string(device.remoteKeyPath, "key path"), wake, adb, apps });
+    devices.set(deviceId, { id: deviceId, name: deviceId, host, remoteCertPath: string(device.remoteCertPath, "cert path"), remoteKeyPath: string(device.remoteKeyPath, "key path"), wake, adb, apps });
   }
   const requestTimeoutMs = input.requestTimeoutMs === undefined ? 15000 : Number(input.requestTimeoutMs);
   if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1000 || requestTimeoutMs > 30000) throw new Error("invalid requestTimeoutMs");
@@ -101,5 +96,5 @@ export function parseTvConfig(raw: unknown): TvConfig {
   if (!isAbsolute(screenshotDirectory)) throw new Error("screenshotDirectory must be absolute");
   const screenshotMaxAgeSeconds = input.screenshotMaxAgeSeconds === undefined ? 900 : Number(input.screenshotMaxAgeSeconds);
   if (!Number.isInteger(screenshotMaxAgeSeconds) || screenshotMaxAgeSeconds < 60 || screenshotMaxAgeSeconds > 86400) throw new Error("invalid screenshotMaxAgeSeconds");
-  return { allowedAgentIds, pythonPath: string(input.pythonPath, "pythonPath"), recipeDirectory: input.recipeDirectory === undefined ? undefined : string(input.recipeDirectory, "recipeDirectory"), requestTimeoutMs, powerOnTimeoutMs, screenshotDirectory, screenshotMaxAgeSeconds, devices };
+  return { pythonPath: string(input.pythonPath, "pythonPath"), recipeDirectory: input.recipeDirectory === undefined ? undefined : string(input.recipeDirectory, "recipeDirectory"), requestTimeoutMs, powerOnTimeoutMs, screenshotDirectory, screenshotMaxAgeSeconds, devices };
 }

@@ -1,14 +1,17 @@
 {
-  "name": "@infinitecable2/openclaw-google-tv",
+  "name": "@infinitecable2/openclaw-device-management",
   "version": "0.1.0",
   "private": true,
-  "description": "Bounded Google TV control via Remote v2 with optional paired ADB observation",
+  "description": "Agent-scoped device inventory and authorization for OpenClaw",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./policy": "./dist/policy.js"
+  },
   "files": [
     "dist",
-    "runtime",
     "openclaw.plugin.json",
     "README.md"
   ],
@@ -19,9 +22,6 @@
   },
   "peerDependencies": {
     "openclaw": ">=2026.8.1"
-  },
-  "dependencies": {
-    "@infinitecable2/openclaw-device-management": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "26.3.0",
