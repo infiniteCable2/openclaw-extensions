@@ -13,9 +13,24 @@
     "type": "object",
     "additionalProperties": false,
     "required": [
+      "providers",
       "devices"
     ],
     "properties": {
+      "providers": {
+        "type": "object",
+        "minProperties": 1,
+        "maxProperties": 32,
+        "propertyNames": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+        },
+        "additionalProperties": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "description": "Provider ID to absolute immutable plugin package directory. The package supplies device-provider.json and its OpenClaw manifest."
+      },
       "devices": {
         "type": "array",
         "minItems": 1,
@@ -30,8 +45,6 @@
             "siteId",
             "room",
             "provider",
-            "capabilities",
-            "tools",
             "grants"
           ],
           "properties": {
@@ -65,45 +78,6 @@
             "provider": {
               "type": "string",
               "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
-            },
-            "capabilities": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 32,
-              "uniqueItems": true,
-              "items": {
-                "type": "string",
-                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
-              }
-            },
-            "tools": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "status"
-              ],
-              "properties": {
-                "status": {
-                  "type": "string",
-                  "pattern": "^[a-z][a-z0-9_]*$"
-                },
-                "control": {
-                  "type": "string",
-                  "pattern": "^[a-z][a-z0-9_]*$"
-                },
-                "observe": {
-                  "type": "string",
-                  "pattern": "^[a-z][a-z0-9_]*$"
-                },
-                "guide": {
-                  "type": "string",
-                  "pattern": "^[a-z][a-z0-9_]*$"
-                },
-                "stations": {
-                  "type": "string",
-                  "pattern": "^[a-z][a-z0-9_]*$"
-                }
-              }
             },
             "grants": {
               "type": "object",

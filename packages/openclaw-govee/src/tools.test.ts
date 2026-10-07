@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
 import { parseDeviceRegistry } from "@infinitecable2/openclaw-device-management/policy";
 import { createGoveeTools } from "./tools.js";
 
-const allowed = parseDeviceRegistry({ devices: [{
+const providers = { govee: fileURLToPath(new URL("../", import.meta.url)) };
+const allowed = parseDeviceRegistry({ providers, devices: [{
   id: "light", name: "Licht am Sofa", kind: "light", siteId: "home_site", room: "Wohnzimmer", provider: "govee",
-  capabilities: ["power", "color"], tools: { status: "govee_status", control: "govee_control" },
   grants: { example_owner: ["read", "control"], example_member: ["read", "control"] },
 }] });
-const revoked = parseDeviceRegistry({ devices: [{
+const revoked = parseDeviceRegistry({ providers, devices: [{
   id: "light", name: "Licht am Sofa", kind: "light", siteId: "home_site", room: "Wohnzimmer", provider: "govee",
-  capabilities: ["power"], tools: { status: "govee_status", control: "govee_control" },
   grants: { example_member: ["read", "control"] },
 }] });
 

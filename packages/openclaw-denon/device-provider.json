@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "provider": "denon",
+  "capabilities": ["power", "volume", "mute", "source", "playback", "dab", "fm", "tone"],
+  "tools": { "status": "denon_status", "control": "denon_control", "stations": "denon_dab_stations" }
+}

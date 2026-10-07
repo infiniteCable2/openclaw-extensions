@@ -1,3 +1,6 @@
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
+
 /** The single owner of device identity, location, presentation and agent grants. */
 export type DevicePermission = "read" | "control" | "observe" | "guide";
 export type DeviceKind = "light" | "switch" | "media_receiver" | "television";
@@ -15,6 +18,7 @@ export type ManagedDevice = {
 };
 
 export type DeviceRegistry = ReadonlyMap<string, ManagedDevice>;
+export type DeviceProviderMetadata = Pick<ManagedDevice, "capabilities" | "tools">;
 
 const idPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const toolPattern = /^[a-z][a-z0-9_]*$/;
@@ -59,9 +63,52 @@ function tool(value: unknown, label: string): string {
   return result;
 }
 
+/** Plugin-owned data only: never imports or executes a configured module. */
+export function loadProviderMetadata(provider: string, packageRoot: string): DeviceProviderMetadata {
+  if (!isAbsolute(packageRoot)) throw new DevicePolicyError("invalid_config", `Provider ${provider} requires an absolute package directory`);
+  const readJson = (name: string, limit: number): Record<string, unknown> => {
+    try {
+      const path = join(packageRoot, name);
+      const stat = statSync(path);
+      if (!stat.isFile() || stat.size > limit) throw new Error("invalid metadata file");
+      return object(JSON.parse(readFileSync(path, "utf8")), name);
+    } catch {
+      throw new DevicePolicyError("invalid_config", `Provider ${provider} has unavailable or invalid ${name}`);
+    }
+  };
+  const metadata = readJson("device-provider.json", 64 * 1024);
+  keys(metadata, ["version", "provider", "capabilities", "tools"], "provider metadata");
+  if (metadata.version !== 1 || metadata.provider !== provider) throw new DevicePolicyError("invalid_config", `Provider ${provider} metadata identity or version does not match`);
+  const manifest = readJson("openclaw.plugin.json", 1024 * 1024);
+  const contracts = object(manifest.contracts, "plugin contracts");
+  if (manifest.id !== provider || !Array.isArray(contracts.tools)) throw new DevicePolicyError("invalid_config", `Provider ${provider} manifest does not match`);
+  const rawTools = object(metadata.tools, "provider tools");
+  keys(rawTools, ["status", "control", "observe", "guide", "stations"], "provider tools");
+  if (!rawTools.status) throw new DevicePolicyError("invalid_config", `Provider ${provider} requires a status tool`);
+  const tools: Record<string, string> = {};
+  for (const [role, value] of Object.entries(rawTools)) {
+    const name = tool(value, `provider tools.${role}`);
+    if (!contracts.tools.includes(name)) throw new DevicePolicyError("invalid_config", `Provider ${provider} references an undeclared tool`);
+    tools[role] = name;
+  }
+  if (!Array.isArray(metadata.capabilities) || metadata.capabilities.length < 1 || metadata.capabilities.length > 32) {
+    throw new DevicePolicyError("invalid_config", `Provider ${provider} capabilities must contain 1-32 entries`);
+  }
+  const capabilities = metadata.capabilities.map((value) => id(value, "provider capability"));
+  if (new Set(capabilities).size !== capabilities.length) throw new DevicePolicyError("invalid_config", `Provider ${provider} has duplicate capabilities`);
+  return { capabilities, tools };
+}
+
 export function parseDeviceRegistry(raw: unknown): DeviceRegistry {
   const root = object(raw, "device-management config");
-  keys(root, ["devices"], "device-management config");
+  keys(root, ["providers", "devices"], "device-management config");
+  const rawProviders = object(root.providers, "providers");
+  if (Object.keys(rawProviders).length < 1 || Object.keys(rawProviders).length > 32) throw new DevicePolicyError("invalid_config", "providers must contain 1-32 entries");
+  const providers = new Map<string, DeviceProviderMetadata>();
+  for (const [provider, directory] of Object.entries(rawProviders)) {
+    id(provider, "provider id");
+    providers.set(provider, loadProviderMetadata(provider, string(directory, "provider package directory", 4096)));
+  }
   if (!Array.isArray(root.devices) || root.devices.length < 1 || root.devices.length > 128) {
     throw new DevicePolicyError("invalid_config", "devices must contain 1-128 entries");
   }
@@ -69,21 +116,14 @@ export function parseDeviceRegistry(raw: unknown): DeviceRegistry {
   for (const [index, item] of root.devices.entries()) {
     const label = `devices[${index}]`;
     const entry = object(item, label);
-    keys(entry, ["id", "name", "kind", "siteId", "room", "provider", "capabilities", "tools", "grants"], label);
+    keys(entry, ["id", "name", "kind", "siteId", "room", "provider", "grants"], label);
     const deviceId = id(entry.id, `${label}.id`);
     if (devices.has(deviceId)) throw new DevicePolicyError("invalid_config", `duplicate device id ${deviceId}`);
     if (!kinds.has(entry.kind as DeviceKind)) throw new DevicePolicyError("invalid_config", `${label}.kind is invalid`);
     const provider = id(entry.provider, `${label}.provider`);
-    const rawTools = object(entry.tools, `${label}.tools`);
-    keys(rawTools, ["status", "control", "observe", "guide", "stations"], `${label}.tools`);
-    if (!rawTools.status) throw new DevicePolicyError("invalid_config", `${label}.tools.status is required`);
-    const tools: Record<string, string> = {};
-    for (const [key, value] of Object.entries(rawTools)) tools[key] = tool(value, `${label}.tools.${key}`);
-    if (!Array.isArray(entry.capabilities) || entry.capabilities.length < 1 || entry.capabilities.length > 32) {
-      throw new DevicePolicyError("invalid_config", `${label}.capabilities must contain 1-32 entries`);
-    }
-    const capabilities = entry.capabilities.map((value, n) => id(value, `${label}.capabilities[${n}]`));
-    if (new Set(capabilities).size !== capabilities.length) throw new DevicePolicyError("invalid_config", `${label}.capabilities contains duplicates`);
+    const metadata = providers.get(provider);
+    if (!metadata) throw new DevicePolicyError("invalid_config", `${label}.provider has no metadata binding`);
+    const { tools, capabilities } = metadata;
     const rawGrants = object(entry.grants, `${label}.grants`);
     if (Object.keys(rawGrants).length < 1 || Object.keys(rawGrants).length > 32) {
       throw new DevicePolicyError("invalid_config", `${label}.grants must contain 1-32 agents`);

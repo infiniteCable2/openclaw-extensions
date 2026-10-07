@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
 import { parseDeviceRegistry } from "@infinitecable2/openclaw-device-management/policy";
 import { createFritzTools } from "./tools.js";
 
-const registry = parseDeviceRegistry({ devices: [{
+const registry = parseDeviceRegistry({ providers: { fritz: fileURLToPath(new URL("../", import.meta.url)) }, devices: [{
   id: "lamp", name: "Lampe auf dem Tisch", kind: "light", siteId: "home_site", room: "Wohnzimmer", provider: "fritz",
-  capabilities: ["power"], tools: { status: "fritz_status", control: "fritz_control" },
   grants: { example_owner: ["read", "control"] },
 }] });
 

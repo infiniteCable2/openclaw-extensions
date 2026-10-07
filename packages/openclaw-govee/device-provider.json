@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "provider": "govee",
+  "capabilities": ["power", "brightness", "color", "color_temperature"],
+  "tools": { "status": "govee_status", "control": "govee_control" }
+}
