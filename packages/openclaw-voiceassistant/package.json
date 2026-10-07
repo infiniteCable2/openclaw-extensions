@@ -1,0 +1,26 @@
+{
+  "name": "@infinitecable2/openclaw-voiceassistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Paired Pi voiceassistant transport for OpenClaw's shared Meeting engine",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "openclaw.plugin.json", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": { "openclaw": ">=2026.8.1" },
+  "devDependencies": {
+    "@types/node": "26.3.0",
+    "openclaw": "link:../../../openclaw",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "compat": { "pluginApi": ">=2026.8.1", "minGatewayVersion": ">=2026.8.1" }
+  }
+}
