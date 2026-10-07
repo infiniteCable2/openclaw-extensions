@@ -45,7 +45,7 @@ describe("voiceassistant service admission", () => {
     let active = false;
     const invokeNode = vi.fn(async ({ params }: { params: { action: string } }) => {
       switch (params.action) {
-        case "status": return { payload: { wakeSequence, muted, listening: !muted, active } };
+        case "status": return { payload: { wakeSequence, muted, listening: !muted, active, persistent: false } };
         case "holdListening": return { payload: { held: !muted } };
         case "start": active = true; return { payload: { bridgeId, outputGeneration: 3 } };
         case "stop": active = false; return { payload: { closed: true } };
@@ -82,6 +82,45 @@ describe("voiceassistant service admission", () => {
     await poll();
     expect(mocks.stopEngine).toHaveBeenCalledOnce();
     expect(mocks.release).toHaveBeenCalledOnce();
+    await service.stop();
+  });
+
+  it("reopens a continuous session after bridge loss without another button press", async () => {
+    let active = false;
+    let bridgeClosed = false;
+    mocks.startEngine.mockImplementation(async () => ({
+      stop: mocks.stopEngine,
+      getHealth: () => ({ bridgeClosed }),
+    }));
+    const invokeNode = vi.fn(async ({ params }: { params: { action: string } }) => {
+      switch (params.action) {
+        case "status": return { payload: {
+          wakeSequence: 1, muted: false, listening: true, active, persistent: true,
+        } };
+        case "holdListening": return { payload: { held: true } };
+        case "start": active = true; return { payload: { bridgeId, outputGeneration: 4 } };
+        case "stop": active = false; return { payload: { closed: true } };
+        case "setActivity": return { payload: { activitySet: true } };
+        default: throw new Error("unexpected media command");
+      }
+    });
+    const config = parseVoiceassistantConfig({
+      nodeId, agentId: "steffen", transcriptionProvider: "local-media",
+    });
+    const api = { runtime: { nodes: { invoke: vi.fn() } } } as never;
+    const context = {
+      config: {}, logger: { warn: vi.fn(), info: vi.fn(), debug: vi.fn() }, invokeNode,
+    } as never;
+    const service = new VoiceassistantService(api, context, config);
+    const poll = (service as unknown as { poll(): Promise<void> }).poll.bind(service);
+    await poll();
+    await vi.waitFor(() => expect(mocks.startEngine).toHaveBeenCalledTimes(1));
+    bridgeClosed = true;
+    await poll(); // close the unhealthy engine
+    await poll(); // clear its stale node bridge
+    bridgeClosed = false;
+    await poll();
+    await vi.waitFor(() => expect(mocks.startEngine).toHaveBeenCalledTimes(2));
     await service.stop();
   });
 });

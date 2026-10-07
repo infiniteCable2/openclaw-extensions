@@ -38,6 +38,7 @@ type NodeStatus = {
   muted: boolean;
   listening: boolean;
   active: boolean;
+  persistent: boolean;
 };
 
 type ActiveSession = {
@@ -65,7 +66,7 @@ function status(value: unknown): NodeStatus {
   const raw = payload(value);
   if (!Number.isSafeInteger(raw.wakeSequence) || Number(raw.wakeSequence) < 0 ||
     typeof raw.muted !== "boolean" || typeof raw.listening !== "boolean" ||
-    typeof raw.active !== "boolean") {
+    typeof raw.active !== "boolean" || typeof raw.persistent !== "boolean") {
     throw new Error("voiceassistant node status is malformed");
   }
   return {
@@ -73,6 +74,7 @@ function status(value: unknown): NodeStatus {
     muted: raw.muted,
     listening: raw.listening,
     active: raw.active,
+    persistent: raw.persistent,
   };
 }
 
@@ -82,6 +84,7 @@ export class VoiceassistantService {
   private starting: Promise<void> | undefined;
   private active: ActiveSession | undefined;
   private lastWakeSequence = 0;
+  private nextPersistentAttemptAt = 0;
   private lastUnavailableLogAt = 0;
   private lastUnavailableClass = "";
 
@@ -117,6 +120,13 @@ export class VoiceassistantService {
       sessionKey: `agent:${this.config.agentId}:main`,
       ...(!allowAfterStop ? { signal: this.abort.signal } : {}),
     }));
+  }
+
+  async deviceCommand(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (this.abort.signal.aborted) {
+      throw new Error("voiceassistant service is stopping");
+    }
+    return await this.invoke(params, 5_000);
   }
 
   private async run(): Promise<void> {
@@ -167,12 +177,17 @@ export class VoiceassistantService {
       this.lastWakeSequence = current.wakeSequence;
       return;
     }
-    if (current.muted || !current.listening || current.wakeSequence <= this.lastWakeSequence) {
+    if (current.muted || !current.listening ||
+      (!current.persistent && current.wakeSequence <= this.lastWakeSequence) ||
+      (current.persistent && Date.now() < this.nextPersistentAttemptAt)) {
       return;
     }
     this.lastWakeSequence = current.wakeSequence;
     this.starting = this.openSession()
       .catch((error) => {
+        if (current.persistent) {
+          this.nextPersistentAttemptAt = Date.now() + 5_000;
+        }
         this.context.logger.warn(`voiceassistant session setup failed: ${error instanceof Error ? error.name : "Error"}`);
       })
       .finally(() => { this.starting = undefined; });
@@ -240,6 +255,18 @@ export class VoiceassistantService {
         throw new Error("voiceassistant bridge output generation was not confirmed");
       }
       bridgeId = started.bridgeId;
+      const activeBridgeId = started.bridgeId;
+      let lastActivity = "";
+      let activityQueue = Promise.resolve();
+      const onActivity = (activity: "listening" | "sensing" | "hearing" | "processing" | "speaking") => {
+        if (activity === lastActivity || this.abort.signal.aborted) {
+          return;
+        }
+        lastActivity = activity;
+        activityQueue = activityQueue.then(async () => {
+          await this.invoke({ action: "setActivity", bridgeId: activeBridgeId, activity }, 2_000);
+        }).catch(() => undefined);
+      };
       transport = createNodeMeetingRealtimeAudioTransport({
         runtime, nodeId: this.config.nodeId, bridgeId,
         logger: this.context.logger, commandName: VOICEASSISTANT_COMMAND,
@@ -251,6 +278,9 @@ export class VoiceassistantService {
         config: { realtime: {
           agentId: this.config.agentId,
           toolPolicy: this.config.profile.toolPolicy,
+          // The Pi can control only itself; do not change the caller's broader
+          // safe-read-only voice profile just to expose this one scoped tool.
+          additionalToolsAllow: ["voiceassistant_device"],
           agentThinkingLevel: this.config.profile.agentThinkingLevel,
           speakCommentary: this.config.profile.speakCommentary,
         } },
@@ -262,7 +292,9 @@ export class VoiceassistantService {
         requesterSessionKey: `agent:${this.config.agentId}:main`,
         ttsContext, transport, logger: this.context.logger,
         consultAgent: bindings.consultAgent,
+        onActivity,
       });
+      onActivity("listening");
       this.active = { engine, preparation, startedAt: Date.now() };
       preparation = undefined;
       transport = undefined;
