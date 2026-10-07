@@ -235,13 +235,17 @@ export class VoiceassistantService {
       if (typeof started.bridgeId !== "string" || !/^[a-f0-9]{32}$/.test(started.bridgeId)) {
         throw new Error("voiceassistant bridge start was not confirmed");
       }
+      if (typeof started.outputGeneration !== "number" ||
+        !Number.isSafeInteger(started.outputGeneration) || started.outputGeneration < 0) {
+        throw new Error("voiceassistant bridge output generation was not confirmed");
+      }
       bridgeId = started.bridgeId;
       transport = createNodeMeetingRealtimeAudioTransport({
         runtime, nodeId: this.config.nodeId, bridgeId,
         logger: this.context.logger, commandName: VOICEASSISTANT_COMMAND,
         logScope: "voiceassistant", logPrefix: "node", audioFormat: "pcm16-24khz",
+        initialOutputGeneration: started.outputGeneration,
       });
-      Reflect.set(transport, Symbol.for("openclaw.internal.meeting-node-output-generation.v1"), true);
       const bindings = createMeetingRealtimeEngineBindings({
         platform: PLATFORM,
         config: { realtime: {
