@@ -1,0 +1,42 @@
+{
+  "id": "voiceassistant",
+  "name": "Voiceassistant",
+  "description": "Bind a paired audio-only Pi node to an OpenClaw agent and the shared Meeting engine.",
+  "activation": { "onStartup": false, "onConfigPaths": ["plugins.entries.voiceassistant.config"] },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["nodeId", "agentId", "transcriptionProvider"],
+    "properties": {
+      "nodeId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+      "agentId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+      "transcriptionProvider": { "type": "string", "minLength": 1 },
+      "providers": { "type": "object", "additionalProperties": { "type": "object" } },
+      "responseStreaming": { "type": "string", "enum": ["off", "sentence"], "default": "sentence" },
+      "pollIntervalMs": { "type": "integer", "minimum": 250, "maximum": 2000, "default": 500 },
+      "agentProfiles": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "toolPolicy": { "type": "string", "enum": ["none", "safe-read-only", "owner"] },
+            "agentThinkingLevel": { "type": "string", "enum": ["off", "minimal", "low", "medium", "high"] },
+            "speakCommentary": { "type": "boolean" }
+          }
+        }
+      },
+      "waitingAudio": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["filePath", "startDelayMs", "resumeDelayMs", "volume"],
+        "properties": {
+          "filePath": { "type": "string", "minLength": 1 },
+          "startDelayMs": { "type": "integer", "minimum": 0 },
+          "resumeDelayMs": { "type": "integer", "minimum": 0 },
+          "volume": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    }
+  }
+}
