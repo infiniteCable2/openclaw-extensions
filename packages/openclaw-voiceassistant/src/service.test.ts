@@ -47,7 +47,7 @@ describe("voiceassistant service admission", () => {
       switch (params.action) {
         case "status": return { payload: { wakeSequence, muted, listening: !muted, active } };
         case "holdListening": return { payload: { held: !muted } };
-        case "start": active = true; return { payload: { bridgeId } };
+        case "start": active = true; return { payload: { bridgeId, outputGeneration: 3 } };
         case "stop": active = false; return { payload: { closed: true } };
         default: throw new Error("unexpected media command");
       }
@@ -67,6 +67,9 @@ describe("voiceassistant service admission", () => {
     wakeSequence = 1;
     await poll();
     await vi.waitFor(() => expect(mocks.startEngine).toHaveBeenCalledOnce());
+    expect(mocks.createTransport).toHaveBeenCalledWith(expect.objectContaining({
+      initialOutputGeneration: 3,
+    }));
     expect(mocks.createBindings).toHaveBeenCalledWith(expect.objectContaining({
       config: { realtime: expect.objectContaining({
         agentId: "example_owner", agentThinkingLevel: "off", speakCommentary: true,
