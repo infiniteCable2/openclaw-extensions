@@ -50,6 +50,12 @@ grants when adding the new one):
           "agentId": "example_owner",
           "transcriptionProvider": "your existing realtime STT provider",
           "responseStreaming": "sentence",
+          "waitingAudio": {
+            "filePath": "/absolute/path/to/the/existing/waiting-audio.wav",
+            "startDelayMs": 800,
+            "resumeDelayMs": 800,
+            "volume": 0.2
+          },
           "agentProfiles": {
             "example_owner": {
               "agentThinkingLevel": "off",
@@ -69,3 +75,10 @@ OpenClaw config; merge it with the current Gateway, provider and agent
 settings. Before pairing, determine a certificate-valid Gateway URL reachable
 from the Pi and test its TLS chain. Do not expose a new public Gateway port
 merely to make this sample work.
+
+Waiting audio is opt-in in this adapter: without `waitingAudio`, the shared
+Meeting engine receives no waiting-audio configuration for this endpoint.
+Use the same server-side asset and timing policy already validated for Matrix
+RTC. The Pi must play received waiting audio through the normal playout path so
+its PCM also feeds the local AEC reference. Confirm the live config and the
+node `pushAudio`/playout timings before diagnosing silence as an STT problem.

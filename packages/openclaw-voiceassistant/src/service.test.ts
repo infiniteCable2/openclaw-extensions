@@ -55,6 +55,12 @@ describe("voiceassistant service admission", () => {
     const config = parseVoiceassistantConfig({
       nodeId, agentId: "example_owner", transcriptionProvider: "local-media",
       agentProfiles: { example_owner: { agentThinkingLevel: "off", speakCommentary: true } },
+      waitingAudio: {
+        filePath: "/var/lib/openclaw/media/waiting.wav",
+        startDelayMs: 800,
+        resumeDelayMs: 800,
+        volume: 0.2,
+      },
     });
     const api = { runtime: { nodes: { invoke: vi.fn() } } } as never;
     const context = {
@@ -67,6 +73,11 @@ describe("voiceassistant service admission", () => {
     wakeSequence = 1;
     await poll();
     await vi.waitFor(() => expect(mocks.startEngine).toHaveBeenCalledOnce());
+    expect(mocks.prepare).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({
+        realtime: expect.objectContaining({ waitingAudio: config.waitingAudio }),
+      }),
+    }));
     expect(mocks.createTransport).toHaveBeenCalledWith(expect.objectContaining({
       initialOutputGeneration: 3,
     }));
