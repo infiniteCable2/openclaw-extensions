@@ -1,0 +1,36 @@
+{
+  "plugins": {
+    "entries": {
+      "device-management": {
+        "config": {
+          "providers": { "wake-on-lan": "/opt/openclaw-plugins/wake-on-lan-release" },
+          "devices": [
+            {
+              "id": "computer_owner",
+              "name": "Example computer",
+              "kind": "computer",
+              "siteId": "home_site",
+              "room": "<RAUM FESTLEGEN>",
+              "provider": "wake-on-lan",
+              "grants": { "example_owner": ["read", "control"] }
+            }
+          ]
+        }
+      },
+      "wake-on-lan": {
+        "enabled": true,
+        "config": {
+          "requestTimeoutMs": 2000,
+          "devices": [
+            {
+              "id": "computer_owner",
+              "macAddress": "<MAC-ADRESSE FESTLEGEN>",
+              "broadcastAddress": "<LOKALE BROADCAST-ADRESSE FESTLEGEN>",
+              "port": 9
+            }
+          ]
+        }
+      }
+    }
+  }
+}

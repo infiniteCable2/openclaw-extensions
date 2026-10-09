@@ -1,0 +1,39 @@
+{
+  "id": "wake-on-lan",
+  "name": "Wake on LAN",
+  "description": "Send one Wake-on-LAN packet to an explicitly configured, assigned device.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": false,
+    "onConfigPaths": ["plugins.entries.wake-on-lan.config", "plugins.entries.device-management.config"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["devices"],
+    "properties": {
+      "requestTimeoutMs": { "type": "integer", "minimum": 100, "maximum": 10000, "default": 2000 },
+      "devices": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 128,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "macAddress", "broadcastAddress"],
+          "properties": {
+            "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+            "macAddress": { "type": "string", "minLength": 17, "maxLength": 17, "pattern": "^(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$", "description": "Verified unicast MAC of the target NIC. Zero/multicast addresses are rejected by the provider." },
+            "broadcastAddress": { "type": "string", "format": "ipv4", "description": "Explicit local IPv4 destination, normally the subnet broadcast. Only private IPv4 or 255.255.255.255 is accepted." },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 9 }
+          }
+        }
+      }
+    }
+  },
+  "contracts": { "tools": ["wake_on_lan_status", "wake_on_lan"] },
+  "toolMetadata": {
+    "wake_on_lan_status": { "optional": true, "replaySafe": true, "sideEffecting": false },
+    "wake_on_lan": { "optional": true, "replaySafe": false, "sideEffecting": true }
+  }
+}

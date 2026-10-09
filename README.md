@@ -10,6 +10,9 @@ repository later without changing the OpenClaw provider contract.
 
 ## Components
 
+- `packages/openclaw-wake-on-lan`: optional agent-scoped Wake-on-LAN device
+  provider, with a neutral example-computer configuration template (source prepared;
+  no production activation implied).
 - `packages/openclaw-local-media`: native OpenClaw STT and TTS provider plugin
   (implemented and unit-tested).
 - `contracts/local-media-v1`: versioned, implementation-neutral service

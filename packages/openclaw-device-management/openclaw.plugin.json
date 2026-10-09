@@ -63,7 +63,8 @@
                 "light",
                 "switch",
                 "media_receiver",
-                "television"
+                "television",
+                "computer"
               ]
             },
             "siteId": {

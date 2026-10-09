@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "provider": "wake-on-lan",
+  "capabilities": ["wake_on_lan"],
+  "tools": { "status": "wake_on_lan_status", "control": "wake_on_lan" }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "@infinitecable2/openclaw-wake-on-lan",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent-scoped Wake-on-LAN for managed OpenClaw devices",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["device-provider.json", "dist", "examples", "openclaw.plugin.json", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": { "openclaw": ">=2026.8.1" },
+  "dependencies": {
+    "@infinitecable2/openclaw-device-management": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "26.3.0",
+    "openclaw": "2026.8.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "compat": { "pluginApi": ">=2026.8.1", "minGatewayVersion": ">=2026.8.1" },
+    "build": { "openclawVersion": "2026.8.1", "pluginSdkVersion": "2026.8.1" }
+  }
+}

@@ -16,6 +16,21 @@ const config = { providers, devices: [{
 }] };
 
 describe("device management policy", () => {
+  it("publishes the managed computer and WoL capability only to the owner", () => {
+    const registry = parseDeviceRegistry({
+      providers: { "wake-on-lan": fileURLToPath(new URL("../../openclaw-wake-on-lan/", import.meta.url)) },
+      devices: [{ id: "computer_owner", name: "Example computer", kind: "computer", siteId: "home_site", room: "Test room", provider: "wake-on-lan", grants: { example_owner: ["read", "control"] } }],
+    });
+    expect(publicDevice(registry.get("computer_owner")!, "example_owner")).toMatchObject({
+      name: "Example computer", kind: "computer", siteId: "home_site", capabilities: ["wake_on_lan"],
+      tools: { status: "wake_on_lan_status", control: "wake_on_lan" },
+    });
+    for (const agentId of ["example_member", "example_other", "ops"]) {
+      expect(authorizedDevices(registry, agentId)).toHaveLength(0);
+      expect(() => assertDeviceGrant(registry, agentId, "computer_owner", "wake-on-lan", "control")).toThrow(/not available/);
+    }
+  });
+
   it("exposes only assigned devices and tools", () => {
     const registry = parseDeviceRegistry(config);
     expect(authorizedDevices(registry, "example_owner")).toHaveLength(1);
