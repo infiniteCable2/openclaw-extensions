@@ -1,6 +1,9 @@
+import type { MeetingAgentStreamParams } from "openclaw/plugin-sdk/meeting-runtime";
+
 export type AgentVoiceProfile = {
   toolPolicy: "none" | "safe-read-only" | "owner";
   agentThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high";
+  agentStreamParams?: MeetingAgentStreamParams;
   speakCommentary: boolean;
 };
 
@@ -24,6 +27,28 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function parseAgentStreamParams(value: unknown): MeetingAgentStreamParams | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid voiceassistant agentStreamParams");
+  }
+  const params = record(value);
+  if (Object.keys(params).some((key) => key !== "serviceTier")) {
+    throw new Error("invalid voiceassistant agentStreamParams key");
+  }
+  const serviceTier = params.serviceTier;
+  if (serviceTier === undefined) {
+    return {};
+  }
+  if (serviceTier !== "auto" && serviceTier !== "default" &&
+    serviceTier !== "flex" && serviceTier !== "priority") {
+    throw new Error("invalid voiceassistant agentStreamParams serviceTier");
+  }
+  return { serviceTier };
 }
 
 export function parseVoiceassistantConfig(value: unknown): VoiceassistantConfig {
@@ -50,6 +75,7 @@ export function parseVoiceassistantConfig(value: unknown): VoiceassistantConfig 
   if (agentThinkingLevel !== undefined && !["off", "minimal", "low", "medium", "high"].includes(String(agentThinkingLevel))) {
     throw new Error("invalid voiceassistant agentThinkingLevel");
   }
+  const agentStreamParams = parseAgentStreamParams(profile.agentStreamParams);
   const responseStreaming = raw.responseStreaming ?? "sentence";
   if (responseStreaming !== "off" && responseStreaming !== "sentence") {
     throw new Error("invalid voiceassistant responseStreaming");
@@ -94,6 +120,7 @@ export function parseVoiceassistantConfig(value: unknown): VoiceassistantConfig 
     profile: {
       toolPolicy: toolPolicy as AgentVoiceProfile["toolPolicy"],
       ...(agentThinkingLevel ? { agentThinkingLevel: agentThinkingLevel as AgentVoiceProfile["agentThinkingLevel"] } : {}),
+      ...(agentStreamParams ? { agentStreamParams } : {}),
       speakCommentary,
     },
     ...(waitingAudio ? { waitingAudio } : {}),

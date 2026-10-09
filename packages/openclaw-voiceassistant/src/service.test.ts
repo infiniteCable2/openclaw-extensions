@@ -39,7 +39,12 @@ describe("voiceassistant service admission", () => {
     mocks.release.mockResolvedValue(undefined);
   });
 
-  it("starts only for a new button wake, then closes on mute", async () => {
+  it.each([
+    { name: "standard profile", agentThinkingLevel: "off", agentStreamParams: undefined },
+    { name: "priority profile", agentThinkingLevel: "medium", agentStreamParams: { serviceTier: "priority" } },
+  ])("starts $name only for a new button wake, then closes on mute", async ({
+    agentThinkingLevel, agentStreamParams,
+  }) => {
     let wakeSequence = 0;
     let muted = false;
     let active = false;
@@ -54,28 +59,36 @@ describe("voiceassistant service admission", () => {
     });
     const config = parseVoiceassistantConfig({
       nodeId, agentId: "steffen", transcriptionProvider: "local-media",
-      agentProfiles: { steffen: { agentThinkingLevel: "off", speakCommentary: true } },
+      agentProfiles: { steffen: { agentThinkingLevel, agentStreamParams, speakCommentary: true } },
     });
     const api = { runtime: { nodes: { invoke: vi.fn() } } } as never;
     const context = {
       config: {}, logger: { warn: vi.fn(), info: vi.fn(), debug: vi.fn() }, invokeNode,
     } as never;
     const service = new VoiceassistantService(api, context, config);
-    const poll = (service as unknown as { poll(): Promise<void> }).poll.bind(service);
+    const lifecycle = service as unknown as { poll(): Promise<void>; starting?: Promise<void> };
+    const poll = lifecycle.poll.bind(service);
     await poll();
     expect(mocks.prepare).not.toHaveBeenCalled();
     wakeSequence = 1;
     await poll();
-    await vi.waitFor(() => expect(mocks.startEngine).toHaveBeenCalledOnce());
+    await lifecycle.starting;
+    expect(mocks.startEngine).toHaveBeenCalledOnce();
     expect(mocks.createTransport).toHaveBeenCalledWith(expect.objectContaining({
       initialOutputGeneration: 3,
     }));
     expect(mocks.createBindings).toHaveBeenCalledWith(expect.objectContaining({
       config: { realtime: expect.objectContaining({
-        agentId: "steffen", agentThinkingLevel: "off", speakCommentary: true,
+        agentId: "steffen", agentThinkingLevel, speakCommentary: true,
         toolPolicy: "safe-read-only",
       }) },
     }));
+    const bindingConfig = mocks.createBindings.mock.calls[0]?.[0].config.realtime;
+    if (agentStreamParams) {
+      expect(bindingConfig.agentStreamParams).toEqual(agentStreamParams);
+    } else {
+      expect(bindingConfig).not.toHaveProperty("agentStreamParams");
+    }
     await poll();
     expect(mocks.startEngine).toHaveBeenCalledTimes(1);
     muted = true;

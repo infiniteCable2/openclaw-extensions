@@ -252,6 +252,9 @@ export class VoiceassistantService {
           agentId: this.config.agentId,
           toolPolicy: this.config.profile.toolPolicy,
           agentThinkingLevel: this.config.profile.agentThinkingLevel,
+          ...(this.config.profile.agentStreamParams
+            ? { agentStreamParams: this.config.profile.agentStreamParams }
+            : {}),
           speakCommentary: this.config.profile.speakCommentary,
         } },
         fullConfig: this.context.config, runtime, logger: this.context.logger,

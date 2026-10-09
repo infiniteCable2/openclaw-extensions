@@ -11,6 +11,7 @@ describe("voiceassistant config", () => {
     expect(config.nodeId).toBe(nodeId);
     expect(config.profile.toolPolicy).toBe("safe-read-only");
     expect(config.responseStreaming).toBe("sentence");
+    expect(config.profile).not.toHaveProperty("agentStreamParams");
   });
 
   it("keeps voice overrides in the selected agent profile", () => {
@@ -24,6 +25,44 @@ describe("voiceassistant config", () => {
     expect(config.profile).toEqual({
       toolPolicy: "owner", agentThinkingLevel: "off", speakCommentary: true,
     });
+  });
+
+  it("keeps a fresh service-tier override with the selected voice profile", () => {
+    const agentStreamParams = { serviceTier: "priority" };
+    const config = parseVoiceassistantConfig({
+      nodeId, agentId: "steffen", transcriptionProvider: "local-media",
+      agentProfiles: {
+        steffen: { agentThinkingLevel: "medium", agentStreamParams },
+        bodo: { agentStreamParams: { serviceTier: "default" } },
+      },
+    });
+    expect(config.profile.agentThinkingLevel).toBe("medium");
+    expect(config.profile.agentStreamParams).toEqual({ serviceTier: "priority" });
+    expect(config.profile.agentStreamParams).not.toBe(agentStreamParams);
+    if (config.profile.agentStreamParams) {
+      config.profile.agentStreamParams.serviceTier = "default";
+    }
+    expect(agentStreamParams.serviceTier).toBe("priority");
+  });
+
+  it.each(["auto", "default", "flex", "priority"])("accepts the native %s tier", (serviceTier) => {
+    const config = parseVoiceassistantConfig({
+      nodeId, agentId: "steffen", transcriptionProvider: "local-media",
+      agentProfiles: { steffen: { agentStreamParams: { serviceTier } } },
+    });
+    expect(config.profile.agentStreamParams).toEqual({ serviceTier });
+  });
+
+  it.each([
+    null, [], "priority", 1,
+    { serviceTier: "fast" }, { serviceTier: "ultrafast" }, { serviceTier: 1 },
+    { serviceTier: null }, { serviceTier: "priority", fastMode: true },
+    { apiKey: "synthetic" }, { temperature: 0 },
+  ].map((agentStreamParams) => ({ agentStreamParams })))("rejects malformed or unsupported stream params %j", ({ agentStreamParams }) => {
+    expect(() => parseVoiceassistantConfig({
+      nodeId, agentId: "steffen", transcriptionProvider: "local-media",
+      agentProfiles: { steffen: { agentStreamParams } },
+    })).toThrow(/agentStreamParams/);
   });
 
   it("rejects commentary without sentence streaming", () => {

@@ -20,6 +20,13 @@ device, **not the human speaker**. Granting `owner` would expose write-capable
 agent tools to anyone physically able to speak near the device and needs a
 separate admission decision.
 
+A profile can set `agentStreamParams: { "serviceTier": "priority" }` to request
+a service tier for its live conversation consults. The supported values are
+`auto`, `default`, `flex`, and `priority`; availability and cost depend on the
+model provider. This option keeps the profile's model and thinking level and
+does not change chat, voice-message, utility, or compaction calls. Omit it to
+keep the configured model parameters. No other stream parameters are accepted.
+
 The node command is deliberately marked dangerous and requires an explicit
 Gateway command allow grant. Its policy accepts only the configured node and
 `deviceFamily=voiceassistant`, and forwards only the bounded media actions.
