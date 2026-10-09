@@ -321,11 +321,11 @@ describe("local media speech provider", () => {
         Response.json({
           object: "list",
           model: "chatterbox",
-          default_voice: "example_member",
+          default_voice: "example_voice_member",
           data: [
             {
-              id: "example_member",
-              name: "example_member",
+              id: "example_voice_member",
+              name: "Example member voice",
               locale: "de-DE",
               description: "Ruhige Stimme",
               reference_path: "/private/voice.wav",
@@ -343,8 +343,8 @@ describe("local media speech provider", () => {
       }),
     ).resolves.toEqual([
       {
-        id: "example_member",
-        name: "example_member",
+        id: "example_voice_member",
+        name: "Example member voice",
         locale: "de-DE",
         description: "Ruhige Stimme",
       },

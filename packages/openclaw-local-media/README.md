@@ -80,7 +80,7 @@ status only after the requested GPU model is ready.
       "local-media": {
         baseUrl: "http://127.0.0.1:8020/v1",
         model: "chatterbox",
-        voice: "example_member",
+        voice: "example_voice_member",
         localService: {
           command: "/absolute/path/to/openclaw-local-tts",
           args: [
