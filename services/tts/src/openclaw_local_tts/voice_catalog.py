@@ -10,7 +10,7 @@ import re
 _VOICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _CATALOG_KEYS = frozenset({"schema_version", "default_voice", "voices"})
 _VOICE_KEYS = frozenset(
-    {"id", "name", "reference_path", "locale", "description", "generation"}
+    {"id", "name", "reference_path", "reference_text", "locale", "description", "generation"}
 )
 _GENERATION_RANGES = {
     "exaggeration": (0.0, 2.0),
@@ -27,6 +27,7 @@ class VoiceDefinition:
     locale: str | None = None
     description: str | None = None
     generation: dict[str, float] | None = None
+    reference_text: str | None = None
 
     def public_dict(self) -> dict[str, str]:
         value = {"id": self.id, "name": self.name}
@@ -137,6 +138,9 @@ def load_voice_catalog(path: Path) -> VoiceCatalog:
                     raw_voice.get("description"), field="description", maximum=512
                 ),
                 generation=_generation_settings(raw_voice.get("generation")),
+                reference_text=_optional_string(
+                    raw_voice.get("reference_text"), field="reference_text", maximum=4096
+                ),
             )
         )
         ids.add(voice_id)

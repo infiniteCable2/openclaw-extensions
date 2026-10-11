@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "backend": "kitten-tts-2",
+  "sdk_commit": "8ed679c08e0976b236bd5d0dc4ec9ddd98b0da98",
+  "weights": "packed",
+  "decoder": "default",
+  "model_repo": "KittenML/kitten-tts-2",
+  "model_revision": "f2eee74f4467855ad58fe16f1fb7b7df473263fd",
+  "codec_repo": "ResembleAI/chatterbox-turbo",
+  "codec_revision": "749d1c1a46eb10492095d68fbcf55691ccf137cd",
+  "model_files": {
+    "config.json": [2196, "19dfbdd98697acefe35c8cfb2e36c1416f06ede378797b2ee9413c9c4b42fb21"],
+    "LICENSE.md": [12478, "f2429d9172b1e192102ab07552d7ca86c981f13598cbe3b51cc1fbd94604e1a3"],
+    "lm/config.json": [1359, "91378d01ae13755f130e3b714abfe57e8a48d15a88fc0d3a1414f30af76d3f2b"],
+    "lm/generation_config.json": [214, "d3e057bbca66b92f33a8bdc6a1301014e0e4ab69b3b3fd2e442d9fe0c69f3431"],
+    "lm/added_tokens.json": [157239, "f757d3b2e5381b23765a7177bb76afd6f44f3ac8e9eb585fc39333e4769001f3"],
+    "lm/merges.txt": [1671853, "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"],
+    "lm/special_tokens_map.json": [450, "a67cddf2259d77b5021cfa9a5608e60779f19c4828567b2ae46604f23fc0c569"],
+    "lm/tokenizer.json": [12649770, "99644fcf19a9aff57b247b4e56fffe878c65d9c230d21a46caf9acf8f54d31d7"],
+    "lm/tokenizer_config.json": [1166768, "ce07c343b7bb1d9b822475beb46e39b3883706bfb5bbc3d080142ccd321beea3"],
+    "lm/vocab.json": [2776833, "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"],
+    "lm/model-ternary.safetensors": [954467780, "8dd6cc318c16cbb177dd44d92521955d3abaa84a8910aae9ffb312c5ae920054"],
+    "speaker/model.safetensors": [17418240, "c435292860671aa96e94bd19fcea055241c8ef05548e1e441a659b2bfd79fad5"],
+    "speaker/LICENSE": [1061, "14d7016ad68e7394d6e6b78d96cc2ae431c905287b89674cfdf021e79e62b8ba"]
+  },
+  "codec_file": [1064875036, "d65cb687a2ed581ee6cc297e919ffefa63386944f42364ae13b78a594945514f"]
+}

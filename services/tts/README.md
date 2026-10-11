@@ -4,6 +4,11 @@ Standalone OpenAI-compatible text-to-speech worker for the native `local-media`
 provider. The production backend is Chatterbox Multilingual v3 on CUDA with a
 service-owned catalog of explicitly configured reference voices.
 
+An optional KittenTTS 2 CUDA backend and speech-only structured expression
+contract are prepared; they are not production-selected. Read
+[KITTEN_TTS2.md](KITTEN_TTS2.md) for licensing/provisioning gates, limitations,
+remaining per-channel OpenClaw integration and the required resource comparison.
+
 The process loads the model before opening its HTTP listener. It has no CPU,
 cloud, alternate-model, or network-download fallback. A fixed absolute ffmpeg
 binary performs bounded Opus/WAV/PCM encoding; it is not discovered through
@@ -16,6 +21,7 @@ binary performs bounded Opus/WAV/PCM encoding; it is not discovered through
 - `GET /status`: content-free state and bounded queue depth.
 - `GET /v1/voices`: public voice ids and descriptions, never private paths or
   generation settings.
+- `GET /v1/capabilities`: content-free supported expression controls or null.
 - `POST /v1/audio/speech`: OpenAI-compatible synthesis request.
 - `POST /v1/audio/speech/stream`: framed PCM segments for live transports.
 - `POST /v1/requests/{requestId}/cancel`: cooperative request cancellation.

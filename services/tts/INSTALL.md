@@ -4,6 +4,10 @@ This production profile targets Debian 13, Python 3.13, NVIDIA CUDA 12.4, and
 the pinned Chatterbox Multilingual v3 artifact. It has no CPU, alternate model,
 cloud, or download-at-runtime fallback.
 
+The optional KittenTTS 2 profile is only prepared, not installed by these
+Chatterbox scripts. See [KITTEN_TTS2.md](KITTEN_TTS2.md) before creating a
+separate dependency/model artifact set or selecting that backend.
+
 ## Runtime and artifacts
 
 For a connected reproducible build, run
@@ -33,6 +37,7 @@ Each voice entry owns:
 - a stable public `id` used by OpenClaw personas and requests;
 - a display `name` plus optional locale and description;
 - its private `reference_path`;
+- an optional private `reference_text` transcript (mandatory for KittenTTS 2);
 - optional Chatterbox `generation` values (`exaggeration`, `temperature`, and
   `cfg_weight`).
 

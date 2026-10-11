@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "openclaw-local-tts"
 version = "0.1.0"
-description = "Fail-closed CUDA Chatterbox speech service for OpenClaw"
+description = "Fail-closed CUDA speech service with optional synthesis backends for OpenClaw"
 requires-python = ">=3.13,<3.14"
 dependencies = [
   "Flask==3.1.3",

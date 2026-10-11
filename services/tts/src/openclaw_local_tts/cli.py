@@ -23,14 +23,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1", choices=["127.0.0.1", "::1"])
     parser.add_argument("--port", type=int, default=8020)
     parser.add_argument("--model-path", type=Path, required=True)
-    parser.add_argument("--model-id", default="chatterbox")
+    parser.add_argument("--backend", choices=["chatterbox", "kitten2"], default="chatterbox")
+    parser.add_argument("--model-id")
+    parser.add_argument("--kitten-weights", choices=["packed", "emb4"])
+    parser.add_argument("--kitten-cache-dir", type=Path)
     parser.add_argument("--voice-catalog", type=Path)
     parser.add_argument("--voice-reference", action="append", type=_voice_reference, default=[])
     parser.add_argument("--default-voice")
     parser.add_argument("--language", default="de")
-    parser.add_argument("--chatterbox-source", type=Path, required=True)
-    parser.add_argument("--perth-source", type=Path, required=True)
-    parser.add_argument("--s3tokenizer-source", type=Path, required=True)
+    parser.add_argument("--chatterbox-source", type=Path)
+    parser.add_argument("--perth-source", type=Path)
+    parser.add_argument("--s3tokenizer-source", type=Path)
     parser.add_argument("--ffmpeg-path", type=Path, default=Path("/usr/bin/ffmpeg"))
     parser.add_argument("--max-text-characters", type=int, default=4096)
     parser.add_argument("--max-audio-bytes", type=int, default=64 * 1024 * 1024)
@@ -60,18 +63,36 @@ def main() -> None:
         default_voice = args.default_voice or "default"
         public_voices = None
         voice_generation_settings = None
-    backend = ChatterboxBackend(
-        model_path=args.model_path,
-        voice_references=voice_references,
-        default_voice=default_voice,
-        chatterbox_source=args.chatterbox_source,
-        perth_source=args.perth_source,
-        s3tokenizer_source=args.s3tokenizer_source,
-        public_voices=public_voices,
-        voice_generation_settings=voice_generation_settings,
-        model_id=args.model_id,
-        language=args.language,
-    )
+    if args.backend == "kitten2":
+        if not args.voice_catalog:
+            raise SystemExit("KittenTTS 2 requires a voice catalog with reference_text")
+        if args.kitten_cache_dir is None:
+            raise SystemExit("KittenTTS 2 requires a separately provisioned offline codec cache")
+        if args.chatterbox_source or args.perth_source or args.s3tokenizer_source:
+            raise SystemExit("Chatterbox source arguments cannot be applied to KittenTTS 2")
+        from .kitten_backend import KittenTts2Backend
+
+        backend = KittenTts2Backend(
+            model_path=args.model_path, cache_dir=args.kitten_cache_dir, catalog=catalog,
+            model_id=args.model_id or "kitten-tts-2", weights=args.kitten_weights or "packed",
+        )
+    else:
+        if args.kitten_weights is not None or args.kitten_cache_dir is not None:
+            raise SystemExit("Kitten arguments cannot be applied to Chatterbox")
+        if not all([args.chatterbox_source, args.perth_source, args.s3tokenizer_source]):
+            raise SystemExit("Chatterbox requires all three offline source paths")
+        backend = ChatterboxBackend(
+            model_path=args.model_path,
+            voice_references=voice_references,
+            default_voice=default_voice,
+            chatterbox_source=args.chatterbox_source,
+            perth_source=args.perth_source,
+            s3tokenizer_source=args.s3tokenizer_source,
+            public_voices=public_voices,
+            voice_generation_settings=voice_generation_settings,
+            model_id=args.model_id or "chatterbox",
+            language=args.language,
+        )
     encoder = FfmpegAudioEncoder(
         ffmpeg_path=args.ffmpeg_path,
         max_output_bytes=args.max_audio_bytes,

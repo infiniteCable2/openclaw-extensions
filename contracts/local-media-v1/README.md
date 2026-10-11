@@ -78,6 +78,25 @@ This is a resource limit, not a speech/noise gate for ordinary attachments.
 TTS bounds cumulative rendered PCM as well as encoded output. Native-rate PCM
 is returned bit-exactly without an unnecessary ffmpeg resampling process.
 
+## Optional synthesis expression plan
+
+`GET /v1/capabilities` exposes versioned, content-free expression metadata, or
+null when the backend does not support expression. Only explicitly advertised
+controls may be used. The synthesis endpoints accept an additive `expression`
+object with an optional emotion and ordered text/emphasis/event parts.
+Concatenated text parts must equal trimmed `input` exactly. Parts and controls
+are bounded; unsupported or invalid plans fail before inference.
+
+This is speech-only direction, not a second transcript or a visible-message
+markup language. OpenClaw owns channel opt-in, model-context discovery and the
+unmodified visible projection. A service has no agent/channel identities.
+Backend-specific markup is rendered only after plan validation. Native OpenClaw
+TTS directives must be resolved upstream, never executed again by the worker.
+Omission preserves normal synthesis; an unsupported backend must not silently
+ignore a supplied plan. Reference transcripts are private catalog data, not
+capability or public voice metadata. See the TTS backend preparation document
+for current provider integration status and tested limitations.
+
 ## Optional transcription progress
 
 `POST /v1/audio/transcriptions` keeps its JSON response by default. The optional

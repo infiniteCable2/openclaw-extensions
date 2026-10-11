@@ -113,3 +113,15 @@ def test_catalog_rejects_a_symlinked_reference(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="non-symlink"):
         load_voice_catalog(catalog_path)
+
+
+def test_reference_transcript_is_private_and_preserved(tmp_path) -> None:
+    reference = tmp_path / "example_reference.wav"
+    reference.write_bytes(b"synthetic")
+    catalog_path, _first, _second = _write_catalog(tmp_path, voices=[{
+        "id": "example_voice_member", "name": "Example voice",
+        "reference_path": str(reference), "reference_text": "Eine private Referenz.",
+    }])
+    catalog = load_voice_catalog(catalog_path)
+    assert catalog.voices[0].reference_text == "Eine private Referenz."
+    assert catalog.public_voices == ({"id": "example_voice_member", "name": "Example voice"},)

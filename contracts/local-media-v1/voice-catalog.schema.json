@@ -28,6 +28,10 @@
         "id": { "$ref": "#/$defs/voiceId" },
         "name": { "type": "string", "minLength": 1, "maxLength": 128 },
         "reference_path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "reference_text": {
+          "type": "string", "minLength": 1, "maxLength": 4096,
+          "description": "Private clone-reference transcript, required by KittenTTS 2. Never public metadata."
+        },
         "locale": { "type": "string", "minLength": 1, "maxLength": 32 },
         "description": { "type": "string", "minLength": 1, "maxLength": 512 },
         "generation": {

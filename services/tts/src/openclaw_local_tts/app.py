@@ -9,13 +9,14 @@ from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .audio import join_speech_segments
-from .speech_segments import split_speech_text
+from .expression import prepare_expression_segments, validate_plain_expression_text
+from .speech_segments import SpeechSegment, split_speech_text
 from .types import AudioEncoder, RenderedPcm, SynthesisBackend
 from .request_lifecycle import RequestRegistry, RequestWork, ServiceError, ServiceState
 
 _ALLOWED_FORMATS = {"opus", "pcm", "wav"}
 _ALLOWED_SAMPLE_RATES = {8_000, 16_000, 24_000, 48_000}
-_REQUEST_FIELDS = {"input", "model", "voice", "response_format", "sample_rate"}
+_REQUEST_FIELDS = {"input", "model", "voice", "response_format", "sample_rate", "expression"}
 _MAX_STREAM_BYTES = 64 * 1024 * 1024
 
 
@@ -46,7 +47,7 @@ def _parse_synthesis_request(
     backend: SynthesisBackend,
     *,
     max_text_characters: int,
-) -> tuple[str, str, str, int | None]:
+) -> tuple[list[SpeechSegment], str, str, int | None, bool]:
     if not request.is_json:
         raise ServiceError("invalid_request", "JSON body is required", 400, retryable=False)
     body = request.get_json(silent=False)
@@ -69,7 +70,20 @@ def _parse_synthesis_request(
         sample_rate = sample_rate_value
     else:
         raise ServiceError("invalid_request", "sample rate is unsupported", 400, retryable=False)
-    return text, voice, output_format, sample_rate
+    expressive = "expression" in body
+    capabilities = getattr(backend, "expression_capabilities", None)
+    try:
+        if expressive:
+            if not capabilities or not callable(getattr(backend, "synthesize_expressive_segments", None)):
+                raise ValueError("requested expression is unsupported by this backend")
+            segments = prepare_expression_segments(text, body["expression"], capabilities)
+        else:
+            if capabilities:
+                validate_plain_expression_text(text)
+            segments = split_speech_text(text)
+    except ValueError as error:
+        raise ServiceError("invalid_request", str(error), 400, retryable=False) from None
+    return segments, voice, output_format, sample_rate, expressive
 
 
 def _append_pause(rendered: RenderedPcm, pause_ms: int) -> RenderedPcm:
@@ -100,9 +114,10 @@ def create_app(
     state = ServiceState(capacity=1 + max_queued_requests)
     registry = RequestRegistry(timeout_ms=request_timeout_ms)
 
-    def render_segments(segments, *, voice: str, work: RequestWork) -> Iterator[RenderedPcm]:
+    def render_segments(segments, *, voice: str, work: RequestWork, expressive: bool) -> Iterator[RenderedPcm]:
         work.checkpoint()
-        rendered = backend.synthesize_segments((segment.text for segment in segments), voice_id=voice)
+        synthesize = backend.synthesize_expressive_segments if expressive else backend.synthesize_segments
+        rendered = synthesize((segment.text for segment in segments), voice_id=voice)
         total_bytes = 0
         try:
             iterator = iter(rendered)
@@ -173,20 +188,27 @@ def create_app(
             data=list(backend.public_voices),
         )
 
+    @app.get("/v1/capabilities")
+    def capabilities() -> Response:
+        return jsonify(
+            schema_version=1,
+            model=backend.model_id,
+            expression=getattr(backend, "expression_capabilities", None),
+        )
+
     @app.post("/v1/audio/speech")
     def synthesize() -> tuple[Response, int] | Response:
         work: RequestWork | None = None
         try:
             work = registry.register(request.headers)
-            text, voice, output_format, sample_rate = _parse_synthesis_request(
+            segments, voice, output_format, sample_rate, expressive = _parse_synthesis_request(
                 backend,
                 max_text_characters=max_text_characters,
             )
 
             with state.admit(work):
-                segments = split_speech_text(text)
                 rendered_segments = list(
-                    render_segments(segments, voice=voice, work=work)
+                    render_segments(segments, voice=voice, work=work, expressive=expressive)
                 )
                 rendered = join_speech_segments(
                     rendered_segments,
@@ -231,7 +253,7 @@ def create_app(
         try:
             work = registry.register(request.headers)
             resources.callback(registry.finish, work)
-            text, voice, output_format, sample_rate = _parse_synthesis_request(
+            segments, voice, output_format, sample_rate, expressive = _parse_synthesis_request(
                 backend,
                 max_text_characters=max_text_characters,
             )
@@ -242,14 +264,13 @@ def create_app(
                     400,
                     retryable=False,
                 )
-            segments = split_speech_text(text)
             resources.enter_context(state.admit(work))
 
             def generate() -> Iterator[bytes]:
                 total_bytes = 0
                 rendered_count = 0
                 try:
-                    rendered_segments = render_segments(segments, voice=voice, work=work)
+                    rendered_segments = render_segments(segments, voice=voice, work=work, expressive=expressive)
                     resources.callback(rendered_segments.close)
                     for index, rendered in enumerate(rendered_segments):
                         rendered_count += 1

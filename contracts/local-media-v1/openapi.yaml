@@ -9,6 +9,41 @@ info:
 servers:
   - url: http://127.0.0.1:8000
 paths:
+  /v1/capabilities:
+    get:
+      operationId: getSpeechCapabilities
+      responses:
+        "200":
+          description: Versioned, content-free backend capability metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [schema_version, model, expression]
+                properties:
+                  schema_version:
+                    const: 1
+                  model:
+                    type: string
+                    maxLength: 128
+                  expression:
+                    oneOf:
+                      - type: "null"
+                      - type: object
+                        additionalProperties: false
+                        required: [emotions, vocalEvents, emphasis, whisper]
+                        properties:
+                          emotions:
+                            type: array
+                            maxItems: 32
+                            items: { type: string, maxLength: 32 }
+                          vocalEvents:
+                            type: array
+                            maxItems: 32
+                            items: { type: string, maxLength: 32 }
+                          emphasis: { type: boolean }
+                          whisper: { type: boolean }
   /live:
     get:
       operationId: getLiveness
@@ -396,6 +431,39 @@ components:
         sample_rate:
           type: integer
           enum: [8000, 16000, 24000, 48000]
+        expression:
+          $ref: "#/components/schemas/SpeechExpression"
+    SpeechExpression:
+      type: object
+      additionalProperties: false
+      required: [parts]
+      description: >-
+        Optional speech-only direction. The concatenation of all text parts
+        must equal the trimmed input exactly. No backend/native tags in input
+        or text parts. Unsupported controls/backend fail before inference.
+        The caller owns channel opt-in and the unmodified visible-text projection.
+      properties:
+        emotion:
+          type: string
+          minLength: 1
+          maxLength: 32
+        parts:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items:
+            oneOf:
+              - type: object
+                additionalProperties: false
+                required: [text]
+                properties:
+                  text: { type: string, minLength: 1, maxLength: 4096 }
+                  emphasis: { type: boolean }
+              - type: object
+                additionalProperties: false
+                required: [event]
+                properties:
+                  event: { type: string, minLength: 1, maxLength: 32 }
     VoiceList:
       type: object
       additionalProperties: false
