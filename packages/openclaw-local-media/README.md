@@ -122,6 +122,28 @@ This preserves the agreed Matrix behavior: inbound text gets a text reply;
 an inbound voice note is transcribed before the agent run and gets the normal
 text reply plus a synthesized voice note.
 
+## Optional KittenTTS 2 candidate
+
+The speech provider also recognizes `model: "kitten-tts-2"` for a separately
+installed local Kitten worker. This does not change the default Chatterbox
+backend or start/download another model. See
+[the service preparation and qualification gates](../../services/tts/KITTEN_TTS2.md).
+
+The matching core candidate accepts a separate, structured `voiceExpression`
+alongside the existing shared message tool's `voiceText`. Text parts must project
+exactly to the plain voice text; the visible `message` is never backend markup.
+The plugin forwards the same plan for buffered speech and telephony streams.
+Expression metadata applies only to the actually selected Kitten model, including
+per-request model overrides. Chatterbox and unknown models advertise no expression
+support. Whisper is not advertised for the cloned voice.
+
+This feature needs the matching emitted OpenClaw SDK/core, explicit exact
+agent/channel/output-target permission, and a qualified worker whose
+`/v1/capabilities` matches the reviewed model metadata. Provider metadata alone
+does not enable it. Automatic RTC final replies, commentary and greetings still
+need the common native structured-delivery/context integration; do not claim
+that adding this plugin enables those model-generated expressions.
+
 Live meeting transports can select `local-media` as their realtime
 transcription provider. The adapter accepts OpenClaw's 8 kHz G.711 mu-law
 meeting stream, detects speech endpoints, converts bounded audio batches to WAV in

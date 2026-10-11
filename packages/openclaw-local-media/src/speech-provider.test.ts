@@ -53,6 +53,95 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<Buffer[]>
 }
 
 describe("local media speech provider", () => {
+  it("advertises expression only for the reviewed selected model", () => {
+    const { provider, providerConfig } = configuredProvider();
+    expect(provider.getExpressionCapabilities?.({ providerConfig })).toBeUndefined();
+    const metadata = provider.getExpressionCapabilities?.({
+      providerConfig: { ...providerConfig, model: "kitten-tts-2" },
+    });
+    expect(metadata).toMatchObject({
+      emotions: expect.arrayContaining(["joyful"]),
+      whisper: false,
+    });
+    expect(metadata?.vocalEvents).toContain("laugh");
+    expect(
+      provider.getExpressionCapabilities?.({ providerConfig: { model: "unknown" } }),
+    ).toBeUndefined();
+    expect(provider.getExpressionCapabilities?.({ providerConfig: {} })).toBeUndefined();
+    expect(
+      provider.getExpressionCapabilities?.({
+        providerConfig,
+        providerOverrides: { modelId: " kitten-tts-2 " },
+      }),
+    ).toEqual(metadata);
+    expect(
+      provider.getExpressionCapabilities?.({
+        providerConfig: { model: "kitten-tts-2" },
+        providerOverrides: { model: "chatterbox" },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("forwards admitted speech-only expression with unchanged plain text for voice notes", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(new Uint8Array([1, 2]), { headers: { "content-type": "audio/ogg" } }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { provider, providerConfig } = configuredProvider();
+    const expression = {
+      emotion: "joyful",
+      parts: [{ text: "Hello " }, { event: "laugh" }, { text: "world." }],
+    };
+    await provider.synthesize({
+      text: "Hello world.",
+      cfg: {},
+      providerConfig: { ...providerConfig, model: "kitten-tts-2", voice: "example_voice" },
+      expression,
+      target: "voice-note",
+      timeoutMs: 1_000,
+    });
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body).toEqual({
+      input: "Hello world.",
+      model: "kitten-tts-2",
+      voice: "example_voice",
+      response_format: "opus",
+      expression,
+    });
+  });
+
+  it("forwards the same expression for buffered and streamed telephony", async () => {
+    const fetchMock = vi.fn(async (url: string, _init: RequestInit) =>
+      url.endsWith("/stream")
+        ? new Response(framedPcmStream([Uint8Array.of(1, 2)]), {
+            headers: {
+              "content-type": "application/vnd.openclaw.pcm-stream",
+              "x-openclaw-audio-sample-rate": "24000",
+            },
+          })
+        : new Response(Uint8Array.of(1, 2)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { provider, providerConfig } = configuredProvider();
+    const expression = { parts: [{ text: "Hello.", emphasis: true }] };
+    const request = {
+      text: "Hello.",
+      cfg: {},
+      providerConfig: { ...providerConfig, model: "kitten-tts-2" },
+      expression,
+      timeoutMs: 1_000,
+    };
+    await provider.synthesizeTelephony?.(request);
+    const streamed = await provider.streamSynthesizeTelephony(request);
+    await readStream(streamed.audioStream);
+    const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init.body)));
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toEqual(bodies[1]);
+    expect(bodies[0]).toMatchObject({ input: "Hello.", expression, sample_rate: 24000 });
+  });
+
   it("drops prefetched PCM when the caller aborts between frames", async () => {
     const upstreamCancel = vi.fn();
     const frame = Buffer.from([0, 0, 0, 2, 1, 2]);

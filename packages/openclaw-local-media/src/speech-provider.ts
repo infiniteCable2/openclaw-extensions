@@ -1,7 +1,8 @@
-import type { SpeechProviderPlugin } from "openclaw/plugin-sdk/plugin-entry";
+import type { SpeechExpression, SpeechProviderPlugin } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { requireLoopbackBaseUrl, resolveLoopbackBaseUrl } from "./local-url.js";
 import { createMediaRequestLifecycle } from "./request-lifecycle.js";
+import { getLocalSpeechExpressionCapabilities, KITTEN_TTS2_MODEL_ID } from "./speech-expression.js";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_AUDIO_RESPONSE_BYTES = 64 * 1024 * 1024;
@@ -15,6 +16,7 @@ type LocalMediaSpeechProvider = SpeechProviderPlugin & {
     text: string;
     providerConfig: SpeechProviderConfig;
     providerOverrides?: SpeechProviderOverrides;
+    expression?: SpeechExpression;
     timeoutMs: number;
     signal?: AbortSignal;
   }): Promise<{
@@ -59,6 +61,7 @@ async function requestSpeech(params: {
   text: string;
   providerConfig: SpeechProviderConfig;
   overrides?: SpeechProviderOverrides;
+  expression?: SpeechExpression;
   responseFormat: "opus" | "wav" | "pcm";
   sampleRate?: number;
   timeoutMs: number;
@@ -78,6 +81,7 @@ async function requestSpeech(params: {
         voice: selection.voice,
         response_format: params.responseFormat,
         ...(params.sampleRate ? { sample_rate: params.sampleRate } : {}),
+        ...(params.expression ? { expression: params.expression } : {}),
       }),
       redirect: "error",
       signal: job.signal,
@@ -99,6 +103,7 @@ async function requestSpeechStream(params: {
   text: string;
   providerConfig: SpeechProviderConfig;
   overrides?: SpeechProviderOverrides;
+  expression?: SpeechExpression;
   sampleRate: number;
   timeoutMs: number;
   signal?: AbortSignal;
@@ -122,6 +127,7 @@ async function requestSpeechStream(params: {
         voice: selection.voice,
         response_format: "pcm",
         sample_rate: params.sampleRate,
+        ...(params.expression ? { expression: params.expression } : {}),
       }),
       redirect: "error",
       signal: job.signal,
@@ -367,9 +373,13 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
     autoSelectOrder: 10,
     defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
     defaultModel: DEFAULT_TTS_MODEL,
-    models: [DEFAULT_TTS_MODEL],
+    models: [DEFAULT_TTS_MODEL, KITTEN_TTS2_MODEL_ID],
     voices: [DEFAULT_TTS_VOICE],
     resolveConfig: ({ rawConfig }) => resolveProviderConfig(rawConfig),
+    getExpressionCapabilities: ({ providerConfig, providerOverrides }) =>
+      getLocalSpeechExpressionCapabilities(
+        readSpeechSelection(providerConfig, providerOverrides).model,
+      ),
     resolveTalkOverrides: ({ params }) => {
       const model = readString(params.modelId);
       const voice = readString(params.voiceId);
@@ -401,6 +411,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
           text: req.text,
           providerConfig: req.providerConfig,
           overrides: req.providerOverrides,
+          expression: req.expression,
           responseFormat,
           timeoutMs: req.timeoutMs,
         }),
@@ -418,6 +429,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
           text: req.text,
           providerConfig: req.providerConfig,
           overrides: req.providerOverrides,
+          expression: req.expression,
           responseFormat: "pcm",
           sampleRate,
           timeoutMs: req.timeoutMs,
@@ -433,6 +445,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
           text: req.text,
           providerConfig: req.providerConfig,
           overrides: req.providerOverrides,
+          expression: req.expression,
           sampleRate,
           timeoutMs: req.timeoutMs,
           signal: req.signal,
