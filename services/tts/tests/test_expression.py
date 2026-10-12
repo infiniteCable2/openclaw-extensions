@@ -47,6 +47,10 @@ def plan():
     ]}
 
 
+def expression_headers(client):
+    return {"X-OpenClaw-Service-Generation": client.get("/ready").headers["X-OpenClaw-Service-Generation"]}
+
+
 def test_structured_plan_keeps_visible_text_exact_and_controls_atomic():
     source = "Ein längerer Testsatz mit unterschiedlichen Wörtern. " * 10 + "Ende."
     expression = {"emotion": "tender", "parts": [{"text": source}, {"event": "sigh"}]}
@@ -61,10 +65,11 @@ def test_structured_plan_keeps_visible_text_exact_and_controls_atomic():
 def test_synthesis_and_stream_use_same_opt_in_plan():
     backend = Backend()
     client = create_app(backend, Encoder()).test_client()
-    assert client.post("/v1/audio/speech", json=body(expression=plan())).status_code == 200
+    headers = expression_headers(client)
+    assert client.post("/v1/audio/speech", json=body(expression=plan()), headers=headers).status_code == 200
     first = list(backend.calls)
     backend.calls.clear()
-    response = client.post("/v1/audio/speech/stream", json=body(expression=plan()))
+    response = client.post("/v1/audio/speech/stream", json=body(expression=plan()), headers=headers)
     assert response.status_code == 200
     frames = response.data
     assert frames[-4:] == b"\0\0\0\0"
@@ -90,7 +95,7 @@ def test_capabilities_do_not_advertise_whisper_or_private_references():
 def test_invalid_plan_is_rejected_before_inference(expression):
     backend = Backend()
     client = create_app(backend, Encoder()).test_client()
-    response = client.post("/v1/audio/speech", json=body(expression=expression))
+    response = client.post("/v1/audio/speech", json=body(expression=expression), headers=expression_headers(client))
     assert response.status_code == 400
     assert backend.calls == []
 
@@ -99,7 +104,7 @@ def test_unsupported_backend_does_not_silently_ignore_expression():
     backend = Backend()
     backend.expression_capabilities = None
     client = create_app(backend, Encoder()).test_client()
-    assert client.post("/v1/audio/speech", json=body(expression=plan())).status_code == 400
+    assert client.post("/v1/audio/speech", json=body(expression=plan()), headers=expression_headers(client)).status_code == 400
     assert client.post("/v1/audio/speech", json=body()).status_code == 200
     assert backend.calls == [("Wir freuen uns sehr.", False)]
 
@@ -111,6 +116,24 @@ def test_native_or_backend_tags_are_not_a_second_command_dsl(text):
     request = body()
     request["input"] = text
     assert client.post("/v1/audio/speech", json=request).status_code == 400
+    assert backend.calls == []
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/audio/speech", "/v1/audio/speech/stream"])
+@pytest.mark.parametrize("pieces", [
+    ["[whis", "per] Hello."],
+    ["<lau", "gh> Hello."],
+    ["((", "(Hello.", "))", ")"],
+    ["[", "[tts:voice=x]] Hello."],
+    ["OCEXPRESSION", "TOKEN Hello."],
+])
+def test_split_raw_controls_are_rejected_before_inference(endpoint, pieces):
+    backend = Backend()
+    client = create_app(backend, Encoder()).test_client()
+    request = body(expression={"parts": [{"text": piece} for piece in pieces]})
+    request["input"] = "".join(pieces)
+    response = client.post(endpoint, json=request, headers=expression_headers(client))
+    assert response.status_code == 400
     assert backend.calls == []
 
 
@@ -131,3 +154,20 @@ def test_plain_citations_and_comparisons_are_preserved():
 def test_controls_cannot_change_word_boundaries(parts):
     with pytest.raises(ValueError, match="split a word"):
         prepare_expression_segments("Hallo.", {"parts": parts}, KITTEN_EXPRESSION_CAPABILITIES)
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/audio/speech", "/v1/audio/speech/stream"])
+def test_worker_replacement_rejects_stale_or_missing_expression_admission(endpoint):
+    first = create_app(Backend(), Encoder()).test_client()
+    backend = Backend()
+    replacement = create_app(backend, Encoder()).test_client()
+    old = expression_headers(first)
+    ready = replacement.get("/ready")
+    capabilities = replacement.get("/v1/capabilities")
+    assert ready.get_json()["generation"] == capabilities.get_json()["generation"]
+    assert ready.headers["X-OpenClaw-Service-Generation"] != old["X-OpenClaw-Service-Generation"]
+    for headers in ({}, old):
+        response = replacement.post(endpoint, json=body(expression=plan()), headers=headers)
+        assert response.status_code == 409
+        assert response.get_json()["error"]["code"] == "generation_conflict"
+    assert backend.calls == []

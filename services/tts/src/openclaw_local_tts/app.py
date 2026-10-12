@@ -4,6 +4,7 @@ import logging
 import struct
 from contextlib import ExitStack
 from typing import Iterator
+from uuid import uuid4
 
 from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
@@ -47,6 +48,7 @@ def _parse_synthesis_request(
     backend: SynthesisBackend,
     *,
     max_text_characters: int,
+    generation: str,
 ) -> tuple[list[SpeechSegment], str, str, int | None, bool]:
     if not request.is_json:
         raise ServiceError("invalid_request", "JSON body is required", 400, retryable=False)
@@ -71,6 +73,11 @@ def _parse_synthesis_request(
     else:
         raise ServiceError("invalid_request", "sample rate is unsupported", 400, retryable=False)
     expressive = "expression" in body
+    if expressive and request.headers.get("X-OpenClaw-Service-Generation") != generation:
+        raise ServiceError(
+            "generation_conflict", "speech worker generation changed; prepare speech again", 409,
+            retryable=False,
+        )
     capabilities = getattr(backend, "expression_capabilities", None)
     try:
         if expressive:
@@ -113,6 +120,13 @@ def create_app(
     app.logger.setLevel(logging.INFO)
     state = ServiceState(capacity=1 + max_queued_requests)
     registry = RequestRegistry(timeout_ms=request_timeout_ms)
+    # The backend is already warmed and immutable for this application's lifetime.
+    generation = uuid4().hex
+
+    @app.after_request
+    def identify_worker(response: Response) -> Response:
+        response.headers["X-OpenClaw-Service-Generation"] = generation
+        return response
 
     def render_segments(segments, *, voice: str, work: RequestWork, expressive: bool) -> Iterator[RenderedPcm]:
         work.checkpoint()
@@ -150,6 +164,7 @@ def create_app(
             "ready": True,
             "state": "busy" if active else "ready",
             "model": backend.model_id,
+            "generation": generation,
             "requestedBackend": backend.requested_backend,
             "observedBackend": backend.observed_backend,
             "activeRequests": active,
@@ -193,6 +208,7 @@ def create_app(
         return jsonify(
             schema_version=1,
             model=backend.model_id,
+            generation=generation,
             expression=getattr(backend, "expression_capabilities", None),
         )
 
@@ -204,6 +220,7 @@ def create_app(
             segments, voice, output_format, sample_rate, expressive = _parse_synthesis_request(
                 backend,
                 max_text_characters=max_text_characters,
+                generation=generation,
             )
 
             with state.admit(work):
@@ -256,6 +273,7 @@ def create_app(
             segments, voice, output_format, sample_rate, expressive = _parse_synthesis_request(
                 backend,
                 max_text_characters=max_text_characters,
+                generation=generation,
             )
             if output_format != "pcm":
                 raise ServiceError(

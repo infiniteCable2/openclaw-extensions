@@ -87,6 +87,17 @@ object with an optional emotion and ordered text/emphasis/event parts.
 Concatenated text parts must equal trimmed `input` exactly. Parts and controls
 are bounded; unsupported or invalid plans fail before inference.
 
+The warmed TTS application publishes one opaque worker `generation` in readiness
+and capabilities JSON and `X-OpenClaw-Service-Generation` response headers. The
+native demand bridge preserves that header and retires its connections when the
+actual worker exits; its persistent CPU owner is not a worker identity.
+Capabilities are fetched once during native speech readiness for that generation,
+bounded to 16 KiB, and never polled per audio chunk or while listing providers.
+Expressive requests must carry the same generation header. Missing or replaced
+generation returns non-retryable HTTP 409 (`generation_conflict`) before inference;
+the caller must prepare speech again rather than silently reroute the utterance.
+Ordinary requests keep their existing optional lifecycle headers.
+
 This is speech-only direction, not a second transcript or a visible-message
 markup language. OpenClaw owns channel opt-in, model-context discovery and the
 unmodified visible projection. A service has no agent/channel identities.

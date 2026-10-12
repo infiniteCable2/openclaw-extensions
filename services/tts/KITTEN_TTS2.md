@@ -136,12 +136,24 @@ model, including per-request overrides, not only its default configuration.
 The provider uses no hot-path capability polling; candidate installation must
 verify `/v1/capabilities` against that reviewed selected-model metadata.
 
-This explicit structured-message slice is not an automatic emotion emitter for
-every final response, commentary or greeting. Automatic RTC responses currently
-remain ordinary speech: the native consult block callback only supplies text.
-Do not advertise a functioning live-model expression feature until admitted
-capabilities, exact output scope and structured facts cross that native boundary.
-Continue at the canonical speech/delivery owners, not Matrix/RTC-specific parsers:
+The matching core candidate now prepares service-backed capabilities for the
+exact agent/channel/output target and supplies bounded native message guidance.
+Structured facts cross the existing commentary, answer and greeting boundaries;
+greeting preparation captures speech without playing it before media readiness.
+Conversational voice notes retain native message routing and clean captions.
+These are candidate source changes, not a selected production backend or proof
+of real-model quality, speed or GPU memory use. Expression remains opt-in.
+
+Automatic reply modality follows the originating request and the existing TTS
+mode. Later conversational audio accepted by a text-started run supplements its
+task without independently converting its replies to audio. Voice-started work
+retains configured voice replies; `always`, `off`, `tagged` and explicit message
+actions retain their native meaning. Commentary follows its separate configured
+policy. Input adoption, queue ownership and transcript recording are unchanged;
+no second queue or tool-catalog publication mechanism is introduced for this case.
+
+Qualification remains at the canonical speech/delivery owners, not
+Matrix/RTC-specific parsers:
 
 1. Provider admission reads bounded capability metadata once for that worker
    generation; invalidate it when model/worker selection changes. No hot-path

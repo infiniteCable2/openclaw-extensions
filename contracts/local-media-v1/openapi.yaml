@@ -15,18 +15,23 @@ paths:
       responses:
         "200":
           description: Versioned, content-free backend capability metadata.
+          headers:
+            X-OpenClaw-Service-Generation:
+              $ref: "#/components/headers/ServiceGeneration"
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: false
-                required: [schema_version, model, expression]
+                required: [schema_version, model, generation, expression]
                 properties:
                   schema_version:
                     const: 1
                   model:
                     type: string
                     maxLength: 128
+                  generation:
+                    $ref: "#/components/schemas/ServiceGeneration"
                   expression:
                     oneOf:
                       - type: "null"
@@ -60,6 +65,9 @@ paths:
       responses:
         "200":
           description: The requested model and compute backend are ready.
+          headers:
+            X-OpenClaw-Service-Generation:
+              $ref: "#/components/headers/ServiceGeneration"
           content:
             application/json:
               schema:
@@ -158,6 +166,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/RequestId"
         - $ref: "#/components/parameters/RequestTimeout"
+        - $ref: "#/components/parameters/ServiceGeneration"
       requestBody:
         required: true
         content:
@@ -167,6 +176,9 @@ paths:
       responses:
         "200":
           description: Encoded speech audio.
+          headers:
+            X-OpenClaw-Service-Generation:
+              $ref: "#/components/headers/ServiceGeneration"
           content:
             audio/ogg:
               schema:
@@ -198,6 +210,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/RequestId"
         - $ref: "#/components/parameters/RequestTimeout"
+        - $ref: "#/components/parameters/ServiceGeneration"
       requestBody:
         required: true
         content:
@@ -211,6 +224,9 @@ paths:
             that many PCM16 mono bytes. Zero length is successful completion;
             EOF without it is failure/cancellation. Native sample rate is returned
             in X-OpenClaw-Audio-Sample-Rate.
+          headers:
+            X-OpenClaw-Service-Generation:
+              $ref: "#/components/headers/ServiceGeneration"
           content:
             application/vnd.openclaw.pcm-stream:
               schema:
@@ -253,7 +269,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/VoiceList"
 components:
+  headers:
+    ServiceGeneration:
+      description: Opaque identity of the warmed worker, never a persistent supervisor PID.
+      schema:
+        $ref: "#/components/schemas/ServiceGeneration"
   parameters:
+    ServiceGeneration:
+      name: X-OpenClaw-Service-Generation
+      in: header
+      required: false
+      schema:
+        $ref: "#/components/schemas/ServiceGeneration"
+      description: Mandatory when expression is supplied; stale or missing admission fails with generation_conflict.
     RequestId:
       name: X-OpenClaw-Request-Id
       in: header
@@ -272,6 +300,9 @@ components:
         maximum: 300000
       description: Monotonic request budget including queue and preparation time.
   schemas:
+    ServiceGeneration:
+      type: string
+      pattern: "^[A-Za-z0-9._-]{1,128}$"
     Liveness:
       type: object
       additionalProperties: false
@@ -291,6 +322,8 @@ components:
         model:
           type: string
           maxLength: 128
+        generation:
+          $ref: "#/components/schemas/ServiceGeneration"
         requestedBackend:
           enum: [cuda, cpu]
         observedBackend:
@@ -309,6 +342,8 @@ components:
         model:
           type: string
           maxLength: 128
+        generation:
+          $ref: "#/components/schemas/ServiceGeneration"
         requestedBackend:
           enum: [cuda, cpu]
         observedBackend:
@@ -364,7 +399,14 @@ components:
               required: [code, message, retryable]
               properties:
                 code:
-                  enum: [inference_failed, cancelled, deadline_exceeded, payload_too_large, invalid_request]
+                  enum:
+                    [
+                      inference_failed,
+                      cancelled,
+                      deadline_exceeded,
+                      payload_too_large,
+                      invalid_request,
+                    ]
                 message:
                   type: string
                   maxLength: 512
@@ -524,6 +566,7 @@ components:
                 - timeout
                 - deadline_exceeded
                 - cancelled
+                - generation_conflict
                 - accelerator_unavailable
                 - model_unavailable
                 - inference_failed
@@ -540,7 +583,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Cancelled:
-      description: Request cancelled or its identifier is already in use/retired.
+      description: Request cancelled, identifier already in use/retired, or expressive worker generation changed.
       content:
         application/json:
           schema:

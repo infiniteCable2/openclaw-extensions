@@ -66,9 +66,11 @@ def service():
 def test_liveness_and_readiness_are_content_free(service) -> None:
     client, _backend, _encoder = service
     assert client.get("/live").get_json() == {"live": True}
-    assert client.get("/ready").get_json() == {
+    ready = client.get("/ready")
+    assert ready.get_json() == {
         "activeRequests": 0,
         "model": "chatterbox",
+        "generation": ready.headers["X-OpenClaw-Service-Generation"],
         "observedBackend": "cuda",
         "queueDepth": 0,
         "ready": True,

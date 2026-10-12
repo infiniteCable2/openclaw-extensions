@@ -37,6 +37,8 @@ def prepare_expression_segments(
     capabilities: Mapping[str, object],
 ) -> list[SpeechSegment]:
     """Validate an opt-in plan, preserve its plain projection and protect atomic controls."""
+    # Part boundaries must not turn admitted plain text into backend markup when joined.
+    validate_plain_expression_text(text)
     if not isinstance(plan, dict) or set(plan) - {"emotion", "parts"}:
         raise ValueError("expression plan fields are invalid")
     emotion = plan.get("emotion")
