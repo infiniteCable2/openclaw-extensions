@@ -4,6 +4,7 @@ import argparse
 import http.client
 import http.server
 import os
+import re
 import signal
 import socket
 import threading
@@ -74,18 +75,23 @@ class ServiceOwner:
         self._next_start = 0.0
         self._runner: LeaseSupervisor | None = None
         self._runner_thread: threading.Thread | None = None
+        self._demand_retire: set[Callable[[], None]] = set()
 
-    def add_demand(self) -> None:
+    def add_demand(self, on_worker_exit: Callable[[], None] | None = None) -> None:
         with self._lock:
             self._demands += 1
             self._idle_since = None
+            if on_worker_exit is not None:
+                self._demand_retire.add(on_worker_exit)
         self._wake.set()
 
-    def remove_demand(self) -> None:
+    def remove_demand(self, on_worker_exit: Callable[[], None] | None = None) -> None:
         with self._lock:
             if self._demands <= 0:
                 raise RuntimeError("unbalanced demand release")
             self._demands -= 1
+            if on_worker_exit is not None:
+                self._demand_retire.discard(on_worker_exit)
         self._wake.set()
 
     def _run_worker(self, runner: LeaseSupervisor) -> None:
@@ -97,6 +103,12 @@ class ServiceOwner:
                 broker_timeout_seconds=self.broker_timeout_seconds,
             )
         finally:
+            # Existing demand subprocesses must retire with the actual worker,
+            # even when this CPU owner keeps running and later starts another.
+            with self._lock:
+                retire = tuple(self._demand_retire)
+            for callback in retire:
+                callback()
             self._wake.set()
 
     def reconcile(self) -> None:
@@ -173,9 +185,14 @@ class DemandSocket:
 
     def _handle(self, connection: socket.socket) -> None:
         added = False
+        def retire() -> None:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         try:
             with connection:
-                self.owner.add_demand()
+                self.owner.add_demand(retire)
                 added = True
                 connection.sendall(b"READY\n")
                 connection.settimeout(1.0)
@@ -189,7 +206,7 @@ class DemandSocket:
             pass
         finally:
             if added:
-                self.owner.remove_demand()
+                self.owner.remove_demand(retire)
             self._slots.release()
 
     def serve(self, *, owner_alive: Callable[[], bool] = lambda: True) -> None:
@@ -306,12 +323,17 @@ def demand_main() -> None:
                 worker = http.client.HTTPConnection(parsed.hostname, worker_port, timeout=1.0)
                 try:
                     worker.request("GET", parsed.path)
-                    ready = worker.getresponse().status == 200
+                    response = worker.getresponse()
+                    ready = response.status == 200
+                    generation = response.getheader("X-OpenClaw-Service-Generation")
                 finally:
                     worker.close()
             except (OSError, http.client.HTTPException):
                 ready = False
+                generation = None
             self.send_response(200 if ready else 503)
+            if ready and generation is not None and re.fullmatch(r"[A-Za-z0-9._-]{1,128}", generation):
+                self.send_header("X-OpenClaw-Service-Generation", generation)
             self.send_header("Content-Length", "0")
             self.end_headers()
 

@@ -108,6 +108,20 @@ def test_missing_broker_policy_does_not_preload_model() -> None:
     assert runners == []
 
 
+def test_worker_exit_retires_demand_without_stopping_cpu_owner() -> None:
+    runners: list[FakeRunner] = []
+    owner = make_owner(FakePolicy(False), [0.0], runners)
+    retired = threading.Event()
+    owner.add_demand(retired.set)
+    owner.reconcile()
+    assert runners[0].started.wait(2)
+    runners[0].stopped.set()
+    owner._runner_thread.join(timeout=2)  # type: ignore[union-attr]
+    assert retired.is_set()
+    assert not owner._stop.is_set()
+    owner.remove_demand(retired.set)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="Linux service socket integration")
 def test_demand_connector_readiness_is_separate_from_warm_worker(tmp_path) -> None:
     worker_ready = threading.Event()
@@ -115,6 +129,7 @@ def test_demand_connector_readiness_is_separate_from_warm_worker(tmp_path) -> No
     class Worker(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             self.send_response(200 if worker_ready.is_set() else 503)
+            self.send_header("X-OpenClaw-Service-Generation", "worker1")
             self.send_header("Content-Length", "0")
             self.end_headers()
 
@@ -126,10 +141,10 @@ def test_demand_connector_readiness_is_separate_from_warm_worker(tmp_path) -> No
             self.added = threading.Event()
             self.removed = threading.Event()
 
-        def add_demand(self) -> None:
+        def add_demand(self, on_worker_exit=None) -> None:
             self.added.set()
 
-        def remove_demand(self) -> None:
+        def remove_demand(self, on_worker_exit=None) -> None:
             self.removed.set()
 
     def health(port: int) -> int | None:
@@ -183,6 +198,12 @@ def test_demand_connector_readiness_is_separate_from_warm_worker(tmp_path) -> No
             await_status(health_port, 503)
             worker_ready.set()
             await_status(health_port, 200)
+            connection = http.client.HTTPConnection("127.0.0.1", health_port, timeout=0.2)
+            try:
+                connection.request("GET", "/ready")
+                assert connection.getresponse().getheader("X-OpenClaw-Service-Generation") == "worker1"
+            finally:
+                connection.close()
         finally:
             child.terminate()
             child.wait(timeout=3)
