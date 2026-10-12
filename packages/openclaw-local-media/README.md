@@ -134,8 +134,13 @@ alongside the existing shared message tool's `voiceText`. Text parts must projec
 exactly to the plain voice text; the visible `message` is never backend markup.
 The plugin forwards the same plan for buffered speech and telephony streams.
 Expression metadata applies only to the actually selected Kitten model, including
-per-request model overrides. Chatterbox and unknown models advertise no expression
-support. Whisper is not advertised for the cloned voice.
+per-request model overrides. Native readiness reads the worker's bounded
+`/v1/capabilities` once per provider/worker generation and binds those facts to
+the existing local-service admission signal. Cold inventory never wakes a model.
+The CPU demand bridge forwards the worker generation and retires on worker exit;
+the supervisor's PID is not a generation. Expressive requests carry the admitted
+generation and reject replacement explicitly. Chatterbox and unknown models
+advertise no expression support. Whisper is not advertised for the cloned voice.
 
 This feature needs the matching emitted OpenClaw SDK/core, explicit exact
 agent/channel/output-target permission, and a qualified worker whose

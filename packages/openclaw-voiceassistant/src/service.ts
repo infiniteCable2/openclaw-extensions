@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { OpenClawPluginApi, OpenClawPluginServiceContext } from "openclaw/plugin-sdk/plugin-entry";
+import type {
+  OpenClawPluginApi,
+  OpenClawPluginServiceContext,
+} from "openclaw/plugin-sdk/plugin-entry";
 import {
   createMeetingRealtimeEngineBindings,
   createNodeMeetingRealtimeAudioTransport,
@@ -64,9 +67,14 @@ function payload(value: unknown): Record<string, unknown> {
 
 function status(value: unknown): NodeStatus {
   const raw = payload(value);
-  if (!Number.isSafeInteger(raw.wakeSequence) || Number(raw.wakeSequence) < 0 ||
-    typeof raw.muted !== "boolean" || typeof raw.listening !== "boolean" ||
-    typeof raw.active !== "boolean" || typeof raw.persistent !== "boolean") {
+  if (
+    !Number.isSafeInteger(raw.wakeSequence) ||
+    Number(raw.wakeSequence) < 0 ||
+    typeof raw.muted !== "boolean" ||
+    typeof raw.listening !== "boolean" ||
+    typeof raw.active !== "boolean" ||
+    typeof raw.persistent !== "boolean"
+  ) {
     throw new Error("voiceassistant node status is malformed");
   }
   return {
@@ -110,16 +118,20 @@ export class VoiceassistantService {
   }
 
   private async invoke(
-    params: Record<string, unknown>, timeoutMs = 2_000, allowAfterStop = false,
+    params: Record<string, unknown>,
+    timeoutMs = 2_000,
+    allowAfterStop = false,
   ): Promise<Record<string, unknown>> {
-    return payload(await this.context.invokeNode!({
-      nodeId: this.config.nodeId,
-      command: VOICEASSISTANT_COMMAND,
-      params,
-      timeoutMs,
-      sessionKey: `agent:${this.config.agentId}:main`,
-      ...(!allowAfterStop ? { signal: this.abort.signal } : {}),
-    }));
+    return payload(
+      await this.context.invokeNode!({
+        nodeId: this.config.nodeId,
+        command: VOICEASSISTANT_COMMAND,
+        params,
+        timeoutMs,
+        sessionKey: `agent:${this.config.agentId}:main`,
+        ...(!allowAfterStop ? { signal: this.abort.signal } : {}),
+      }),
+    );
   }
 
   async deviceCommand(params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -161,9 +173,13 @@ export class VoiceassistantService {
     }
     if (this.active) {
       this.lastWakeSequence = current.wakeSequence;
-      if (!current.active || current.muted || !current.listening ||
+      if (
+        !current.active ||
+        current.muted ||
+        !current.listening ||
         this.active.engine.getHealth().bridgeClosed ||
-        Date.now() - this.active.startedAt > 30 * 60_000) {
+        Date.now() - this.active.startedAt > 30 * 60_000
+      ) {
         await this.closeSession();
       }
       return;
@@ -177,9 +193,12 @@ export class VoiceassistantService {
       this.lastWakeSequence = current.wakeSequence;
       return;
     }
-    if (current.muted || !current.listening ||
+    if (
+      current.muted ||
+      !current.listening ||
       (!current.persistent && current.wakeSequence <= this.lastWakeSequence) ||
-      (current.persistent && Date.now() < this.nextPersistentAttemptAt)) {
+      (current.persistent && Date.now() < this.nextPersistentAttemptAt)
+    ) {
       return;
     }
     this.lastWakeSequence = current.wakeSequence;
@@ -188,9 +207,13 @@ export class VoiceassistantService {
         if (current.persistent) {
           this.nextPersistentAttemptAt = Date.now() + 5_000;
         }
-        this.context.logger.warn(`voiceassistant session setup failed: ${error instanceof Error ? error.name : "Error"}`);
+        this.context.logger.warn(
+          `voiceassistant session setup failed: ${error instanceof Error ? error.name : "Error"}`,
+        );
       })
-      .finally(() => { this.starting = undefined; });
+      .finally(() => {
+        this.starting = undefined;
+      });
   }
 
   private engineConfig(): MeetingRealtimeEngineConfig {
@@ -234,7 +257,10 @@ export class VoiceassistantService {
         },
       };
       preparation = await prepareMeetingAgentRealtimeEngine({
-        config, fullConfig: this.context.config, runtime, ttsContext,
+        config,
+        fullConfig: this.context.config,
+        runtime,
+        ttsContext,
         signal: this.abort.signal,
       });
       if (keepListening) {
@@ -250,47 +276,69 @@ export class VoiceassistantService {
       if (typeof started.bridgeId !== "string" || !/^[a-f0-9]{32}$/.test(started.bridgeId)) {
         throw new Error("voiceassistant bridge start was not confirmed");
       }
-      if (typeof started.outputGeneration !== "number" ||
-        !Number.isSafeInteger(started.outputGeneration) || started.outputGeneration < 0) {
+      if (
+        typeof started.outputGeneration !== "number" ||
+        !Number.isSafeInteger(started.outputGeneration) ||
+        started.outputGeneration < 0
+      ) {
         throw new Error("voiceassistant bridge output generation was not confirmed");
       }
       bridgeId = started.bridgeId;
       const activeBridgeId = started.bridgeId;
       let lastActivity = "";
       let activityQueue = Promise.resolve();
-      const onActivity = (activity: "listening" | "sensing" | "hearing" | "processing" | "speaking") => {
+      const onActivity = (
+        activity: "listening" | "sensing" | "hearing" | "processing" | "speaking",
+      ) => {
         if (activity === lastActivity || this.abort.signal.aborted) {
           return;
         }
         lastActivity = activity;
-        activityQueue = activityQueue.then(async () => {
-          await this.invoke({ action: "setActivity", bridgeId: activeBridgeId, activity }, 2_000);
-        }).catch(() => undefined);
+        activityQueue = activityQueue
+          .then(async () => {
+            await this.invoke({ action: "setActivity", bridgeId: activeBridgeId, activity }, 2_000);
+          })
+          .catch(() => undefined);
       };
       transport = createNodeMeetingRealtimeAudioTransport({
-        runtime, nodeId: this.config.nodeId, bridgeId,
-        logger: this.context.logger, commandName: VOICEASSISTANT_COMMAND,
-        logScope: "voiceassistant", logPrefix: "node", audioFormat: "pcm16-24khz",
+        runtime,
+        nodeId: this.config.nodeId,
+        bridgeId,
+        logger: this.context.logger,
+        commandName: VOICEASSISTANT_COMMAND,
+        logScope: "voiceassistant",
+        logPrefix: "node",
+        audioFormat: "pcm16-24khz",
         initialOutputGeneration: started.outputGeneration,
       });
       const bindings = createMeetingRealtimeEngineBindings({
         platform: PLATFORM,
-        config: { realtime: {
-          agentId: this.config.agentId,
-          toolPolicy: this.config.profile.toolPolicy,
-          // The Pi can control only itself; do not change the caller's broader
-          // safe-read-only voice profile just to expose this one scoped tool.
-          additionalToolsAllow: ["voiceassistant_device"],
-          agentThinkingLevel: this.config.profile.agentThinkingLevel,
-          speakCommentary: this.config.profile.speakCommentary,
-        } },
-        fullConfig: this.context.config, runtime, logger: this.context.logger,
+        config: {
+          realtime: {
+            agentId: this.config.agentId,
+            toolPolicy: this.config.profile.toolPolicy,
+            // The Pi can control only itself; do not change the caller's broader
+            // safe-read-only voice profile just to expose this one scoped tool.
+            additionalToolsAllow: ["voiceassistant_device"],
+            agentThinkingLevel: this.config.profile.agentThinkingLevel,
+            speakCommentary: this.config.profile.speakCommentary,
+          },
+        },
+        fullConfig: this.context.config,
+        runtime,
+        logger: this.context.logger,
+        ttsContext,
       });
       const engine = await startMeetingAgentRealtimeEngine({
-        config, fullConfig: this.context.config, runtime,
-        platform: bindings.platform, meetingSessionId: randomUUID(),
+        config,
+        fullConfig: this.context.config,
+        runtime,
+        platform: bindings.platform,
+        meetingSessionId: randomUUID(),
         requesterSessionKey: `agent:${this.config.agentId}:main`,
-        ttsContext, transport, logger: this.context.logger,
+        ttsContext,
+        transport,
+        logger: this.context.logger,
         consultAgent: bindings.consultAgent,
         onActivity,
       });

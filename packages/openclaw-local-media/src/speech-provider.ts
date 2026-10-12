@@ -2,7 +2,7 @@ import type { SpeechProviderPlugin } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { requireLoopbackBaseUrl, resolveLoopbackBaseUrl } from "./local-url.js";
 import { createMediaRequestLifecycle } from "./request-lifecycle.js";
-import { getLocalSpeechExpressionCapabilities, KITTEN_TTS2_MODEL_ID } from "./speech-expression.js";
+import { createLocalSpeechExpressionAdmission, KITTEN_TTS2_MODEL_ID } from "./speech-expression.js";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_AUDIO_RESPONSE_BYTES = 64 * 1024 * 1024;
@@ -14,6 +14,9 @@ type SpeechProviderOverrides = Record<string, unknown>;
 type SpeechExpression = NonNullable<
   Parameters<SpeechProviderPlugin["synthesize"]>[0]["expression"]
 >;
+type LocalServiceAdmission = Parameters<
+  SpeechProviderPlugin["synthesize"]
+>[0]["localServiceAdmission"];
 type LocalMediaSpeechProvider = SpeechProviderPlugin & {
   streamSynthesizeTelephony(req: {
     text: string;
@@ -22,6 +25,7 @@ type LocalMediaSpeechProvider = SpeechProviderPlugin & {
     expression?: SpeechExpression;
     timeoutMs: number;
     signal?: AbortSignal;
+    localServiceAdmission?: LocalServiceAdmission;
   }): Promise<{
     audioStream: ReadableStream<Uint8Array>;
     outputFormat: string;
@@ -47,17 +51,23 @@ function resolveProviderConfig(rawConfig: Record<string, unknown>): SpeechProvid
 function readSpeechSelection(
   config: SpeechProviderConfig,
   overrides?: SpeechProviderOverrides,
+  persona?: SpeechProviderConfig,
 ): { model: string; voice: string } {
-  return {
-    model:
-      readString(overrides?.model ?? overrides?.modelId) ??
-      readString(config.model ?? config.modelId) ??
-      DEFAULT_TTS_MODEL,
-    voice:
-      readString(overrides?.voice ?? overrides?.voiceId) ??
-      readString(config.voice ?? config.voiceId) ??
-      DEFAULT_TTS_VOICE,
-  };
+  let model: string | undefined;
+  let voice: string | undefined;
+  // Native speaker compatibility normalizes each authored layer separately.
+  // Choose a winner before merging; aliases left in another layer cannot win.
+  for (const layer of [overrides, persona, config]) {
+    if (!layer) continue;
+    model ??= readString(layer.model) ?? readString(layer.modelId);
+    voice ??=
+      readString(layer.speakerVoiceId) ??
+      readString(layer.speakerVoice) ??
+      readString(layer.voiceId) ??
+      readString(layer.voiceName) ??
+      readString(layer.voice);
+  }
+  return { model: model ?? DEFAULT_TTS_MODEL, voice: voice ?? DEFAULT_TTS_VOICE };
 }
 
 async function requestSpeech(params: {
@@ -68,16 +78,34 @@ async function requestSpeech(params: {
   responseFormat: "opus" | "wav" | "pcm";
   sampleRate?: number;
   timeoutMs: number;
+  signal?: AbortSignal;
+  localServiceAdmission?: LocalServiceAdmission;
 }): Promise<Buffer> {
   const baseUrl = requireLoopbackBaseUrl(params.providerConfig.baseUrl, "Local media TTS");
   const selection = readSpeechSelection(params.providerConfig, params.overrides);
-  const job = createMediaRequestLifecycle({ baseUrl, timeoutMs: params.timeoutMs });
+  const job = createMediaRequestLifecycle({
+    baseUrl,
+    timeoutMs: params.timeoutMs,
+    signal:
+      params.expression && params.localServiceAdmission
+        ? AbortSignal.any([
+            params.localServiceAdmission.signal,
+            ...(params.signal ? [params.signal] : []),
+          ])
+        : params.signal,
+  });
   let response: Response | undefined;
   try {
     job.signal.throwIfAborted();
     response = await fetch(`${baseUrl}/audio/speech`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...job.headers },
+      headers: {
+        "Content-Type": "application/json",
+        ...job.headers,
+        ...(params.expression && params.localServiceAdmission
+          ? { "X-OpenClaw-Service-Generation": params.localServiceAdmission.generation }
+          : {}),
+      },
       body: JSON.stringify({
         input: params.text,
         model: selection.model,
@@ -89,10 +117,13 @@ async function requestSpeech(params: {
       redirect: "error",
       signal: job.signal,
     });
+    assertExpressionResponse(response, params.expression, params.localServiceAdmission);
     if (!response.ok) {
       throw new Error(`Local media TTS failed with HTTP ${response.status}`);
     }
-    return await readBoundedAudioResponse(response);
+    const audio = await readBoundedAudioResponse(response);
+    job.signal.throwIfAborted();
+    return audio;
   } catch (error) {
     await response?.body?.cancel().catch(() => undefined);
     await job.cancel();
@@ -110,20 +141,33 @@ async function requestSpeechStream(params: {
   sampleRate: number;
   timeoutMs: number;
   signal?: AbortSignal;
+  localServiceAdmission?: LocalServiceAdmission;
 }): Promise<ReadableStream<Uint8Array>> {
   const baseUrl = requireLoopbackBaseUrl(params.providerConfig.baseUrl, "Local media TTS");
   const selection = readSpeechSelection(params.providerConfig, params.overrides);
   const job = createMediaRequestLifecycle({
     baseUrl,
     timeoutMs: params.timeoutMs,
-    signal: params.signal,
+    signal:
+      params.expression && params.localServiceAdmission
+        ? AbortSignal.any([
+            params.localServiceAdmission.signal,
+            ...(params.signal ? [params.signal] : []),
+          ])
+        : params.signal,
   });
   let response: Response | undefined;
   try {
     job.signal.throwIfAborted();
     response = await fetch(`${baseUrl}/audio/speech/stream`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...job.headers },
+      headers: {
+        "Content-Type": "application/json",
+        ...job.headers,
+        ...(params.expression && params.localServiceAdmission
+          ? { "X-OpenClaw-Service-Generation": params.localServiceAdmission.generation }
+          : {}),
+      },
       body: JSON.stringify({
         input: params.text,
         model: selection.model,
@@ -135,6 +179,7 @@ async function requestSpeechStream(params: {
       redirect: "error",
       signal: job.signal,
     });
+    assertExpressionResponse(response, params.expression, params.localServiceAdmission);
     if (!response.ok) {
       throw new Error(`Local media streaming TTS failed with HTTP ${response.status}`);
     }
@@ -259,6 +304,22 @@ async function requestSpeechStream(params: {
   }
 }
 
+function assertExpressionResponse(
+  response: Response,
+  expression?: SpeechExpression,
+  admission?: LocalServiceAdmission,
+): void {
+  if (
+    expression &&
+    (response.status === 409 ||
+      response.headers.get("x-openclaw-service-generation") !== admission?.generation)
+  ) {
+    const error = new Error("Local media speech worker generation changed; prepare speech again");
+    error.name = "LocalServiceAdmissionError";
+    throw error;
+  }
+}
+
 async function readBoundedAudioResponse(response: Response): Promise<Buffer> {
   const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (
@@ -370,6 +431,25 @@ async function readBoundedVoiceCatalog(response: Response): Promise<
 }
 
 export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
+  const expressionAdmission = createLocalSpeechExpressionAdmission();
+  const requireExpressionAdmission = (request: {
+    expression?: SpeechExpression;
+    providerConfig: SpeechProviderConfig;
+    providerOverrides?: SpeechProviderOverrides;
+    localServiceAdmission?: LocalServiceAdmission;
+  }) => {
+    if (!request.expression) return;
+    request.localServiceAdmission?.signal.throwIfAborted();
+    if (
+      !expressionAdmission.get(
+        request.localServiceAdmission,
+        requireLoopbackBaseUrl(request.providerConfig.baseUrl, "Local media TTS"),
+        readSpeechSelection(request.providerConfig, request.providerOverrides).model,
+      )
+    ) {
+      throw new Error("Local media speech expression has no admitted service capabilities");
+    }
+  };
   return {
     id: LOCAL_MEDIA_PROVIDER_ID,
     label: "Local media",
@@ -379,10 +459,44 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
     models: [DEFAULT_TTS_MODEL, KITTEN_TTS2_MODEL_ID],
     voices: [DEFAULT_TTS_VOICE],
     resolveConfig: ({ rawConfig }) => resolveProviderConfig(rawConfig),
-    getExpressionCapabilities: ({ providerConfig, providerOverrides }) =>
-      getLocalSpeechExpressionCapabilities(
-        readSpeechSelection(providerConfig, providerOverrides).model,
+    prepareSynthesis: ({ providerConfig, providerOverrides, personaProviderConfig }) => {
+      const selection = readSpeechSelection(
+        providerConfig,
+        providerOverrides,
+        personaProviderConfig,
+      );
+      // This provider's voice names and IDs are aliases for the same public wire
+      // identifier. Publish one exact winner, including defaults, to native facts.
+      const canonical = {
+        model: selection.model,
+        modelId: selection.model,
+        speakerVoiceId: selection.voice,
+        speakerVoice: selection.voice,
+        voiceId: selection.voice,
+        voiceName: selection.voice,
+        voice: selection.voice,
+      };
+      return {
+        providerConfig: { ...providerConfig, ...canonical },
+        ...(providerOverrides ? { providerOverrides: { ...providerOverrides, ...canonical } } : {}),
+      };
+    },
+    prepareExpressionCapabilities: (context) =>
+      expressionAdmission.prepare(
+        context,
+        requireLoopbackBaseUrl(context.providerConfig.baseUrl, "Local media TTS"),
+        readSpeechSelection(context.providerConfig, context.providerOverrides).model,
       ),
+    getExpressionCapabilities: ({ providerConfig, providerOverrides, localServiceAdmission }) => {
+      const baseUrl = resolveLoopbackBaseUrl(providerConfig.baseUrl);
+      return baseUrl
+        ? expressionAdmission.get(
+            localServiceAdmission,
+            baseUrl,
+            readSpeechSelection(providerConfig, providerOverrides).model,
+          )
+        : undefined;
+    },
     resolveTalkOverrides: ({ params }) => {
       const model = readString(params.modelId);
       const voice = readString(params.voiceId);
@@ -407,6 +521,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
       return await readBoundedVoiceCatalog(response);
     },
     async synthesize(req) {
+      requireExpressionAdmission(req);
       const voiceNote = req.target === "voice-note";
       const responseFormat = voiceNote ? "opus" : "wav";
       return {
@@ -417,6 +532,8 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
           expression: req.expression,
           responseFormat,
           timeoutMs: req.timeoutMs,
+          signal: req.signal,
+          localServiceAdmission: req.localServiceAdmission,
         }),
         outputFormat: responseFormat,
         fileExtension: voiceNote ? ".ogg" : ".wav",
@@ -424,6 +541,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
       };
     },
     async synthesizeTelephony(req) {
+      requireExpressionAdmission(req);
       // Preserve the local backend's speech bandwidth. The host already owns
       // conversion to a transport's 8/16/24 kHz format from result.sampleRate.
       const sampleRate = 24_000;
@@ -436,12 +554,15 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
           responseFormat: "pcm",
           sampleRate,
           timeoutMs: req.timeoutMs,
+          signal: req.signal,
+          localServiceAdmission: req.localServiceAdmission,
         }),
         outputFormat: "pcm",
         sampleRate,
       };
     },
     async streamSynthesizeTelephony(req) {
+      requireExpressionAdmission(req);
       const sampleRate = 24_000;
       return {
         audioStream: await requestSpeechStream({
@@ -452,6 +573,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
           sampleRate,
           timeoutMs: req.timeoutMs,
           signal: req.signal,
+          localServiceAdmission: req.localServiceAdmission,
         }),
         outputFormat: "pcm",
         sampleRate,
