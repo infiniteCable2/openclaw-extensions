@@ -1,4 +1,8 @@
-import type { SpeechExpressionCapabilities } from "openclaw/plugin-sdk/plugin-entry";
+import type { SpeechProviderPlugin } from "openclaw/plugin-sdk/plugin-entry";
+
+type SpeechExpressionCapabilities = NonNullable<
+  ReturnType<NonNullable<SpeechProviderPlugin["getExpressionCapabilities"]>>
+>;
 
 export const KITTEN_TTS2_MODEL_ID = "kitten-tts-2";
 

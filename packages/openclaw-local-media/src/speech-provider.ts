@@ -1,4 +1,4 @@
-import type { SpeechExpression, SpeechProviderPlugin } from "openclaw/plugin-sdk/plugin-entry";
+import type { SpeechProviderPlugin } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { requireLoopbackBaseUrl, resolveLoopbackBaseUrl } from "./local-url.js";
 import { createMediaRequestLifecycle } from "./request-lifecycle.js";
@@ -11,6 +11,9 @@ const VOICE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 
 type SpeechProviderConfig = Record<string, unknown>;
 type SpeechProviderOverrides = Record<string, unknown>;
+type SpeechExpression = NonNullable<
+  Parameters<SpeechProviderPlugin["synthesize"]>[0]["expression"]
+>;
 type LocalMediaSpeechProvider = SpeechProviderPlugin & {
   streamSynthesizeTelephony(req: {
     text: string;
