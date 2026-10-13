@@ -9,6 +9,7 @@ from .app import create_app
 from .audio import FfmpegAudioEncoder
 from .backend import ChatterboxBackend
 from .voice_catalog import load_voice_catalog
+from .speech_profile import load_speech_profile
 
 
 def _voice_reference(value: str) -> tuple[str, Path]:
@@ -39,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-audio-bytes", type=int, default=64 * 1024 * 1024)
     parser.add_argument("--max-queued-requests", type=int, default=2)
     parser.add_argument("--request-timeout-ms", type=int, default=300_000)
+    parser.add_argument("--speech-profile", type=Path)
     return parser
 
 
@@ -46,6 +48,7 @@ def main() -> None:
     args = build_parser().parse_args()
     if not 1 <= args.port <= 65535:
         raise SystemExit("port is outside its allowed range")
+    speech_profile = load_speech_profile(args.speech_profile) if args.speech_profile else None
     if args.voice_catalog:
         if args.voice_reference or args.default_voice:
             raise SystemExit("voice catalog cannot be combined with direct voice arguments")
@@ -103,6 +106,7 @@ def main() -> None:
         max_text_characters=args.max_text_characters,
         max_queued_requests=args.max_queued_requests,
         request_timeout_ms=args.request_timeout_ms,
+        speech_profile=speech_profile,
     )
     serve(app, host=args.host, port=args.port, threads=args.max_queued_requests + 4,
           clear_untrusted_proxy_headers=True)

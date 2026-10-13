@@ -91,6 +91,32 @@ prove first-segment playback before later synthesis completes, ordered delivery,
 bounded total audio, cancellation on barge-in, and rejection of a stream without
 its terminal completion frame.
 
+## Backend segment profiles
+
+The selected backend owns its immutable segmentation profile. Chatterbox keeps
+the previous 32-word target, 45-word/400-character hard limits and
+320/180/80/60 ms paragraph/sentence/clause/fragment pauses. Kitten uses the same
+hard budgets, a 130-character short-unit packing preference and
+160/120/60/40 ms pauses. Short complete utterances are still rendered immediately.
+Kitten reuses its pinned SDK's edge-silence trimming and 8 ms fade per external
+unit; Chatterbox audio and voice generation settings are not changed.
+
+An operator may select an absolute, regular non-symlink JSON file with
+`--speech-profile /etc/openclaw-local-media/tts-speech-profile.json` in the chosen
+worker command. The file uses the profile shape from
+`contracts/local-media-v1/openapi.yaml`; see
+`deploy/speech-profile.example.json`. It is validated before model loading.
+Changes require a new worker generation, not hot polling or a client override.
+
+The profile is returned by `/v1/capabilities` without any voice reference,
+identity or deployment path. OpenClaw uses it for native streaming and complete
+utterance planning; the service consumes a supplied plan without splitting it
+again. Standalone HTTP clients keep Syntok boundary detection with the same
+profile. Native and service packages must be promoted together. Before selection,
+prove discovery and ordered prepared-plan rendering with the actual candidate
+SDK, both buffered and PCM streaming, including stale generation, short greetings,
+German lists/abbreviations/numbers, expression spans and cancellation.
+
 ## Rollback
 
 Restore the previous OpenClaw configuration/plugin selection and restart the

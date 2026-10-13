@@ -11,13 +11,14 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .audio import join_speech_segments
 from .expression import prepare_expression_segments, validate_plain_expression_text
-from .speech_segments import SpeechSegment, split_speech_text
+from .speech_segments import SpeechSegment, split_speech_text, validate_prepared_segments
+from .speech_profile import CHATTERBOX_SPEECH_PROFILE, SpeechProfile
 from .types import AudioEncoder, RenderedPcm, SynthesisBackend
 from .request_lifecycle import RequestRegistry, RequestWork, ServiceError, ServiceState
 
 _ALLOWED_FORMATS = {"opus", "pcm", "wav"}
 _ALLOWED_SAMPLE_RATES = {8_000, 16_000, 24_000, 48_000}
-_REQUEST_FIELDS = {"input", "model", "voice", "response_format", "sample_rate", "expression"}
+_REQUEST_FIELDS = {"input", "model", "voice", "response_format", "sample_rate", "expression", "segmentation"}
 _MAX_STREAM_BYTES = 64 * 1024 * 1024
 
 
@@ -49,6 +50,7 @@ def _parse_synthesis_request(
     *,
     max_text_characters: int,
     generation: str,
+    speech_profile: SpeechProfile,
 ) -> tuple[list[SpeechSegment], str, str, int | None, bool]:
     if not request.is_json:
         raise ServiceError("invalid_request", "JSON body is required", 400, retryable=False)
@@ -73,21 +75,26 @@ def _parse_synthesis_request(
     else:
         raise ServiceError("invalid_request", "sample rate is unsupported", 400, retryable=False)
     expressive = "expression" in body
-    if expressive and request.headers.get("X-OpenClaw-Service-Generation") != generation:
+    prepared = "segmentation" in body
+    if (expressive or prepared) and request.headers.get("X-OpenClaw-Service-Generation") != generation:
         raise ServiceError(
             "generation_conflict", "speech worker generation changed; prepare speech again", 409,
             retryable=False,
         )
     capabilities = getattr(backend, "expression_capabilities", None)
     try:
+        prepared_segments = validate_prepared_segments(text, body["segmentation"], speech_profile) if prepared else None
         if expressive:
             if not capabilities or not callable(getattr(backend, "synthesize_expressive_segments", None)):
                 raise ValueError("requested expression is unsupported by this backend")
-            segments = prepare_expression_segments(text, body["expression"], capabilities)
+            segments = prepare_expression_segments(
+                text, body["expression"], capabilities, profile=speech_profile,
+                prepared_segments=prepared_segments,
+            )
         else:
             if capabilities:
                 validate_plain_expression_text(text)
-            segments = split_speech_text(text)
+            segments = prepared_segments if prepared_segments is not None else split_speech_text(text, profile=speech_profile)
     except ValueError as error:
         raise ServiceError("invalid_request", str(error), 400, retryable=False) from None
     return segments, voice, output_format, sample_rate, expressive
@@ -109,11 +116,15 @@ def create_app(
     max_text_characters: int = 4096,
     max_queued_requests: int = 2,
     request_timeout_ms: int = 300_000,
+    speech_profile: SpeechProfile | None = None,
 ) -> Flask:
     if max_text_characters < 10 or max_text_characters > 65_536:
         raise ValueError("max_text_characters is outside its allowed range")
     if max_queued_requests < 0 or max_queued_requests > 64:
         raise ValueError("max_queued_requests is outside its allowed range")
+    speech_profile = speech_profile or getattr(backend, "speech_profile", CHATTERBOX_SPEECH_PROFILE)
+    if not isinstance(speech_profile, SpeechProfile):
+        raise ValueError("backend speech profile is invalid")
 
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
@@ -210,6 +221,7 @@ def create_app(
             model=backend.model_id,
             generation=generation,
             expression=getattr(backend, "expression_capabilities", None),
+            segmentation={"schema_version": 1, "profile": speech_profile.public(), "prepared_segments": True},
         )
 
     @app.post("/v1/audio/speech")
@@ -221,6 +233,7 @@ def create_app(
                 backend,
                 max_text_characters=max_text_characters,
                 generation=generation,
+                speech_profile=speech_profile,
             )
 
             with state.admit(work):
@@ -274,6 +287,7 @@ def create_app(
                 backend,
                 max_text_characters=max_text_characters,
                 generation=generation,
+                speech_profile=speech_profile,
             )
             if output_format != "pcm":
                 raise ServiceError(

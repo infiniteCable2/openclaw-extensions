@@ -98,6 +98,37 @@ generation returns non-retryable HTTP 409 (`generation_conflict`) before inferen
 the caller must prepare speech again rather than silently reroute the utterance.
 Ordinary requests keep their existing optional lifecycle headers.
 
+## Backend segment profiles and native synthesis plans
+
+The same capability response includes `segmentation` with `schema_version: 1`,
+`prepared_segments: true` and a backend-owned `profile`. The profile has
+`minChars`, `targetWords`, `maxWords`, `maxChars` and millisecond pauses for
+`paragraph`, `sentence`, `clause` and `fragment`. Word budgets count Unicode
+letter/number/underscore groups. The native client may use linguistic boundary
+selection, but must preserve these hard word and character budgets. JavaScript
+UTF-16 character counting is conservatively stricter for supplementary characters.
+
+OpenClaw prepares an ordered plain-text plan once, after its native speech
+formatting. Both synthesis endpoints accept `segmentation: {schema_version: 1,
+segments: [{text, pauseMs}, ...]}` with the admitted worker generation header.
+Each text is a trimmed contiguous slice of the original input; gaps may contain
+only whitespace. No dropped/reordered/changed content or word/emphasis split
+is repaired silently. Pause values must belong to the admitted profile or be
+zero. Plans have at most 128 units. Minimum length is only a packing preference:
+short completed answers and greetings remain valid.
+
+With a supplied plan the service does **not** invoke its sentence splitter.
+Expression controls are projected onto these boundaries only after the exact
+plain projection is validated. Buffered synthesis encodes one ordered result;
+PCM streaming renders the same units in order with cancellation checkpoints.
+No pause is appended after the last unit. FIFO admission still belongs to the
+whole request, not a new segment-level scheduler.
+
+Standalone clients omitting a plan use the service's Syntok splitter with the
+same backend profile. This is the standalone HTTP contract, not a fallback for
+a malformed or stale native plan. Unsupported prepared segmentation must fail
+readiness; a caller may not silently resume independent chunking.
+
 This is speech-only direction, not a second transcript or a visible-message
 markup language. OpenClaw owns channel opt-in, model-context discovery and the
 unmodified visible projection. A service has no agent/channel identities.

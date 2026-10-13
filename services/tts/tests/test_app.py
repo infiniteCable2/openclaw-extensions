@@ -403,3 +403,30 @@ def test_precancelled_tts_request_never_runs(service):
     )
     assert response.status_code == 409
     assert backend.calls == []
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/audio/speech", "/v1/audio/speech/stream"])
+def test_prepared_plan_requires_current_worker_and_does_not_rechunk(endpoint):
+    class PcmEncoder(FakeEncoder):
+        def encode(self, rendered, **_kwargs):
+            return rendered.data
+    backend = FakeBackend()
+    client = create_app(backend, PcmEncoder()).test_client()
+    capabilities = client.get("/v1/capabilities")
+    body = {"input": "Erster Satz. Zweiter Satz.", "model": "chatterbox", "voice": "nova",
+            "response_format": "pcm", "segmentation": {"schema_version": 1, "segments": [
+                {"text": "Erster Satz.", "pauseMs": 180}, {"text": "Zweiter Satz.", "pauseMs": 0},
+            ]}}
+    assert capabilities.get_json()["segmentation"]["profile"]["targetWords"] == 32
+    for generation in (None, "obsolete-worker"):
+        response = client.post(endpoint, json=body, headers={
+            "X-OpenClaw-Service-Generation": generation,
+        } if generation else {})
+        assert response.status_code == 409
+    assert backend.calls == []
+    result = client.post(endpoint, json=body, headers={
+        "X-OpenClaw-Service-Generation": capabilities.get_json()["generation"],
+    })
+    assert result.status_code == 200
+    assert result.data
+    assert backend.calls == [("Erster Satz.", "nova"), ("Zweiter Satz.", "nova")]

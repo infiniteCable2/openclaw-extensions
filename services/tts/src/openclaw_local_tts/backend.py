@@ -8,12 +8,15 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from .types import RenderedPcm
+from .speech_profile import CHATTERBOX_SPEECH_PROFILE
 
 _VOICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 class ChatterboxBackend:
     """One offline Chatterbox Multilingual v3 model on mandatory CUDA."""
+
+    speech_profile = CHATTERBOX_SPEECH_PROFILE
 
     def __init__(
         self,

@@ -77,3 +77,16 @@ def test_kitten_rejects_chatterbox_sources(cli_harness):
         run(["--backend", "kitten2", "--kitten-cache-dir", "/example/cache",
              "--chatterbox-source", "/example/source"])
     assert loads == [] and serves == []
+
+
+def test_invalid_speech_profile_is_rejected_before_loading_a_model(cli_harness, tmp_path):
+    from openclaw_local_tts.speech_profile import CHATTERBOX_SPEECH_PROFILE
+    import json
+    run, loads, serves = cli_harness
+    profile = CHATTERBOX_SPEECH_PROFILE.public()
+    profile["minChars"] = 500
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile), encoding="utf-8")
+    with pytest.raises(ValueError, match="limits are invalid"):
+        run(["--speech-profile", str(path)])
+    assert loads == [] and serves == []

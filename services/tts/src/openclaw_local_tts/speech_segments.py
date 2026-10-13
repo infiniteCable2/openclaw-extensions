@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import syntok.segmenter
 
+from .speech_profile import CHATTERBOX_SPEECH_PROFILE, SpeechProfile
+
 _CLAUSE_END = re.compile(r"[;:,–—]\s+", re.UNICODE)
 _WORD = re.compile(r"\b\w+\b", re.UNICODE)
-
-# Chatterbox Multilingual v3 currently caps one generation at 1000 audio
-# tokens (about 40 seconds at 25 tokens/s). These conservative limits keep a
-# segment comfortably below that ceiling even for slower German speech.
-DEFAULT_TARGET_WORDS = 32
-DEFAULT_MAX_WORDS = 45
-DEFAULT_MAX_CHARACTERS = 400
-
 
 @dataclass(frozen=True, slots=True)
 class SpeechSegment:
@@ -38,15 +33,22 @@ def _split_paragraphs(text: str) -> list[list[str]]:
     return paragraphs
 
 
-def _within_limits(text: str, *, max_words: int, max_characters: int) -> bool:
-    return len(text) <= max_characters and _word_count(text) <= max_words
+def _within_limits(
+    text: str, *, max_words: int, max_characters: int,
+    budget_text: Callable[[str], str] = str,
+) -> bool:
+    measured = budget_text(text)
+    return len(measured) <= max_characters and _word_count(measured) <= max_words
 
 
-def _bound_sentence(text: str, *, max_words: int, max_characters: int) -> list[str]:
+def _bound_sentence(
+    text: str, *, max_words: int, max_characters: int,
+    budget_text: Callable[[str], str] = str,
+) -> list[str]:
     remaining = text.strip()
     pieces: list[str] = []
     while remaining:
-        if _within_limits(remaining, max_words=max_words, max_characters=max_characters):
+        if _within_limits(remaining, max_words=max_words, max_characters=max_characters, budget_text=budget_text):
             pieces.append(remaining)
             break
 
@@ -54,6 +56,15 @@ def _bound_sentence(text: str, *, max_words: int, max_characters: int) -> list[s
         words = list(_WORD.finditer(remaining))
         if len(words) > max_words:
             split_limit = min(split_limit, words[max_words - 1].end())
+        if not _within_limits(remaining[:split_limit], max_words=max_words,
+                              max_characters=max_characters, budget_text=budget_text):
+            safe_limits = [match.start() for match in re.finditer(r"\s+", remaining[:split_limit])
+                           if match.start() > 0 and _within_limits(
+                               remaining[:match.start()], max_words=max_words,
+                               max_characters=max_characters, budget_text=budget_text)]
+            if not safe_limits:
+                raise ValueError("atomic speech unit exceeds its profile limits")
+            split_limit = safe_limits[-1]
         window = remaining[:split_limit]
         preferred_start = max(1, int(split_limit * 0.45))
         clause_breaks = [
@@ -76,28 +87,33 @@ def _bound_sentence(text: str, *, max_words: int, max_characters: int) -> list[s
     return pieces
 
 
-def _pause_after(text: str, *, paragraph_end: bool) -> int:
+def _pause_after(text: str, *, paragraph_end: bool, profile: SpeechProfile) -> int:
     if paragraph_end:
-        return 320
+        return profile.paragraph_pause
     stripped = text.rstrip()
     if stripped.endswith((".", "!", "?", "»", "”")):
-        return 180
+        return profile.sentence_pause
     if stripped.endswith((";", ":", ",", "–", "—")):
-        return 80
-    return 60
+        return profile.clause_pause
+    return profile.fragment_pause
 
 
 def split_speech_text(
     text: str,
     *,
-    target_words: int = DEFAULT_TARGET_WORDS,
-    max_words: int = DEFAULT_MAX_WORDS,
-    max_characters: int = DEFAULT_MAX_CHARACTERS,
+    target_words: int | None = None,
+    max_words: int | None = None,
+    max_characters: int | None = None,
+    profile: SpeechProfile = CHATTERBOX_SPEECH_PROFILE,
+    budget_text: Callable[[str], str] = str,
 ) -> list[SpeechSegment]:
     """Split speech at linguistic boundaries while preserving all source words."""
     normalized = str(text or "").strip()
     if not normalized:
         return []
+    target_words = profile.target_words if target_words is None else target_words
+    max_words = profile.max_words if max_words is None else max_words
+    max_characters = profile.max_chars if max_characters is None else max_characters
     if target_words < 1 or max_words < target_words or max_characters < 64:
         raise ValueError("speech segment limits are invalid")
 
@@ -111,24 +127,74 @@ def split_speech_text(
                 sentence,
                 max_words=max_words,
                 max_characters=max_characters,
+                budget_text=budget_text,
             )
         ]
         current = ""
         for unit in units:
             candidate = f"{current} {unit}".strip() if current else unit
             if current and (
-                _word_count(candidate) > target_words
+                _word_count(budget_text(candidate)) > target_words
                 or not _within_limits(
                     candidate,
                     max_words=max_words,
                     max_characters=max_characters,
+                    budget_text=budget_text,
                 )
             ):
-                segments.append(SpeechSegment(current, _pause_after(current, paragraph_end=False)))
+                segments.append(SpeechSegment(current, _pause_after(current, paragraph_end=False, profile=profile)))
                 current = unit
             else:
                 current = candidate
         if current:
             paragraph_end = paragraph_index < len(paragraphs) - 1
-            segments.append(SpeechSegment(current, _pause_after(current, paragraph_end=paragraph_end)))
+            segments.append(SpeechSegment(current, _pause_after(current, paragraph_end=paragraph_end, profile=profile)))
+    # Standalone synthesis has the complete input. Merge short units across
+    # paragraph boundaries, without stretching the model's hard safety limits.
+    if profile.min_chars:
+        index = 0
+        while index < len(segments) - 1:
+            left, right = segments[index:index + 2]
+            combined = f"{left.text} {right.text}"
+            if (min(len(budget_text(left.text)), len(budget_text(right.text))) < profile.min_chars
+                    and _within_limits(combined, max_words=max_words, max_characters=max_characters, budget_text=budget_text)):
+                segments[index:index + 2] = [SpeechSegment(combined, right.pause_after_ms)]
+                index = max(0, index - 1)
+            else:
+                index += 1
     return segments
+
+
+def validate_prepared_segments(text: str, value: object, profile: SpeechProfile) -> list[SpeechSegment]:
+    """Consume the native owner's plan, never repair, reorder, or re-segment it."""
+    if not isinstance(value, dict) or set(value) != {"schema_version", "segments"} or type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise ValueError("prepared segmentation fields are invalid")
+    raw = value["segments"]
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 128:
+        raise ValueError("prepared segmentation must contain between one and 128 entries")
+    result: list[SpeechSegment] = []
+    cursor = 0
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"text", "pauseMs"}:
+            raise ValueError("prepared speech segment fields are invalid")
+        unit, pause = item["text"], item["pauseMs"]
+        if not isinstance(unit, str) or not unit or unit != unit.strip():
+            raise ValueError("prepared speech segment must be non-empty trimmed text")
+        if not _within_limits(unit, max_words=profile.max_words, max_characters=profile.max_chars):
+            raise ValueError("prepared speech segment exceeds backend limits")
+        if type(pause) is not int or pause not in {
+            0, profile.paragraph_pause, profile.sentence_pause, profile.clause_pause, profile.fragment_pause,
+        }:
+            raise ValueError("prepared speech pause does not match backend profile")
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if not text.startswith(unit, cursor):
+            raise ValueError("prepared speech segments must preserve the exact ordered input")
+        end = cursor + len(unit)
+        if end < len(text) and all(char.isalnum() or char == "_" for char in text[end - 1:end + 1]):
+            raise ValueError("prepared speech segment must not split a word")
+        cursor = end
+        result.append(SpeechSegment(unit, pause))
+    if text[cursor:].strip():
+        raise ValueError("prepared speech segments must cover the entire input")
+    return result

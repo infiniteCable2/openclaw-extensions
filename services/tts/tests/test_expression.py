@@ -7,6 +7,8 @@ import pytest
 from openclaw_local_tts.app import create_app
 from openclaw_local_tts.expression import KITTEN_EXPRESSION_CAPABILITIES, prepare_expression_segments
 from openclaw_local_tts.types import RenderedPcm
+from openclaw_local_tts.speech_segments import SpeechSegment
+from openclaw_local_tts.speech_profile import KITTEN_SPEECH_PROFILE
 
 
 class Backend:
@@ -171,3 +173,41 @@ def test_worker_replacement_rejects_stale_or_missing_expression_admission(endpoi
         assert response.status_code == 409
         assert response.get_json()["error"]["code"] == "generation_conflict"
     assert backend.calls == []
+
+
+def test_prepared_expression_keeps_events_once_and_emphasis_atomic():
+    source = "Erster Satz. Zweiter wichtiger Satz."
+    expression = {"emotion": "tender", "parts": [
+        {"text": "Erster Satz."}, {"event": "sigh"}, {"text": " Zweiter "},
+        {"text": "wichtiger", "emphasis": True}, {"text": " Satz."},
+    ]}
+    prepared = [SpeechSegment("Erster Satz.", 120), SpeechSegment("Zweiter wichtiger Satz.", 0)]
+    result = prepare_expression_segments(source, expression, KITTEN_EXPRESSION_CAPABILITIES, prepared_segments=prepared)
+    assert [unit.text for unit in result] == [
+        "[tender] Erster Satz. <sigh>", "[tender] Zweiter (((wichtiger))) Satz.",
+    ]
+    assert [unit.pause_after_ms for unit in result] == [120, 0]
+    assert "".join(part.get("text", "") for part in expression["parts"]) == source
+
+
+def test_prepared_expression_does_not_silently_move_emphasis_across_segments():
+    with pytest.raises(ValueError, match="emphasis span"):
+        prepare_expression_segments("Hallo Welt.", {"parts": [{"text": "Hallo Welt", "emphasis": True}, {"text": "."}]},
+            KITTEN_EXPRESSION_CAPABILITIES,
+            prepared_segments=[SpeechSegment("Hallo", 0), SpeechSegment("Welt.", 0)])
+
+
+def test_standalone_kitten_packing_counts_restored_emphasis_not_placeholders():
+    parts = []
+    for paragraph in range(2):
+        for word in range(3):
+            parts.append({"text": "a" * 80, "emphasis": True})
+            if word < 2:
+                parts.append({"text": " "})
+        parts.append({"text": ".\n\n" if paragraph == 0 else "."})
+    text = "".join(part["text"] for part in parts)
+    segments = prepare_expression_segments(text, {"parts": parts}, KITTEN_EXPRESSION_CAPABILITIES,
+                                          profile=KITTEN_SPEECH_PROFILE)
+    assert len(segments) == 2
+    assert all(len(segment.text) <= 300 for segment in segments)
+    assert sum(segment.text.count("(((") for segment in segments) == 6
