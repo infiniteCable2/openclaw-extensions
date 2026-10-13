@@ -4,9 +4,9 @@
   "maxWords": 45,
   "maxChars": 400,
   "pauses": {
-    "paragraph": 160,
-    "sentence": 120,
-    "clause": 60,
-    "fragment": 40
+    "paragraph": 320,
+    "sentence": 180,
+    "clause": 80,
+    "fragment": 60
   }
 }

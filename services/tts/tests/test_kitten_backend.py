@@ -52,11 +52,8 @@ def setup_backend(tmp_path, monkeypatch):
     torch.cuda = SimpleNamespace(is_available=lambda: True)
     kitten = ModuleType("kittenml")
     kitten.KittenTTS = load
-    text_module = ModuleType("kittenml.kittentts2.text")
-    text_module.trim_silence = lambda waveform, _rate, **_kwargs: waveform
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "kittenml", kitten)
-    monkeypatch.setitem(sys.modules, "kittenml.kittentts2.text", text_module)
     # Construction intentionally changes offline settings for its worker process.
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
@@ -186,22 +183,26 @@ def test_explicit_private_offline_cache_required(setup_backend, path_kind):
     assert loads == []
 
 
-def test_each_external_unit_uses_sdk_edge_cleanup_without_a_second_split(setup_backend):
+@pytest.mark.parametrize("expressive", [False, True])
+def test_each_external_unit_preserves_model_silence_and_samples_without_a_second_split(setup_backend, expressive):
     model, catalog, client, calls, _loads = setup_backend
     backend = KittenTts2Backend(model_path=model, cache_dir=model / "offline-cache", catalog=catalog)
     calls.clear()
-    waveform = np.full(2400, 0.25, dtype=np.float32)
+    waveform = np.concatenate([
+        np.zeros(240, dtype=np.float32),
+        np.full(240, 0.001, dtype=np.float32),
+        np.full(1440, 0.25, dtype=np.float32),
+        np.zeros(480, dtype=np.float32),
+    ])
     client.generate = lambda text, **kwargs: calls.append((text, kwargs)) or waveform
-    trims = []
-    def trim(array, rate, **kwargs):
-        trims.append((rate, kwargs))
-        return array[240:-240]
-    backend._trim_silence = trim
-    audio = list(backend.synthesize_segments(["Hallo."], voice_id="voice_a"))
+    text = "[joyful] Hallo <laugh> Welt." if expressive else "Hallo."
+    render = backend.synthesize_expressive_segments if expressive else backend.synthesize_segments
+    audio = list(render([text], voice_id="voice_a"))
     assert len(calls) == 1
     assert calls[0][1]["advanced"]["chunk_chars"] == 0
-    assert trims == [(24000, {"thresh_db": -45.0, "keep_s": 0.02})]
+    assert calls[0][1]["advanced"]["chunk_min_chars"] == 0
+    assert "speed" not in calls[0][1]
     pcm = np.frombuffer(audio[0].data, dtype="<i2")
-    assert len(pcm) == 1920
-    assert pcm[0] == pcm[-1] == 0
-    assert pcm[192] > 0
+    expected = np.rint(waveform * 32767.0).astype("<i2")
+    np.testing.assert_array_equal(pcm, expected)
+    assert len(pcm) == 2400

@@ -51,9 +51,7 @@ class SpeechProfile:
 CHATTERBOX_SPEECH_PROFILE = SpeechProfile()
 # Kitten's reviewed SDK merges prompts below 130 characters to avoid held tokens.
 # This is a packing preference, not a prohibition on short completed utterances.
-KITTEN_SPEECH_PROFILE = SpeechProfile(
-    min_chars=130, paragraph_pause=160, sentence_pause=120, clause_pause=60, fragment_pause=40,
-)
+KITTEN_SPEECH_PROFILE = SpeechProfile(min_chars=130)
 
 
 def load_speech_profile(path: Path) -> SpeechProfile:

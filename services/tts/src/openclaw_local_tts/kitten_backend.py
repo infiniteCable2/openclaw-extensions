@@ -50,7 +50,6 @@ class KittenTts2Backend:
         import numpy as np
         import torch
         from kittenml import KittenTTS
-        from kittenml.kittentts2.text import trim_silence
 
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is unavailable")
@@ -81,7 +80,6 @@ class KittenTts2Backend:
         if client.codec.student is not None or client.transcriber._pipeline is not None:
             raise RuntimeError("KittenTTS 2 unexpectedly loaded an alternative decoder or transcriber")
         self._client = client
-        self._trim_silence = trim_silence
         self._voices = {voice.id: voice for voice in catalog.voices}
         self.model_id = model_id.strip()
         self.default_voice = catalog.default_voice
@@ -100,18 +98,10 @@ class KittenTts2Backend:
             raise RuntimeError(f"KittenTTS 2 {name} contains non-CUDA tensors")
 
     @staticmethod
-    def _pcm(waveform, np, *, trim_silence=None) -> RenderedPcm:
+    def _pcm(waveform, np) -> RenderedPcm:
         array = np.asarray(waveform, dtype=np.float32)
         if array.ndim != 1 or not 0 < array.size <= 24_000 * 45 or not np.isfinite(array).all():
             raise RuntimeError("KittenTTS 2 returned invalid or oversized mono audio")
-        if trim_silence is not None:
-            # Reuse the pinned SDK's seam cleanup even for one externally
-            # planned unit. Its single-unit generate path otherwise skips this.
-            array = trim_silence(array, 24_000, thresh_db=-45.0, keep_s=0.02).copy()
-            fade = 192  # The SDK's 8 ms fade, without its extra chunk gap.
-            if array.size > 2 * fade:
-                array[:fade] *= np.linspace(0.0, 1.0, fade, dtype=np.float32)
-                array[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
         pcm = np.rint(np.clip(array, -1.0, 1.0) * 32767.0).astype("<i2", copy=False)
         return RenderedPcm(data=pcm.tobytes(), sample_rate=24_000)
 
@@ -139,4 +129,6 @@ class KittenTts2Backend:
                 normalize=False, preset="stable", max_new_tokens=1000,
                 advanced={"use_emotion": expressive, "chunk_chars": 0, "chunk_min_chars": 0},
             )
-            yield self._pcm(waveform, np, trim_silence=self._trim_silence)
+            # Preserve all model-generated samples, including edge silence and
+            # quiet expression cues. Joining pauses are owned by the service.
+            yield self._pcm(waveform, np)

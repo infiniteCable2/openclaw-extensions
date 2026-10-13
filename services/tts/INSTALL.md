@@ -97,9 +97,15 @@ The selected backend owns its immutable segmentation profile. Chatterbox keeps
 the previous 32-word target, 45-word/400-character hard limits and
 320/180/80/60 ms paragraph/sentence/clause/fragment pauses. Kitten uses the same
 hard budgets, a 130-character short-unit packing preference and
-160/120/60/40 ms pauses. Short complete utterances are still rendered immediately.
-Kitten reuses its pinned SDK's edge-silence trimming and 8 ms fade per external
-unit; Chatterbox audio and voice generation settings are not changed.
+the same 320/180/80/60 ms join pauses. Short complete utterances are still rendered immediately.
+Kitten's generated samples are preserved, including edge silence and quiet
+expression cues: the adapter adds no silence trimming or fade. Its SDK's
+internal text splitting is disabled for these externally planned units.
+Chatterbox audio and voice generation settings are not changed.
+
+The reviewed KittenTTS 2 generation API has no numeric `speed` parameter.
+The original ONNX model family's speed control does not apply to this backend;
+the adapter does not substitute resampling or tempo postprocessing.
 
 An operator may select an absolute, regular non-symlink JSON file with
 `--speech-profile /etc/openclaw-local-media/tts-speech-profile.json` in the chosen

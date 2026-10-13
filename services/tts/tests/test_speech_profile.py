@@ -35,6 +35,10 @@ def test_short_completed_utterance_is_not_padded_or_discarded():
     assert [unit.text for unit in units] == ["Hallo."]
 
 
+def test_kitten_keeps_the_established_join_pause_settings():
+    assert KITTEN_SPEECH_PROFILE.public()["pauses"] == CHATTERBOX_SPEECH_PROFILE.public()["pauses"]
+
+
 @pytest.mark.parametrize("field,value", [("minChars", True), ("minChars", -1),
     ("maxChars", 63), ("maxWords", 201), ("targetWords", 46)])
 def test_profile_rejects_invalid_limits(field, value):
