@@ -6,12 +6,16 @@ type CapabilityContext = Parameters<
 type Capabilities = NonNullable<
   ReturnType<NonNullable<SpeechProviderPlugin["getExpressionCapabilities"]>>
 >;
+type SegmentationProfile = NonNullable<
+  ReturnType<NonNullable<SpeechProviderPlugin["getSegmentationProfile"]>>
+>;
 type Admission = NonNullable<CapabilityContext["localServiceAdmission"]>;
 type AdmissionEntry = {
   baseUrl: string;
   model: string;
   preparation: Promise<void>;
   capabilities?: Capabilities;
+  segmentation?: SegmentationProfile;
 };
 const MAX_CAPABILITIES_BYTES = 16 * 1024;
 export const KITTEN_TTS2_MODEL_ID = "kitten-tts-2";
@@ -34,12 +38,55 @@ function vocabulary(value: unknown): readonly string[] {
   return Object.freeze(value);
 }
 
+function segmentationProfile(value: unknown): SegmentationProfile | undefined {
+  if (value === undefined) return undefined;
+  const segmentation = object(value);
+  const profile = object(segmentation?.profile);
+  const pauses = object(profile?.pauses);
+  const integer = (number: unknown, min: number, max: number): number => {
+    if (typeof number !== "number" || !Number.isSafeInteger(number) || number < min || number > max)
+      throw new Error("Local media TTS returned invalid segmentation capabilities");
+    return number;
+  };
+  if (
+    !segmentation ||
+    !profile ||
+    !pauses ||
+    segmentation.schema_version !== 1 ||
+    segmentation.prepared_segments !== true ||
+    Object.keys(segmentation).some(
+      (key) => !["schema_version", "profile", "prepared_segments"].includes(key),
+    ) ||
+    Object.keys(profile).some(
+      (key) => !["minChars", "targetWords", "maxWords", "maxChars", "pauses"].includes(key),
+    ) ||
+    Object.keys(pauses).some(
+      (key) => !["paragraph", "sentence", "clause", "fragment"].includes(key),
+    )
+  )
+    throw new Error("Local media TTS returned invalid segmentation capabilities");
+  const maxChars = integer(profile.maxChars, 64, 2_000);
+  const maxWords = integer(profile.maxWords, 1, 200);
+  return Object.freeze({
+    minChars: integer(profile.minChars, 0, maxChars),
+    targetWords: integer(profile.targetWords, 1, maxWords),
+    maxWords,
+    maxChars,
+    pauses: Object.freeze({
+      paragraph: integer(pauses.paragraph, 0, 2_000),
+      sentence: integer(pauses.sentence, 0, 2_000),
+      clause: integer(pauses.clause, 0, 2_000),
+      fragment: integer(pauses.fragment, 0, 2_000),
+    }),
+  });
+}
+
 async function readCapabilities(
   baseUrl: string,
   model: string,
   admission: Admission,
   timeoutMs: number,
-): Promise<Capabilities | undefined> {
+): Promise<{ capabilities?: Capabilities; segmentation?: SegmentationProfile }> {
   const signal = AbortSignal.any([admission.signal, AbortSignal.timeout(timeoutMs)]);
   signal.throwIfAborted();
   const response = await fetch(`${baseUrl}/capabilities`, {
@@ -82,7 +129,8 @@ async function readCapabilities(
       body.generation !== admission.generation ||
       response.headers.get("x-openclaw-service-generation") !== admission.generation ||
       Object.keys(body).some(
-        (key) => !["schema_version", "model", "generation", "expression"].includes(key),
+        (key) =>
+          !["schema_version", "model", "generation", "expression", "segmentation"].includes(key),
       )
     ) {
       const error = new Error(
@@ -91,7 +139,8 @@ async function readCapabilities(
       error.name = "LocalServiceAdmissionError";
       throw error;
     }
-    if (body.expression === null) return undefined;
+    const segmentation = segmentationProfile(body.segmentation);
+    if (body.expression === null) return { segmentation };
     const expression = object(body.expression);
     if (
       !expression ||
@@ -104,12 +153,15 @@ async function readCapabilities(
       throw new Error("Local media TTS returned invalid expression capabilities");
     }
     admission.signal.throwIfAborted();
-    return Object.freeze({
-      emotions: vocabulary(expression.emotions),
-      vocalEvents: vocabulary(expression.vocalEvents),
-      emphasis: expression.emphasis,
-      whisper: false,
-    });
+    return {
+      segmentation,
+      capabilities: Object.freeze({
+        emotions: vocabulary(expression.emotions),
+        vocalEvents: vocabulary(expression.vocalEvents),
+        emphasis: expression.emphasis,
+        whisper: false,
+      }),
+    };
   } finally {
     await response.body?.cancel().catch(() => undefined);
   }
@@ -125,16 +177,24 @@ function waitForPreparation<T>(promise: Promise<T>, signal?: AbortSignal): Promi
   });
 }
 
-/** Projection belongs to this registered provider and the existing worker admission lifetime. */
-export function createLocalSpeechExpressionAdmission() {
+/** Both projections share this provider's admitted worker/model lifetime and bounded discovery. */
+export function createLocalSpeechCapabilitiesAdmission() {
   const admitted = new WeakMap<Admission, AdmissionEntry>();
   return {
-    async prepare(context: CapabilityContext, baseUrl: string, model: string): Promise<void> {
-      if (model !== KITTEN_TTS2_MODEL_ID) return;
+    async prepare(
+      context: CapabilityContext,
+      baseUrl: string,
+      model: string,
+      requireSegmentation = false,
+    ): Promise<void> {
       const admission = context.localServiceAdmission;
       // Plain synthesis remains compatible with legacy status-only services.
       // Expressive synthesis still requires the admitted projection below.
-      if (!admission) return;
+      if (!admission) {
+        if (requireSegmentation)
+          throw new Error("Local media speech segmentation requires a worker admission");
+        return;
+      }
       context.signal?.throwIfAborted();
       admission.signal.throwIfAborted();
       let entry = admitted.get(admission);
@@ -157,9 +217,10 @@ export function createLocalSpeechExpressionAdmission() {
           admission,
           Math.min(300_000, Math.ceil(context.timeoutMs)),
         )
-          .then((capabilities) => {
+          .then((metadata) => {
             admission.signal.throwIfAborted();
-            installed.capabilities = capabilities;
+            installed.capabilities = metadata.capabilities;
+            installed.segmentation = metadata.segmentation;
           })
           .catch((error: unknown) => {
             // Failed discovery is not an admitted fact. Allow a later request
@@ -173,6 +234,8 @@ export function createLocalSpeechExpressionAdmission() {
       await waitForPreparation(entry.preparation, context.signal);
       context.signal?.throwIfAborted();
       admission.signal.throwIfAborted();
+      if (requireSegmentation && !entry.segmentation)
+        throw new Error("Local media speech worker does not support prepared segmentation");
     },
     get(
       admission: Admission | undefined,
@@ -182,6 +245,15 @@ export function createLocalSpeechExpressionAdmission() {
       if (!admission || admission.signal.aborted) return undefined;
       const entry = admitted.get(admission);
       return entry?.baseUrl === baseUrl && entry.model === model ? entry.capabilities : undefined;
+    },
+    getSegmentation(
+      admission: Admission | undefined,
+      baseUrl: string,
+      model: string,
+    ): SegmentationProfile | undefined {
+      if (!admission || admission.signal.aborted) return undefined;
+      const entry = admitted.get(admission);
+      return entry?.baseUrl === baseUrl && entry.model === model ? entry.segmentation : undefined;
     },
   };
 }

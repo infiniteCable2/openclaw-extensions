@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createLocalSpeechExpressionAdmission } from "./speech-expression.js";
+import { createLocalSpeechCapabilitiesAdmission } from "./speech-expression.js";
 
 afterEach(() => vi.unstubAllGlobals());
 const baseUrl = "http://127.0.0.1:8020/v1";
@@ -15,7 +15,12 @@ function fixture() {
   const worker = new AbortController();
   const localServiceAdmission = { generation: "worker1", signal: worker.signal };
   const context = { providerConfig: {}, timeoutMs: 1_000, localServiceAdmission };
-  return { worker, context, localServiceAdmission, owner: createLocalSpeechExpressionAdmission() };
+  return {
+    worker,
+    context,
+    localServiceAdmission,
+    owner: createLocalSpeechCapabilitiesAdmission(),
+  };
 }
 
 describe("service-backed speech expression admission", () => {
@@ -172,7 +177,6 @@ describe("service-backed speech expression admission", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { owner, context } = fixture();
     expect(owner.get(undefined, baseUrl, model)).toBeUndefined();
-    await owner.prepare(context, baseUrl, "chatterbox");
     await owner.prepare({ ...context, localServiceAdmission: undefined }, baseUrl, model);
     expect(owner.get(undefined, baseUrl, model)).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();

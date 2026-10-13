@@ -2,7 +2,10 @@ import type { SpeechProviderPlugin } from "openclaw/plugin-sdk/plugin-entry";
 import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, LOCAL_MEDIA_PROVIDER_ID } from "./constants.js";
 import { requireLoopbackBaseUrl, resolveLoopbackBaseUrl } from "./local-url.js";
 import { createMediaRequestLifecycle } from "./request-lifecycle.js";
-import { createLocalSpeechExpressionAdmission, KITTEN_TTS2_MODEL_ID } from "./speech-expression.js";
+import {
+  createLocalSpeechCapabilitiesAdmission,
+  KITTEN_TTS2_MODEL_ID,
+} from "./speech-expression.js";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_AUDIO_RESPONSE_BYTES = 64 * 1024 * 1024;
@@ -14,6 +17,7 @@ type SpeechProviderOverrides = Record<string, unknown>;
 type SpeechExpression = NonNullable<
   Parameters<SpeechProviderPlugin["synthesize"]>[0]["expression"]
 >;
+type SpeechSegments = NonNullable<Parameters<SpeechProviderPlugin["synthesize"]>[0]["segments"]>;
 type LocalServiceAdmission = Parameters<
   SpeechProviderPlugin["synthesize"]
 >[0]["localServiceAdmission"];
@@ -23,6 +27,7 @@ type LocalMediaSpeechProvider = SpeechProviderPlugin & {
     providerConfig: SpeechProviderConfig;
     providerOverrides?: SpeechProviderOverrides;
     expression?: SpeechExpression;
+    segments?: SpeechSegments;
     timeoutMs: number;
     signal?: AbortSignal;
     localServiceAdmission?: LocalServiceAdmission;
@@ -75,6 +80,7 @@ async function requestSpeech(params: {
   providerConfig: SpeechProviderConfig;
   overrides?: SpeechProviderOverrides;
   expression?: SpeechExpression;
+  segments?: SpeechSegments;
   responseFormat: "opus" | "wav" | "pcm";
   sampleRate?: number;
   timeoutMs: number;
@@ -87,7 +93,7 @@ async function requestSpeech(params: {
     baseUrl,
     timeoutMs: params.timeoutMs,
     signal:
-      params.expression && params.localServiceAdmission
+      (params.expression || params.segments) && params.localServiceAdmission
         ? AbortSignal.any([
             params.localServiceAdmission.signal,
             ...(params.signal ? [params.signal] : []),
@@ -102,7 +108,7 @@ async function requestSpeech(params: {
       headers: {
         "Content-Type": "application/json",
         ...job.headers,
-        ...(params.expression && params.localServiceAdmission
+        ...((params.expression || params.segments) && params.localServiceAdmission
           ? { "X-OpenClaw-Service-Generation": params.localServiceAdmission.generation }
           : {}),
       },
@@ -113,11 +119,18 @@ async function requestSpeech(params: {
         response_format: params.responseFormat,
         ...(params.sampleRate ? { sample_rate: params.sampleRate } : {}),
         ...(params.expression ? { expression: params.expression } : {}),
+        ...(params.segments
+          ? { segmentation: { schema_version: 1, segments: params.segments } }
+          : {}),
       }),
       redirect: "error",
       signal: job.signal,
     });
-    assertExpressionResponse(response, params.expression, params.localServiceAdmission);
+    assertPreparedResponse(
+      response,
+      Boolean(params.expression || params.segments),
+      params.localServiceAdmission,
+    );
     if (!response.ok) {
       throw new Error(`Local media TTS failed with HTTP ${response.status}`);
     }
@@ -138,6 +151,7 @@ async function requestSpeechStream(params: {
   providerConfig: SpeechProviderConfig;
   overrides?: SpeechProviderOverrides;
   expression?: SpeechExpression;
+  segments?: SpeechSegments;
   sampleRate: number;
   timeoutMs: number;
   signal?: AbortSignal;
@@ -149,7 +163,7 @@ async function requestSpeechStream(params: {
     baseUrl,
     timeoutMs: params.timeoutMs,
     signal:
-      params.expression && params.localServiceAdmission
+      (params.expression || params.segments) && params.localServiceAdmission
         ? AbortSignal.any([
             params.localServiceAdmission.signal,
             ...(params.signal ? [params.signal] : []),
@@ -164,7 +178,7 @@ async function requestSpeechStream(params: {
       headers: {
         "Content-Type": "application/json",
         ...job.headers,
-        ...(params.expression && params.localServiceAdmission
+        ...((params.expression || params.segments) && params.localServiceAdmission
           ? { "X-OpenClaw-Service-Generation": params.localServiceAdmission.generation }
           : {}),
       },
@@ -175,11 +189,18 @@ async function requestSpeechStream(params: {
         response_format: "pcm",
         sample_rate: params.sampleRate,
         ...(params.expression ? { expression: params.expression } : {}),
+        ...(params.segments
+          ? { segmentation: { schema_version: 1, segments: params.segments } }
+          : {}),
       }),
       redirect: "error",
       signal: job.signal,
     });
-    assertExpressionResponse(response, params.expression, params.localServiceAdmission);
+    assertPreparedResponse(
+      response,
+      Boolean(params.expression || params.segments),
+      params.localServiceAdmission,
+    );
     if (!response.ok) {
       throw new Error(`Local media streaming TTS failed with HTTP ${response.status}`);
     }
@@ -304,13 +325,13 @@ async function requestSpeechStream(params: {
   }
 }
 
-function assertExpressionResponse(
+function assertPreparedResponse(
   response: Response,
-  expression?: SpeechExpression,
+  prepared: boolean,
   admission?: LocalServiceAdmission,
 ): void {
   if (
-    expression &&
+    prepared &&
     (response.status === 409 ||
       response.headers.get("x-openclaw-service-generation") !== admission?.generation)
   ) {
@@ -431,24 +452,29 @@ async function readBoundedVoiceCatalog(response: Response): Promise<
 }
 
 export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
-  const expressionAdmission = createLocalSpeechExpressionAdmission();
-  const requireExpressionAdmission = (request: {
+  const capabilitiesAdmission = createLocalSpeechCapabilitiesAdmission();
+  const requireSpeechAdmission = (request: {
     expression?: SpeechExpression;
+    segments?: SpeechSegments;
     providerConfig: SpeechProviderConfig;
     providerOverrides?: SpeechProviderOverrides;
     localServiceAdmission?: LocalServiceAdmission;
   }) => {
-    if (!request.expression) return;
+    if (!request.expression && !request.segments) return;
     request.localServiceAdmission?.signal.throwIfAborted();
+    const baseUrl = requireLoopbackBaseUrl(request.providerConfig.baseUrl, "Local media TTS");
+    const model = readSpeechSelection(request.providerConfig, request.providerOverrides).model;
     if (
-      !expressionAdmission.get(
-        request.localServiceAdmission,
-        requireLoopbackBaseUrl(request.providerConfig.baseUrl, "Local media TTS"),
-        readSpeechSelection(request.providerConfig, request.providerOverrides).model,
-      )
+      request.expression &&
+      !capabilitiesAdmission.get(request.localServiceAdmission, baseUrl, model)
     ) {
       throw new Error("Local media speech expression has no admitted service capabilities");
     }
+    if (
+      request.segments &&
+      !capabilitiesAdmission.getSegmentation(request.localServiceAdmission, baseUrl, model)
+    )
+      throw new Error("Local media speech segmentation has no admitted service capabilities");
   };
   return {
     id: LOCAL_MEDIA_PROVIDER_ID,
@@ -482,7 +508,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
       };
     },
     prepareExpressionCapabilities: (context) =>
-      expressionAdmission.prepare(
+      capabilitiesAdmission.prepare(
         context,
         requireLoopbackBaseUrl(context.providerConfig.baseUrl, "Local media TTS"),
         readSpeechSelection(context.providerConfig, context.providerOverrides).model,
@@ -490,7 +516,24 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
     getExpressionCapabilities: ({ providerConfig, providerOverrides, localServiceAdmission }) => {
       const baseUrl = resolveLoopbackBaseUrl(providerConfig.baseUrl);
       return baseUrl
-        ? expressionAdmission.get(
+        ? capabilitiesAdmission.get(
+            localServiceAdmission,
+            baseUrl,
+            readSpeechSelection(providerConfig, providerOverrides).model,
+          )
+        : undefined;
+    },
+    prepareSegmentationProfile: (context) =>
+      capabilitiesAdmission.prepare(
+        context,
+        requireLoopbackBaseUrl(context.providerConfig.baseUrl, "Local media TTS"),
+        readSpeechSelection(context.providerConfig, context.providerOverrides).model,
+        true,
+      ),
+    getSegmentationProfile: ({ providerConfig, providerOverrides, localServiceAdmission }) => {
+      const baseUrl = resolveLoopbackBaseUrl(providerConfig.baseUrl);
+      return baseUrl
+        ? capabilitiesAdmission.getSegmentation(
             localServiceAdmission,
             baseUrl,
             readSpeechSelection(providerConfig, providerOverrides).model,
@@ -521,7 +564,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
       return await readBoundedVoiceCatalog(response);
     },
     async synthesize(req) {
-      requireExpressionAdmission(req);
+      requireSpeechAdmission(req);
       const voiceNote = req.target === "voice-note";
       const responseFormat = voiceNote ? "opus" : "wav";
       return {
@@ -530,6 +573,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
           providerConfig: req.providerConfig,
           overrides: req.providerOverrides,
           expression: req.expression,
+          segments: req.segments,
           responseFormat,
           timeoutMs: req.timeoutMs,
           signal: req.signal,
@@ -541,7 +585,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
       };
     },
     async synthesizeTelephony(req) {
-      requireExpressionAdmission(req);
+      requireSpeechAdmission(req);
       // Preserve the local backend's speech bandwidth. The host already owns
       // conversion to a transport's 8/16/24 kHz format from result.sampleRate.
       const sampleRate = 24_000;
@@ -551,6 +595,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
           providerConfig: req.providerConfig,
           overrides: req.providerOverrides,
           expression: req.expression,
+          segments: req.segments,
           responseFormat: "pcm",
           sampleRate,
           timeoutMs: req.timeoutMs,
@@ -562,7 +607,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
       };
     },
     async streamSynthesizeTelephony(req) {
-      requireExpressionAdmission(req);
+      requireSpeechAdmission(req);
       const sampleRate = 24_000;
       return {
         audioStream: await requestSpeechStream({
@@ -570,6 +615,7 @@ export function buildLocalMediaSpeechProvider(): LocalMediaSpeechProvider {
           providerConfig: req.providerConfig,
           overrides: req.providerOverrides,
           expression: req.expression,
+          segments: req.segments,
           sampleRate,
           timeoutMs: req.timeoutMs,
           signal: req.signal,
