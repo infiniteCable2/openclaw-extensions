@@ -73,6 +73,17 @@ def test_reference_voice_changes_per_request_without_model_reload(tmp_path, monk
     assert all(segment.sample_rate == second.sample_rate == 24_000 for segment in first_segments)
     assert all(len(segment.data) == len(second.data) == 6 for segment in first_segments)
 
+    # A generator no longer owns the shared model between complete segments.
+    resumed = backend.synthesize_segments(["Erster Satz.", "Zweiter Satz."], voice_id="example_voice_member")
+    next(resumed)
+    backend.synthesize("Andere Stimme.", voice_id="nova")
+    next(resumed)
+    assert generated_references[-3:] == [
+        (str(example_voice_member.resolve()), {}),
+        (str(nova.resolve()), {"temperature": 0.7}),
+        (str(example_voice_member.resolve()), {}),
+    ]
+
 
 def test_default_voice_must_be_allowlisted(tmp_path) -> None:
     model_path = tmp_path / "model"

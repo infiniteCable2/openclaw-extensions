@@ -142,14 +142,21 @@ def create_app(
     def render_segments(segments, *, voice: str, work: RequestWork, expressive: bool) -> Iterator[RenderedPcm]:
         work.checkpoint()
         synthesize = backend.synthesize_expressive_segments if expressive else backend.synthesize_segments
-        rendered = synthesize((segment.text for segment in segments), voice_id=voice)
+        rendered = None
         total_bytes = 0
         try:
-            iterator = iter(rendered)
+            # Built-in backends are lazy generators, but the backend contract also
+            # permits eager iterator factories or __iter__ initialization.
+            with state.compute(work):
+                rendered = synthesize((segment.text for segment in segments), voice_id=voice)
+                iterator = iter(rendered)
             while True:
                 work.checkpoint()
                 try:
-                    segment = next(iterator)
+                    # Release the shared worker before encoding or yielding to a
+                    # possibly slow HTTP consumer. Each continuation joins FIFO.
+                    with state.compute(work):
+                        segment = next(iterator)
                 except StopIteration:
                     break
                 work.checkpoint()
@@ -159,7 +166,10 @@ def create_app(
                 yield segment
         finally:
             if callable(close := getattr(rendered, "close", None)):
-                close()
+                # Backend iterator cleanup may also touch shared model state.
+                # Cancellation prevents new inference, not mandatory cleanup.
+                with state.compute():
+                    close()
 
     @app.post("/v1/requests/<identifier>/cancel")
     def cancel(identifier: str) -> tuple[Response, int] | Response:
@@ -180,6 +190,7 @@ def create_app(
             "observedBackend": backend.observed_backend,
             "activeRequests": active,
             "queueDepth": queued,
+            "inFlightRequests": state.request_count(),
         }
 
     @app.errorhandler(RequestEntityTooLarge)
@@ -236,7 +247,7 @@ def create_app(
                 speech_profile=speech_profile,
             )
 
-            with state.admit(work):
+            with state.reserve(work):
                 rendered_segments = list(
                     render_segments(segments, voice=voice, work=work, expressive=expressive)
                 )
@@ -296,7 +307,7 @@ def create_app(
                     400,
                     retryable=False,
                 )
-            resources.enter_context(state.admit(work))
+            resources.enter_context(state.reserve(work))
 
             def generate() -> Iterator[bytes]:
                 total_bytes = 0

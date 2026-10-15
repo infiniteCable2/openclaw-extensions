@@ -45,6 +45,7 @@ def test_liveness_and_readiness_are_content_free(service) -> None:
         "model": "faster-whisper",
         "observedBackend": "cuda",
         "queueDepth": 0,
+        "inFlightRequests": 0,
         "ready": True,
         "requestedBackend": "cuda",
         "state": "ready",

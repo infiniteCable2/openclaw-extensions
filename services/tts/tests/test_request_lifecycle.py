@@ -106,3 +106,44 @@ def test_cancelled_fifo_head_does_not_block_next_waiter():
     assert completed == ["cancelled", "second"]
     assert state.snapshot() == (0, 0)
 
+
+def test_reservation_is_bounded_without_holding_compute():
+    state = ServiceState(capacity=1)
+    with state.reserve():
+        with state.compute():
+            assert state.snapshot() == (1, 0)
+        assert state.snapshot() == (0, 0)
+        assert state.request_count() == 1
+        with pytest.raises(ServiceError) as error:
+            with state.reserve():
+                pytest.fail("reservation capacity was exceeded")
+        assert error.value.status == 429
+    assert state.snapshot() == (0, 0)
+
+
+def test_continuing_request_rejoins_fifo_behind_already_ready_request():
+    state = ServiceState(capacity=2)
+    order = []
+    waiting = threading.Event()
+    def other_request():
+        with state.reserve():
+            waiting.set()
+            with state.compute():
+                order.append("other")
+    with state.reserve():
+        with state.compute():
+            order.append("first")
+            thread = threading.Thread(target=other_request)
+            thread.start()
+            assert waiting.wait(timeout=1)
+            limit = time.monotonic() + 1
+            while state.snapshot()[1] != 1 and time.monotonic() < limit:
+                time.sleep(0.001)
+            assert state.snapshot()[1] == 1
+        with state.compute():
+            order.append("continuation")
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert order == ["first", "other", "continuation"]
+    assert state.snapshot() == (0, 0)
+

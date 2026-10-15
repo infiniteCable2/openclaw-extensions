@@ -69,6 +69,7 @@ def test_liveness_and_readiness_are_content_free(service) -> None:
     ready = client.get("/ready")
     assert ready.get_json() == {
         "activeRequests": 0,
+        "inFlightRequests": 0,
         "model": "chatterbox",
         "generation": ready.headers["X-OpenClaw-Service-Generation"],
         "observedBackend": "cuda",
@@ -361,7 +362,9 @@ def test_unstarted_stream_close_releases_admission_and_retires_request():
         response = app.full_dispatch_request()
         assert response.status_code == 200
         assert backend.calls == []
-        assert app.test_client().get("/status").get_json()["activeRequests"] == 1
+        status = app.test_client().get("/status").get_json()
+        assert status["activeRequests"] == 0
+        assert status["inFlightRequests"] == 1
         response.close()
         response.close()
     assert app.test_client().get("/status").get_json()["activeRequests"] == 0
@@ -430,3 +433,129 @@ def test_prepared_plan_requires_current_worker_and_does_not_rechunk(endpoint):
     assert result.status_code == 200
     assert result.data
     assert backend.calls == [("Erster Satz.", "nova"), ("Zweiter Satz.", "nova")]
+
+
+def test_slow_stream_consumer_does_not_retain_the_inference_worker():
+    import threading
+
+    class PcmEncoder(FakeEncoder):
+        def encode(self, rendered, **_kwargs):
+            return rendered.data
+
+    backend = FakeBackend()
+    app = create_app(backend, PcmEncoder(), max_text_characters=1000, max_queued_requests=1)
+    text = "Dieser längere Beispielsatz enthält ausreichend Wörter für einen eigenen Abschnitt. " * 8
+    body = {"input": text, "model": "chatterbox", "voice": "nova", "response_format": "pcm"}
+    first = app.test_client().post("/v1/audio/speech/stream", json=body, buffered=False)
+    assert len(backend.calls) == 1
+    finished = threading.Event()
+    result = []
+
+    def other_request():
+        try:
+            response = app.test_client().post("/v1/audio/speech", json={
+                **body, "input": "Andere Unterhaltung.", "voice": "example_voice_member",
+            })
+            result.append(response.status_code)
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=other_request, daemon=True)
+    thread.start()
+    try:
+        # Do not consume/close the first response to make the second one progress.
+        assert finished.wait(timeout=2)
+        assert result == [200]
+        assert [voice for _text, voice in backend.calls] == ["nova", "example_voice_member"]
+        assert first.data[-4:] == b"\0\0\0\0"
+        assert all(voice == "nova" for _text, voice in backend.calls[2:])
+    finally:
+        first.close()
+        thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert app.test_client().get("/status").get_json()["activeRequests"] == 0
+
+
+def test_open_streams_remain_capacity_bounded_until_close():
+    app = create_app(FakeBackend(), FakeEncoder(), max_queued_requests=1)
+    body = {"input": "Hallo", "model": "chatterbox", "voice": "nova", "response_format": "pcm"}
+    responses = []
+    try:
+        for _ in range(2):
+            with app.test_request_context("/v1/audio/speech/stream", method="POST", json=body):
+                responses.append(app.full_dispatch_request())
+                assert responses[-1].status_code == 200
+        rejected = app.test_client().post("/v1/audio/speech", json=body)
+        assert rejected.status_code == 429
+        assert rejected.get_json()["error"]["code"] == "overloaded"
+    finally:
+        for response in responses:
+            response.close()
+    assert app.test_client().get("/status").get_json()["activeRequests"] == 0
+    assert app.test_client().post("/v1/audio/speech", json=body).status_code == 200
+
+
+def test_cancelled_paused_stream_never_synthesizes_its_next_unit():
+    from uuid import uuid4
+
+    class PcmEncoder(FakeEncoder):
+        def encode(self, rendered, **_kwargs):
+            return rendered.data
+
+    identifier = str(uuid4())
+    backend = FakeBackend()
+    app = create_app(backend, PcmEncoder(), max_text_characters=1000)
+    client = app.test_client()
+    body = {"input": "Dieser Beispielsatz bildet einen längeren eigenständigen Abschnitt. " * 8,
+            "model": "chatterbox", "voice": "nova", "response_format": "pcm"}
+    response = client.post("/v1/audio/speech/stream", json=body, buffered=False,
+                           headers={"X-OpenClaw-Request-Id": identifier})
+    assert len(backend.calls) == 1
+    assert client.post(f"/v1/requests/{identifier}/cancel").status_code == 204
+    try:
+        with pytest.raises(RuntimeError, match="streaming inference failed"):
+            _ = response.data
+    finally:
+        response.close()
+    assert len(backend.calls) == 1
+    assert client.get("/status").get_json()["activeRequests"] == 0
+    assert client.post("/v1/audio/speech", json={**body, "input": "Neue Anfrage."}).status_code == 200
+
+
+def test_eager_backend_factory_iterator_and_cleanup_share_compute_ownership():
+    phases = []
+
+    def record(phase):
+        status = app.test_client().get("/status").get_json()
+        assert status["activeRequests"] == 1
+        assert status["inFlightRequests"] == 1
+        phases.append(phase)
+
+    class Backend(FakeBackend):
+        def synthesize_segments(self, texts, *, voice_id):
+            record("factory")
+            source = iter(texts)
+
+            class Rendered:
+                def __iter__(self):
+                    record("iter")
+                    return self
+
+                def __next__(self):
+                    record("next")
+                    next(source)
+                    return RenderedPcm(b"\0\0", 24_000)
+
+                def close(self):
+                    record("close")
+
+            return Rendered()
+
+    app = create_app(Backend(), FakeEncoder())
+    response = app.test_client().post("/v1/audio/speech", json={
+        "input": "Hallo.", "model": "chatterbox", "voice": "nova", "response_format": "pcm",
+    })
+    assert response.status_code == 200
+    assert phases == ["factory", "iter", "next", "next", "close"]
+    status = app.test_client().get("/status").get_json()
+    assert status["activeRequests"] == status["inFlightRequests"] == 0

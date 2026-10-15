@@ -80,6 +80,29 @@ def test_synthesis_and_stream_use_same_opt_in_plan():
     assert first == [("[joyful] Wir freuen uns <laugh> (((sehr))).", True)]
 
 
+def test_interleaved_stream_preserves_its_expression_mode_and_order():
+    backend = Backend()
+    client = create_app(backend, Encoder()).test_client()
+    headers = expression_headers(client)
+    text = "Erster Satz. Zweiter Satz."
+    request = {**body(), "input": text, "expression": {"emotion": "joyful", "parts": [{"text": text}]},
+               "segmentation": {"schema_version": 1, "segments": [
+                   {"text": "Erster Satz.", "pauseMs": 180}, {"text": "Zweiter Satz.", "pauseMs": 0},
+               ]}}
+    response = client.post("/v1/audio/speech/stream", json=request, headers=headers, buffered=False)
+    try:
+        assert len(backend.calls) == 1
+        assert client.post("/v1/audio/speech", json=body()).status_code == 200
+        assert response.data[-4:] == b"\0\0\0\0"
+    finally:
+        response.close()
+    assert backend.calls == [
+        ("[joyful] Erster Satz.", True),
+        ("Wir freuen uns sehr.", False),
+        ("[joyful] Zweiter Satz.", True),
+    ]
+
+
 def test_capabilities_do_not_advertise_whisper_or_private_references():
     capabilities = create_app(Backend(), Encoder()).test_client().get("/v1/capabilities").get_json()
     assert capabilities["expression"]["whisper"] is False

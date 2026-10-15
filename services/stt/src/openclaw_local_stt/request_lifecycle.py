@@ -95,15 +95,31 @@ class RequestRegistry:
 
 
 class ServiceState:
-    """FIFO bounded inference admission with cooperative cancellation."""
+    """Bound response lifetimes separately from FIFO single-worker computation."""
     def __init__(self, *, capacity: int) -> None:
         self.capacity = capacity
         self.condition = threading.Condition()
         self.waiters: list[object] = []
         self.active_requests = 0
+        self.reserved_requests = 0
 
     @contextmanager
-    def admit(self, work: RequestWork | None = None) -> Iterator[None]:
+    def reserve(self, work: RequestWork | None = None) -> Iterator[None]:
+        with self.condition:
+            if work is not None:
+                work.checkpoint()
+            if self.reserved_requests >= self.capacity:
+                raise ServiceError("overloaded", "request queue is full", 429, retryable=True)
+            self.reserved_requests += 1
+        try:
+            yield
+        finally:
+            with self.condition:
+                self.reserved_requests -= 1
+                self.condition.notify_all()
+
+    @contextmanager
+    def compute(self, work: RequestWork | None = None) -> Iterator[None]:
         ticket = object()
         admitted = False
         with self.condition:
@@ -134,4 +150,13 @@ class ServiceState:
     def snapshot(self) -> tuple[int, int]:
         with self.condition:
             return self.active_requests, len(self.waiters)
+
+    def request_count(self) -> int:
+        with self.condition:
+            return self.reserved_requests
+
+    @contextmanager
+    def admit(self, work: RequestWork | None = None) -> Iterator[None]:
+        with self.reserve(work), self.compute(work):
+            yield
 

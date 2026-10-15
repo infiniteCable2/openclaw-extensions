@@ -95,15 +95,38 @@ class RequestRegistry:
 
 
 class ServiceState:
-    """FIFO bounded inference admission with cooperative cancellation."""
+    """Bound request lifetimes separately from FIFO, single-worker compute.
+
+    A stream retains its reservation until close, but only owns inference while
+    producing one complete backend segment. Transport backpressure must never
+    retain the compute token. No background producer or extra audio queue is
+    created here; the consumer determines when its next unit is ready to run.
+    """
     def __init__(self, *, capacity: int) -> None:
         self.capacity = capacity
         self.condition = threading.Condition()
         self.waiters: list[object] = []
         self.active_requests = 0
+        self.reserved_requests = 0
 
     @contextmanager
-    def admit(self, work: RequestWork | None = None) -> Iterator[None]:
+    def reserve(self, work: RequestWork | None = None) -> Iterator[None]:
+        with self.condition:
+            if work is not None:
+                work.checkpoint()
+            if self.reserved_requests >= self.capacity:
+                raise ServiceError("overloaded", "request queue is full", 429, retryable=True)
+            self.reserved_requests += 1
+        try:
+            yield
+        finally:
+            with self.condition:
+                self.reserved_requests -= 1
+                self.condition.notify_all()
+
+    @contextmanager
+    def compute(self, work: RequestWork | None = None) -> Iterator[None]:
+        """Run one inference unit; a continuing request rejoins the FIFO tail."""
         ticket = object()
         admitted = False
         with self.condition:
@@ -131,7 +154,17 @@ class ServiceState:
                 self.active_requests = 0
                 self.condition.notify_all()
 
+    @contextmanager
+    def admit(self, work: RequestWork | None = None) -> Iterator[None]:
+        """Reserve and run one bounded non-streaming compute unit."""
+        with self.reserve(work), self.compute(work):
+            yield
+
     def snapshot(self) -> tuple[int, int]:
         with self.condition:
             return self.active_requests, len(self.waiters)
+
+    def request_count(self) -> int:
+        with self.condition:
+            return self.reserved_requests
 

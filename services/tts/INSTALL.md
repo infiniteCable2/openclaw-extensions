@@ -79,8 +79,9 @@ Acceptance requires public-catalog privacy, CUDA observation, successful Opus
 synthesis, correct per-voice switching without a second model load, worker
 termination after idle, lease release, and broker-confirmed standby. Include a
 long German sample that crosses the service's segment boundary: every source
-word must remain represented, Chatterbox must prepare the selected reference
-only once for the request, and the result must be one ordered audio object.
+word must remain represented, Chatterbox must reuse the selected reference
+while its conditioning remains current (restoring it after another voice runs),
+and the result must be one ordered audio object.
 Also cover numbered lists, German abbreviations, clock times, and decimal
 numbers; Syntok must keep their punctuation attached to the intended sentence.
 
@@ -90,6 +91,23 @@ linguistic segment boundaries across arbitrary HTTP chunking. Acceptance must
 prove first-segment playback before later synthesis completes, ordered delivery,
 bounded total audio, cancellation on barge-in, and rejection of a stream without
 its terminal completion frame.
+
+Request capacity and inference ownership are separate. A buffered or streaming
+request retains one bounded admission reservation until completion or close;
+`inFlightRequests` reports those reservations, `activeRequests` reports running
+inference (zero or one), and `queueDepth` reports ready compute units waiting
+for the single worker. Each complete synthesis segment
+joins the FIFO queue independently. Encoding, HTTP backpressure and playout do
+not hold the inference token. This prevents a slow consumer from blocking other
+admitted requests, without background producer threads or an unbounded audio
+queue. It is cooperative fairness at complete segment boundaries, not model
+preemption or a guarantee of simultaneous real-time throughput.
+
+OpenClaw owns the bounded prepared-audio lookahead and delivery priority. The
+service does not interpret agent, session or channel identities. Size, deadline,
+request capacity and cancellation limits remain in force while streams are
+open. Cancellation cannot interrupt a CUDA kernel already running, but no
+subsequent segment may start for that cancelled request.
 
 ## Backend segment profiles
 

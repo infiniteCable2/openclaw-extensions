@@ -94,6 +94,28 @@ If STT and TTS cannot coexist in GPU memory, configure a very short positive
 `idleStopMs` for both local services. A value of `0` means no idle stop in the
 current OpenClaw lifecycle implementation and must not be used for that policy.
 
+## Bounded inference and response delivery
+
+The service has one model inference slot. Admission is FIFO for a complete
+uploaded utterance, including its speech frontend and decoder lifetime; yielded
+Whisper segments are not independently resumable scheduling units. Existing
+upstream audio-batch/turn aggregation is unchanged.
+
+Streaming responses use a lazy producer and an ordered SSE mailbox. A
+`speech.confirmed` event can reach the client while decoding continues, but a
+slow HTTP consumer never holds the model after decoding completes. Each response
+is bounded to 256 events and 1 MiB of encoded event data plus one terminal error;
+exceeding either limit fails closed. No transcript or audio is logged.
+
+`max_queued_requests + 1` bounds the whole admitted request lifetime, including
+responses still being drained, and therefore bounds producer threads and pending
+response memory. `/status` `activeRequests` and `queueDepth` describe model
+computation, not completed responses waiting for their consumer.
+`inFlightRequests` counts all reserved request lifetimes. A disconnect
+cancels cooperatively; request capacity and temporary files remain owned until
+the running decoder actually retires. There is no additional GPU worker or
+per-segment decoder preemption.
+
 ## Rollback
 
 Restore the previous OpenClaw configuration/plugin selection and restart the

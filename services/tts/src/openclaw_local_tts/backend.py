@@ -112,6 +112,7 @@ class ChatterboxBackend:
         self.requested_backend = "cuda"
         self.observed_backend = "cuda"
         self.sample_rate = int(getattr(self._client, "sr", 24_000))
+        self._conditioned_voice: str | None = None
         if self.sample_rate <= 0:
             raise RuntimeError("Chatterbox returned an invalid sample rate")
 
@@ -143,10 +144,14 @@ class ChatterboxBackend:
         import numpy as np
         import torch
 
+        # Complete segments from different requests may now interleave. The
+        # client's cached conditioning is global, not owned by this generator.
+        reference_required = prepare_voice or self._conditioned_voice != voice_id
+        self._conditioned_voice = None
         waveform = self._client.generate(
             text=text,
             language_id=self.language,
-            audio_prompt_path=str(self._voice_references[voice_id]) if prepare_voice else None,
+            audio_prompt_path=str(self._voice_references[voice_id]) if reference_required else None,
             **self._voice_generation_settings[voice_id],
         )
         if waveform is None:
@@ -158,5 +163,6 @@ class ChatterboxBackend:
         array = np.squeeze(array)
         if array.ndim != 1 or array.size == 0:
             raise RuntimeError("Chatterbox returned invalid mono audio")
+        self._conditioned_voice = voice_id
         pcm = np.rint(np.clip(array, -1.0, 1.0) * 32767.0).astype("<i2", copy=False)
         return RenderedPcm(data=pcm.tobytes(), sample_rate=self.sample_rate)

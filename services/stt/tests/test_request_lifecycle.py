@@ -106,3 +106,17 @@ def test_cancelled_fifo_head_does_not_block_next_waiter():
     assert completed == ["cancelled", "second"]
     assert state.snapshot() == (0, 0)
 
+
+def test_completed_compute_does_not_release_response_capacity():
+    state = ServiceState(capacity=1)
+    with state.reserve():
+        with state.compute():
+            assert state.snapshot() == (1, 0)
+        assert state.snapshot() == (0, 0)
+        with pytest.raises(ServiceError) as error:
+            with state.reserve():
+                pytest.fail("a slow response must retain bounded request capacity")
+        assert error.value.code == "overloaded"
+    with state.admit():
+        assert state.snapshot() == (1, 0)
+

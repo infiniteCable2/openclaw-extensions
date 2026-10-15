@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import tempfile
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -11,6 +11,7 @@ from flask import Flask, Response, jsonify, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from .backend import TranscriptionBackend
+from .inference_stream import InferenceStream
 from .request_lifecycle import RequestRegistry, RequestWork, ServiceError, ServiceState
 from .speech_frontend import enhance_speech_file
 
@@ -139,6 +140,7 @@ def create_app(
             "observedBackend": backend.observed_backend,
             "activeRequests": active,
             "queueDepth": queued,
+            "inFlightRequests": state.request_count(),
         }
 
     @app.errorhandler(RequestEntityTooLarge)
@@ -176,54 +178,52 @@ def create_app(
         audio_path: Path, *, language: str | None, prompt: str | None,
         speech_input: bool, work: RequestWork,
     ) -> Response:
-        # Reserve before returning HTTP 200. threading.Lock is not owner-thread
-        # bound; ExitStack retains the same bounded admission through WSGI close.
-        resources = ExitStack()
-        resources.callback(registry.finish, work)
-        resources.callback(audio_path.unlink, missing_ok=True)
+        # Capacity belongs to the whole response, but the model belongs only to
+        # a complete inference unit, never to socket backpressure.
+        lifetime = ExitStack()
+        inference = ExitStack()
+        lifetime.callback(registry.finish, work)
+        inference.callback(audio_path.unlink, missing_ok=True)
         try:
-            resources.enter_context(state.admit(work))
-            if speech_input:
-                audio_path = speech_frontend(audio_path, checkpoint=work.checkpoint)
-                resources.callback(audio_path.unlink, missing_ok=True)
-            work.checkpoint()
-            events = backend.transcribe_stream(
-                audio_path, language=language, prompt=prompt, checkpoint=work.checkpoint,
-            )
-            resources.callback(events.close)
+            lifetime.enter_context(state.reserve(work))
 
-            def generate() -> Iterator[bytes]:
-                try:
-                    for event in events:
-                        work.checkpoint()
-                        yield _sse_event(event)
-                except ServiceError as error:
-                    yield _sse_event({"type": "error", "error": {
+            def produce() -> Iterator[bytes]:
+                nonlocal audio_path
+                with state.compute(work):
+                    if speech_input:
+                        audio_path = speech_frontend(audio_path, checkpoint=work.checkpoint)
+                        inference.callback(audio_path.unlink, missing_ok=True)
+                    work.checkpoint()
+                    events = backend.transcribe_stream(
+                        audio_path, language=language, prompt=prompt, checkpoint=work.checkpoint,
+                    )
+                    with closing(events):
+                        for event in events:
+                            work.checkpoint()
+                            yield _sse_event(event)
+
+            def error_event(error: ServiceError | None) -> bytes:
+                if error is not None:
+                    return _sse_event({"type": "error", "error": {
                         "code": error.code, "message": str(error), "retryable": error.retryable,
                     }})
-                except Exception:
-                    # Headers may already be sent. Never expose upstream error
-                    # text or pretend that a failed stream completed normally.
-                    yield _sse_event({
-                        "type": "error",
-                        "error": {
-                            "code": "inference_failed",
-                            "message": "STT inference failed",
-                            "retryable": True,
-                        },
-                    })
-                finally:
-                    resources.close()
+                return _sse_event({"type": "error", "error": {
+                    "code": "inference_failed", "message": "STT inference failed", "retryable": True,
+                }})
 
+            stream = InferenceStream(
+                work=work, produce=produce, cleanup=inference.close,
+                release=lifetime.close, error_event=error_event,
+            )
             response = Response(
-                generate(), mimetype="text/event-stream",
+                stream, mimetype="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
-            # A generator's finally does not run if it was never started.
-            response.call_on_close(resources.close)
+            response.call_on_close(stream.close)
             return response
         except BaseException:
-            resources.close()
+            inference.close()
+            lifetime.close()
             raise
 
     @app.post("/v1/audio/transcriptions")
