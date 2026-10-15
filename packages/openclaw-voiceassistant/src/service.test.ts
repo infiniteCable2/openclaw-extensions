@@ -62,7 +62,9 @@ describe("voiceassistant service admission", () => {
         volume: 0.2,
       },
     });
-    const api = { runtime: { nodes: { invoke: vi.fn() } } } as never;
+    const api = { runtime: { nodes: {
+      invoke: vi.fn(), list: vi.fn(async () => ({ nodes: [{ nodeId, connected: true }] })),
+    } } } as never;
     const context = {
       config: {}, logger: { warn: vi.fn(), info: vi.fn(), debug: vi.fn() }, invokeNode,
     } as never;
@@ -96,9 +98,10 @@ describe("voiceassistant service admission", () => {
     await service.stop();
   });
 
-  it("reopens a continuous session after bridge loss without another button press", async () => {
+  it.each(["bridge loss", "node disconnect"])("reopens continuous mode after %s", async (failure) => {
     let active = false;
     let bridgeClosed = false;
+    let connected = true;
     mocks.startEngine.mockImplementation(async () => ({
       stop: mocks.stopEngine,
       getHealth: () => ({ bridgeClosed }),
@@ -118,7 +121,9 @@ describe("voiceassistant service admission", () => {
     const config = parseVoiceassistantConfig({
       nodeId, agentId: "example_owner", transcriptionProvider: "local-media",
     });
-    const api = { runtime: { nodes: { invoke: vi.fn() } } } as never;
+    const api = { runtime: { nodes: {
+      invoke: vi.fn(), list: vi.fn(async () => ({ nodes: [{ nodeId, connected }] })),
+    } } } as never;
     const context = {
       config: {}, logger: { warn: vi.fn(), info: vi.fn(), debug: vi.fn() }, invokeNode,
     } as never;
@@ -126,12 +131,75 @@ describe("voiceassistant service admission", () => {
     const poll = (service as unknown as { poll(): Promise<void> }).poll.bind(service);
     await poll();
     await vi.waitFor(() => expect(mocks.startEngine).toHaveBeenCalledTimes(1));
-    bridgeClosed = true;
+    bridgeClosed = failure === "bridge loss";
+    connected = failure !== "node disconnect";
     await poll(); // close the unhealthy engine
+    expect(mocks.stopEngine).toHaveBeenCalledOnce();
+    expect(mocks.release).toHaveBeenCalledOnce();
+    if (!connected) {
+      invokeNode.mockClear();
+      await poll();
+      await poll();
+      expect(invokeNode).not.toHaveBeenCalled();
+      expect(mocks.release).toHaveBeenCalledOnce();
+      connected = true;
+    }
     await poll(); // clear its stale node bridge
     bridgeClosed = false;
     await poll();
     await vi.waitFor(() => expect(mocks.startEngine).toHaveBeenCalledTimes(2));
     await service.stop();
+  });
+
+  it("does not invoke missing or disconnected nodes and resumes on reconnect", async () => {
+    const list = vi.fn()
+      .mockResolvedValueOnce({ nodes: [] })
+      .mockResolvedValueOnce({ nodes: [{ nodeId: "c".repeat(64), connected: true }] })
+      .mockResolvedValueOnce({ nodes: [{ nodeId, connected: false }] })
+      .mockResolvedValue({ nodes: [{ nodeId, connected: true }] });
+    const invokeNode = vi.fn(async () => ({ payload: {
+      wakeSequence: 0, muted: true, listening: false, active: false, persistent: false,
+    } }));
+    const config = parseVoiceassistantConfig({
+      nodeId, agentId: "example_owner", transcriptionProvider: "local-media",
+    });
+    const api = { runtime: { nodes: { list, invoke: vi.fn() } } } as never;
+    const context = {
+      config: {}, logger: { warn: vi.fn(), info: vi.fn(), debug: vi.fn() }, invokeNode,
+    } as never;
+    const service = new VoiceassistantService(api, context, config);
+    const poll = (service as unknown as { poll(): Promise<void> }).poll.bind(service);
+    await poll();
+    await poll();
+    await poll();
+    expect(invokeNode).not.toHaveBeenCalled();
+    await poll();
+    expect(list).toHaveBeenLastCalledWith({ connected: true });
+    expect(invokeNode).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      nodeId, params: { action: "status" },
+    }));
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    await service.stop();
+  });
+
+  it("does not send a status request after stop while presence is resolving", async () => {
+    let resolvePresence!: (value: { nodes: { nodeId: string; connected: boolean }[] }) => void;
+    const list = vi.fn(() => new Promise<{ nodes: { nodeId: string; connected: boolean }[] }>(
+      (resolve) => { resolvePresence = resolve; },
+    ));
+    const invokeNode = vi.fn();
+    const config = parseVoiceassistantConfig({
+      nodeId, agentId: "example_owner", transcriptionProvider: "local-media",
+    });
+    const api = { runtime: { nodes: { list, invoke: vi.fn() } } } as never;
+    const context = {
+      config: {}, logger: { warn: vi.fn(), info: vi.fn(), debug: vi.fn() }, invokeNode,
+    } as never;
+    const service = new VoiceassistantService(api, context, config);
+    const pending = (service as unknown as { poll(): Promise<void> }).poll();
+    await service.stop();
+    resolvePresence({ nodes: [{ nodeId, connected: true }] });
+    await pending;
+    expect(invokeNode).not.toHaveBeenCalled();
   });
 });

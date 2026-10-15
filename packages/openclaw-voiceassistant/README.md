@@ -35,6 +35,11 @@ stops an orphan bridge instead of adopting stale audio. Continuous mode reopens
 a lost session without requiring another button press. Wake-word mode returns
 to local detection after its six-second inactivity window.
 
+Status polling uses Gateway node presence first. While the configured node is
+disconnected, no device status invocation is sent and any active speech session
+is closed. Polling resumes automatically after the Gateway sees the node connected
+again; an offline status check does not trigger reconnect/wake attempts.
+
 Example configuration shape (replace the placeholders; keep existing command
 grants when adding the new one):
 

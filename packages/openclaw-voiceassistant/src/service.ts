@@ -167,6 +167,15 @@ export class VoiceassistantService {
   }
 
   private async poll(): Promise<void> {
+    const { nodes } = await this.api.runtime.nodes.list({ connected: true });
+    if (this.abort.signal.aborted) {
+      return;
+    }
+    if (!nodes.some((node) => node.nodeId === this.config.nodeId && node.connected === true)) {
+      // Read Gateway presence, not the device: invoking an offline node triggers wake attempts.
+      await this.closeSession();
+      return;
+    }
     const current = status(await this.invoke({ action: "status" }));
     if (current.wakeSequence < this.lastWakeSequence) {
       this.lastWakeSequence = 0; // Pi restarted; its monotonic wake counter reset.
