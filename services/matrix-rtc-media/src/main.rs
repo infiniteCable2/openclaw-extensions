@@ -3,7 +3,11 @@ mod protocol;
 mod video;
 
 use std::{
-    collections::{BTreeMap, BTreeSet}, env, fs::Permissions, os::unix::fs::PermissionsExt, path::PathBuf,
+    collections::{BTreeMap, BTreeSet},
+    env,
+    fs::Permissions,
+    os::unix::fs::PermissionsExt,
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -50,9 +54,14 @@ fn socket_args() -> anyhow::Result<(PathBuf, Option<PathBuf>)> {
     let video = if let Some(flag) = args.next() {
         ensure!(flag == "--video-socket", "unexpected command arguments");
         let video = PathBuf::from(args.next().context("missing video socket path")?);
-        ensure!(video.is_absolute() && video != path, "invalid video socket path");
+        ensure!(
+            video.is_absolute() && video != path,
+            "invalid video socket path"
+        );
         Some(video)
-    } else { None };
+    } else {
+        None
+    };
     ensure!(args.next().is_none(), "unexpected command arguments");
     Ok((path, video))
 }
@@ -186,10 +195,19 @@ async fn run_started_session(
     video_listener: Option<UnixListener>,
 ) -> anyhow::Result<()> {
     let start = validate_start(read_control_line(&mut control).await?)?;
-    ensure!(start.video.is_some() == video_listener.is_some(), "video socket and capture policy must match");
+    ensure!(
+        start.video.is_some() == video_listener.is_some(),
+        "video socket and capture policy must match"
+    );
     let video_socket = if let Some(listener) = video_listener {
-        Some(tokio::time::timeout(std::time::Duration::from_secs(15), listener.accept()).await??.0)
-    } else { None };
+        Some(
+            tokio::time::timeout(std::time::Duration::from_secs(15), listener.accept())
+                .await??
+                .0,
+        )
+    } else {
+        None
+    };
     let allowed: BTreeSet<String> = start.allowed_remote_identities;
     let key_provider = KeyProvider::new(KeyProviderOptions {
         ratchet_window_size: 10,
@@ -380,7 +398,10 @@ async fn run_started_session(
     Ok(())
 }
 
-async fn run_session(stream: UnixStream, video_listener: Option<UnixListener>) -> anyhow::Result<()> {
+async fn run_session(
+    stream: UnixStream,
+    video_listener: Option<UnixListener>,
+) -> anyhow::Result<()> {
     let (read_half, write_half) = stream.into_split();
     let control = BufReader::new(read_half);
     let writer = Arc::new(Mutex::new(write_half));
@@ -418,7 +439,9 @@ async fn main() -> anyhow::Result<()> {
         let listener = UnixListener::bind(path).context("failed to bind video socket")?;
         std::fs::set_permissions(path, Permissions::from_mode(0o600))?;
         Some(listener)
-    } else { None };
+    } else {
+        None
+    };
 
     let result = async {
         let (stream, _) = listener.accept().await?;
@@ -431,6 +454,8 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("matrix_rtc_media_fatal=true");
     }
     let _ = std::fs::remove_file(&socket_path);
-    if let Some(path) = video_path { let _ = std::fs::remove_file(path); }
+    if let Some(path) = video_path {
+        let _ = std::fs::remove_file(path);
+    }
     result
 }

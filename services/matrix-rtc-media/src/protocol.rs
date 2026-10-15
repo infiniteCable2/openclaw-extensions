@@ -25,9 +25,18 @@ pub struct VideoConfig {
 
 impl VideoConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
-        ensure!((250..=60_000).contains(&self.interval_ms), "invalid video interval");
-        ensure!((64..=4096).contains(&self.max_dimension), "invalid video dimension limit");
-        ensure!((4096..=32 * 1024 * 1024).contains(&self.max_bytes), "invalid video byte limit");
+        ensure!(
+            (250..=60_000).contains(&self.interval_ms),
+            "invalid video interval"
+        );
+        ensure!(
+            (64..=4096).contains(&self.max_dimension),
+            "invalid video dimension limit"
+        );
+        ensure!(
+            (4096..=32 * 1024 * 1024).contains(&self.max_bytes),
+            "invalid video byte limit"
+        );
         Ok(())
     }
 
@@ -35,12 +44,21 @@ impl VideoConfig {
         if width == 0 || height == 0 || width > self.max_dimension || height > self.max_dimension {
             return None;
         }
-        let bytes = usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?.checked_mul(4)?;
+        let bytes = usize::try_from(width)
+            .ok()?
+            .checked_mul(usize::try_from(height).ok()?)?
+            .checked_mul(4)?;
         (bytes <= self.max_bytes).then_some(bytes)
     }
 }
 
-pub fn encode_video_frame_header(timestamp_ms: u64, width: u32, height: u32, source: u32, bytes: u32) -> [u8; VIDEO_FRAME_HEADER_BYTES] {
+pub fn encode_video_frame_header(
+    timestamp_ms: u64,
+    width: u32,
+    height: u32,
+    source: u32,
+    bytes: u32,
+) -> [u8; VIDEO_FRAME_HEADER_BYTES] {
     let mut header = [0_u8; VIDEO_FRAME_HEADER_BYTES];
     header[..4].copy_from_slice(b"OCVF");
     header[4] = 1;
@@ -355,13 +373,31 @@ mod tests {
 
     #[test]
     fn video_limits_are_bounded_before_frame_allocation() {
-        let config = VideoConfig { interval_ms: 1000, max_dimension: 1920, max_bytes: 16 * 1024 * 1024 };
+        let config = VideoConfig {
+            interval_ms: 1000,
+            max_dimension: 1920,
+            max_bytes: 16 * 1024 * 1024,
+        };
         assert!(config.validate().is_ok());
         assert_eq!(config.frame_bytes(1920, 1080), Some(8_294_400));
         assert_eq!(config.frame_bytes(1921, 1080), None);
         assert_eq!(config.frame_bytes(0, 1080), None);
-        assert_eq!(VideoConfig { max_bytes: 4, ..config }.frame_bytes(2, 2), None);
-        assert!(VideoConfig { interval_ms: 0, ..config }.validate().is_err());
+        assert_eq!(
+            VideoConfig {
+                max_bytes: 4,
+                ..config
+            }
+            .frame_bytes(2, 2),
+            None
+        );
+        assert!(
+            VideoConfig {
+                interval_ms: 0,
+                ..config
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

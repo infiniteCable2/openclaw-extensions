@@ -26,24 +26,44 @@ pub async fn pump_remote_video(
     let mut stream = NativeVideoStream::new(track.rtc_track());
     let mut sampled_at: Option<Instant> = None;
     while let Some(frame) = stream.next().await {
-        if output.is_closed() { break; }
+        if output.is_closed() {
+            break;
+        }
         let now = Instant::now();
-        if sampled_at.is_some_and(|at| now.duration_since(at) < Duration::from_millis(config.interval_ms)) {
+        if sampled_at
+            .is_some_and(|at| now.duration_since(at) < Duration::from_millis(config.interval_ms))
+        {
             continue;
         }
-        if config.frame_bytes(frame.buffer.width(), frame.buffer.height()).is_none() { continue; }
+        if config
+            .frame_bytes(frame.buffer.width(), frame.buffer.height())
+            .is_none()
+        {
+            continue;
+        }
         sampled_at = Some(now);
-        let timestamp_ms = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
+        let timestamp_ms =
+            u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
         // A single shared slot bounds all subscribed video tracks; drop rather than stall audio.
-        let _ = output.try_send(VideoSample { frame, source, timestamp_ms });
+        let _ = output.try_send(VideoSample {
+            frame,
+            source,
+            timestamp_ms,
+        });
     }
     stream.close();
     Ok(())
 }
 
 fn rotate_rgba(input: Vec<u8>, width: u32, height: u32, rotation: i32) -> (Vec<u8>, u32, u32) {
-    if rotation == 0 { return (input, width, height); }
-    let (out_width, out_height) = if rotation == 90 || rotation == 270 { (height, width) } else { (width, height) };
+    if rotation == 0 {
+        return (input, width, height);
+    }
+    let (out_width, out_height) = if rotation == 90 || rotation == 270 {
+        (height, width)
+    } else {
+        (width, height)
+    };
     let mut output = vec![0; input.len()];
     for y in 0..height {
         for x in 0..width {
@@ -61,20 +81,45 @@ fn rotate_rgba(input: Vec<u8>, width: u32, height: u32, rotation: i32) -> (Vec<u
     (output, out_width, out_height)
 }
 
-pub async fn pump_video_output(mut socket: UnixStream, mut input: mpsc::Receiver<VideoSample>, config: VideoConfig) -> anyhow::Result<()> {
+pub async fn pump_video_output(
+    mut socket: UnixStream,
+    mut input: mpsc::Receiver<VideoSample>,
+    config: VideoConfig,
+) -> anyhow::Result<()> {
     while let Some(sample) = input.recv().await {
         let source = sample.source;
         let timestamp_ms = sample.timestamp_ms;
         let (pixels, width, height) = tokio::task::spawn_blocking(move || {
             let width = sample.frame.buffer.width();
             let height = sample.frame.buffer.height();
-            let bytes = config.frame_bytes(width, height).context("video frame exceeds limits")?;
+            let bytes = config
+                .frame_bytes(width, height)
+                .context("video frame exceeds limits")?;
             let buffer = sample.frame.buffer.to_i420();
             let mut pixels = vec![0_u8; bytes];
-            VideoFrameBufferExt::to_argb(&buffer, VideoFormatType::RGBA, &mut pixels, width * 4, width as i32, height as i32);
-            Ok::<_, anyhow::Error>(rotate_rgba(pixels, width, height, sample.frame.rotation as i32))
-        }).await??;
-        let header = encode_video_frame_header(timestamp_ms, width, height, source, u32::try_from(pixels.len())?);
+            VideoFrameBufferExt::to_argb(
+                &buffer,
+                VideoFormatType::RGBA,
+                &mut pixels,
+                width * 4,
+                width as i32,
+                height as i32,
+            );
+            Ok::<_, anyhow::Error>(rotate_rgba(
+                pixels,
+                width,
+                height,
+                sample.frame.rotation as i32,
+            ))
+        })
+        .await??;
+        let header = encode_video_frame_header(
+            timestamp_ms,
+            width,
+            height,
+            source,
+            u32::try_from(pixels.len())?,
+        );
         socket.write_all(&header).await?;
         socket.write_all(&pixels).await?;
     }
