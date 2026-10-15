@@ -211,3 +211,108 @@ def test_standalone_kitten_packing_counts_restored_emphasis_not_placeholders():
     assert len(segments) == 2
     assert all(len(segment.text) <= 300 for segment in segments)
     assert sum(segment.text.count("(((") for segment in segments) == 6
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_emotion_changes_repeat_per_sentence_in_one_generation_unit(prepared):
+    source = "Ich bin hier. Du hörst mich. Es ist still. Wir warten. Jetzt geht es weiter."
+    expression = {"emotion": "joyful", "parts": [
+        {"text": "Ich bin hier. Du hörst mich. "},
+        {"text": "Es ist still. ", "emotion": "sad"},
+        {"text": "Wir warten. "},
+        {"text": "Jetzt geht es weiter.", "emotion": "joyful"},
+    ]}
+    result = prepare_expression_segments(
+        source, expression, KITTEN_EXPRESSION_CAPABILITIES, profile=KITTEN_SPEECH_PROFILE,
+        prepared_segments=[SpeechSegment(source, 180)] if prepared else None,
+    )
+    assert len(result) == 1
+    assert result[0].text == (
+        "[joyful] Ich bin hier. [joyful] Du hörst mich. [sad] Es ist still. "
+        "[sad] Wir warten. [joyful] Jetzt geht es weiter."
+    )
+    if prepared:
+        assert result[0].pause_after_ms == 180
+    assert "".join(part["text"] for part in expression["parts"]) == source
+
+
+def test_prepared_fragment_keeps_emotion_and_events_once_without_rechunking():
+    source = "Erster Satz. Ein langer weiterer Satz endet hier."
+    expression = {"parts": [
+        {"text": "Erster Satz.", "emotion": "sad"}, {"event": "sigh"},
+        {"text": " Ein langer weiterer Satz endet hier.", "emotion": "joyful"},
+    ]}
+    prepared = [SpeechSegment("Erster Satz.", 180), SpeechSegment("Ein langer", 60),
+                SpeechSegment("weiterer Satz endet hier.", 0)]
+    result = prepare_expression_segments(source, expression, KITTEN_EXPRESSION_CAPABILITIES,
+                                         prepared_segments=prepared)
+    assert [part.text for part in result] == [
+        "[sad] Erster Satz. <sigh>", "[joyful] Ein langer", "[joyful] weiterer Satz endet hier.",
+    ]
+    assert [part.pause_after_ms for part in result] == [180, 60, 0]
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_many_short_sentences_do_not_exhaust_plain_text_budget_with_emotion_tags(prepared):
+    source = " ".join(["Ja."] * 32)
+    expression = {"emotion": "contemplative", "parts": [{"text": source}]}
+    result = prepare_expression_segments(
+        source, expression, KITTEN_EXPRESSION_CAPABILITIES, profile=KITTEN_SPEECH_PROFILE,
+        prepared_segments=[SpeechSegment(source, 0)] if prepared else None,
+    )
+    assert len(result) == 1
+    assert result[0].text == " ".join(["[contemplative] Ja."] * 32)
+
+
+def test_citation_at_fragment_start_does_not_suppress_active_emotion():
+    source = "Wir lesen [123] weiter."
+    result = prepare_expression_segments(
+        source, {"emotion": "joyful", "parts": [{"text": source}]}, KITTEN_EXPRESSION_CAPABILITIES,
+        prepared_segments=[SpeechSegment("Wir lesen", 60), SpeechSegment("[123] weiter.", 0)],
+    )
+    assert [part.text for part in result] == ["[joyful] Wir lesen", "[joyful] [123] weiter."]
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_sentence_emotions_respect_abbreviations_numbers_and_emphasis(prepared):
+    source = "Dr. Weber kommt um 12.30 Uhr. Wirklich. Ganz sicher!"
+    expression = {"emotion": "tender", "parts": [
+        {"text": "Dr. Weber kommt um 12.30 Uhr. "},
+        {"text": "Wirklich. Ganz sicher!", "emphasis": True},
+    ]}
+    result = prepare_expression_segments(
+        source, expression, KITTEN_EXPRESSION_CAPABILITIES, profile=KITTEN_SPEECH_PROFILE,
+        prepared_segments=[SpeechSegment(source, 0)] if prepared else None,
+    )
+    assert len(result) == 1
+    assert result[0].text == (
+        "[tender] Dr. Weber kommt um 12.30 Uhr. "
+        "[tender] (((Wirklich.))) [tender] (((Ganz sicher!)))"
+    )
+
+
+@pytest.mark.parametrize("emotion", [None, "[joyful]", "whisper", 1])
+def test_invalid_part_emotion_is_rejected_before_inference(emotion):
+    backend = Backend()
+    client = create_app(backend, Encoder()).test_client()
+    request = body(expression={"parts": [{"text": "Wir freuen uns sehr.", "emotion": emotion}]})
+    assert client.post("/v1/audio/speech", json=request, headers=expression_headers(client)).status_code == 400
+    assert backend.calls == []
+
+
+@pytest.mark.parametrize("endpoint", ["/v1/audio/speech", "/v1/audio/speech/stream"])
+def test_multi_emotion_request_reaches_backend_once_with_clean_native_plan(endpoint):
+    backend = Backend()
+    client = create_app(backend, Encoder()).test_client()
+    source = "Ich bin hier. Du hörst mich. Es ist still. Wir warten."
+    request = body(expression={"emotion": "joyful", "parts": [
+        {"text": "Ich bin hier. Du hörst mich. "},
+        {"text": "Es ist still. Wir warten.", "emotion": "sad"},
+    ]}, segmentation={"schema_version": 1, "segments": [{"text": source, "pauseMs": 0}]})
+    request["input"] = source
+    response = client.post(endpoint, json=request, headers=expression_headers(client))
+    assert response.status_code == 200
+    assert response.data
+    assert backend.calls == [(
+        "[joyful] Ich bin hier. [joyful] Du hörst mich. [sad] Es ist still. [sad] Wir warten.", True,
+    )]

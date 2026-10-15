@@ -129,6 +129,23 @@ backends return 400 before inference. Ordinary calls without the field retain
 their existing behavior. Native `[[tts:*]]` directives are not accepted as a
 second backend command language.
 
+The plan's top-level emotion initializes an utterance. A text part may carry
+`emotion` to change the active emotion from that part onward; omitted values
+keep it until another explicit change. Several consecutive sentences may share
+one part. The Kitten adapter uses Syntok's plain-text sentence positions to
+repeat the active `[emotion]` tag before every sentence and at each generation
+unit's start. Different emotions can occur in one SDK generation call; changing
+emotion does not create additional calls or change prepared segment boundaries.
+No universal neutral/reset identifier is inferred from a missing field.
+Vocal events remain single insertions, not repeated sentence annotations.
+Only speech rendering receives the tags; visible text and `voiceText` stay clean.
+
+When native prepared segments are supplied, they remain authoritative, including
+their pauses. Standalone requests retain their existing service splitter.
+Neither route trims model silence or changes playback speed. Deploy the matching
+OpenClaw schema/parser/guidance and service together: older workers reject an
+unknown text-part emotion rather than silently ignoring it.
+
 ## OpenClaw integration and remaining activation gates
 
 The matching native-core candidate adds typed speech expression facts to the

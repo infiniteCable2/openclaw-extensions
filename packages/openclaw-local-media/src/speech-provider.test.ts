@@ -365,7 +365,10 @@ describe("local media speech provider", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     const { provider, providerConfig } = configuredProvider();
-    const expression = { parts: [{ text: "Hello.", emphasis: true }] };
+    const expression = {
+      emotion: "joyful",
+      parts: [{ text: "Hello.", emotion: "joyful", emphasis: true }],
+    };
     const selected = { ...providerConfig, model: "kitten-tts-2" };
     const localServiceAdmission = await admitExpression(provider, selected);
     const request = {

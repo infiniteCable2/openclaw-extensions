@@ -542,6 +542,8 @@ components:
         must equal the trimmed input exactly. No backend/native tags in input
         or text parts. Unsupported controls/backend fail before inference.
         The caller owns channel opt-in and the unmodified visible-text projection.
+        Top-level emotion initializes the active emotion. A text-part emotion
+        changes it from that part onward until the next explicit change.
       properties:
         emotion:
           type: string
@@ -558,6 +560,7 @@ components:
                 required: [text]
                 properties:
                   text: { type: string, minLength: 1, maxLength: 4096 }
+                  emotion: { type: string, minLength: 1, maxLength: 32 }
                   emphasis: { type: boolean }
               - type: object
                 additionalProperties: false
