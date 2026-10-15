@@ -70,15 +70,18 @@ def test_cuda_clone_switching_and_all_voices_warmed_before_ready(setup_backend):
     }
     assert [call[1]["reference_text"] for call in calls] == ["Referenz voice_a", "Referenz voice_b"]
     assert all(call[1]["normalize"] is False for call in calls)
+    assert all(call[1]["preset"] == "stable" for call in calls)
     calls.clear()
     pcm = list(backend.synthesize_segments(["Hallo.", "Guten Tag."], voice_id="voice_b"))
     assert all(len(segment.data) == 6 and segment.sample_rate == 24_000 for segment in pcm)
     assert len(loads) == 1
     assert all(call[1]["reference_text"] == "Referenz voice_b" for call in calls)
     assert all(call[1]["advanced"]["use_emotion"] is False for call in calls)
+    assert all(call[1]["preset"] == "stable" for call in calls)
     assert all(call[1]["advanced"]["chunk_chars"] == 0 for call in calls)
     list(backend.synthesize_expressive_segments(["[joyful] Hallo <laugh> Welt."], voice_id="voice_a"))
     assert calls[-1][1]["advanced"]["use_emotion"] is True
+    assert calls[-1][1]["preset"] == "expressive"
 
 
 def test_no_implicit_reference_transcription(setup_backend):

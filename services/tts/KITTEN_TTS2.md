@@ -65,7 +65,9 @@ implicitly loading another Whisper model. Chatterbox-only `generation` settings
 must be removed from a separately prepared Kitten catalog, never silently ignored.
 
 The initial candidate uses mandatory CUDA/PyTorch, lossless `packed` weights,
-stable sampling and `normalize=False`. The upstream written-text normalizer is
+stable sampling for ordinary speech, expressive sampling for opt-in structured
+expression requests, and `normalize=False`. Warmup retains stable sampling.
+The upstream written-text normalizer is
 English-specific: test German numbers, dates, units and lists independently.
 The service keeps its existing bounded linguistic segmentation and one PCM
 result per unit; Kitten's internal splitter is disabled for these units to

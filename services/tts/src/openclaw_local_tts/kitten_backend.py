@@ -126,7 +126,7 @@ class KittenTts2Backend:
             # short unit again or silently move inline controls across its boundary.
             waveform = self._client.generate(
                 text, reference=str(voice.reference_path), reference_text=voice.reference_text,
-                normalize=False, preset="stable", max_new_tokens=1000,
+                normalize=False, preset="expressive" if expressive else "stable", max_new_tokens=1000,
                 advanced={"use_emotion": expressive, "chunk_chars": 0, "chunk_min_chars": 0},
             )
             # Preserve all model-generated samples, including edge silence and
