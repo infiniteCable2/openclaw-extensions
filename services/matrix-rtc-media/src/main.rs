@@ -1,8 +1,9 @@
 mod playout;
 mod protocol;
+mod video;
 
 use std::{
-    collections::BTreeSet, env, fs::Permissions, os::unix::fs::PermissionsExt, path::PathBuf,
+    collections::{BTreeMap, BTreeSet}, env, fs::Permissions, os::unix::fs::PermissionsExt, path::PathBuf,
     sync::Arc,
 };
 
@@ -30,13 +31,14 @@ use tokio::{
     net::{UnixListener, UnixStream},
     sync::{Mutex, mpsc},
 };
+use video::{pump_remote_video, pump_video_output};
 
 const MAX_CONTROL_LINE_BYTES: usize = 128 * 1024;
 // Queue configuration remains unchanged. The single owner paces submission rather
 // than filling this buffer; only confirmed cancellation clears it.
 const OUTPUT_QUEUE_MS: u32 = 1_000;
 
-fn control_socket_arg() -> anyhow::Result<PathBuf> {
+fn socket_args() -> anyhow::Result<(PathBuf, Option<PathBuf>)> {
     let mut args = env::args_os();
     let _program = args.next();
     ensure!(
@@ -44,9 +46,15 @@ fn control_socket_arg() -> anyhow::Result<PathBuf> {
         "expected --control-socket"
     );
     let path = PathBuf::from(args.next().context("missing control socket path")?);
-    ensure!(args.next().is_none(), "unexpected command arguments");
     ensure!(path.is_absolute(), "control socket path must be absolute");
-    Ok(path)
+    let video = if let Some(flag) = args.next() {
+        ensure!(flag == "--video-socket", "unexpected command arguments");
+        let video = PathBuf::from(args.next().context("missing video socket path")?);
+        ensure!(video.is_absolute() && video != path, "invalid video socket path");
+        Some(video)
+    } else { None };
+    ensure!(args.next().is_none(), "unexpected command arguments");
+    Ok((path, video))
 }
 
 async fn send_event(
@@ -175,8 +183,13 @@ async fn capture_output_frame(
 async fn run_started_session(
     mut control: BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: Arc<Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    video_listener: Option<UnixListener>,
 ) -> anyhow::Result<()> {
     let start = validate_start(read_control_line(&mut control).await?)?;
+    ensure!(start.video.is_some() == video_listener.is_some(), "video socket and capture policy must match");
+    let video_socket = if let Some(listener) = video_listener {
+        Some(tokio::time::timeout(std::time::Duration::from_secs(15), listener.accept()).await??.0)
+    } else { None };
     let allowed: BTreeSet<String> = start.allowed_remote_identities;
     let key_provider = KeyProvider::new(KeyProviderOptions {
         ratchet_window_size: 10,
@@ -241,6 +254,18 @@ async fn run_started_session(
         output_control_rx,
         frame_diagnostic,
     ));
+    let (video_tx, video_rx) = mpsc::channel(1);
+    let mut video_tasks = tokio::task::JoinSet::new();
+    if let (Some(socket), Some(config)) = (video_socket, start.video) {
+        let fatal = fatal_tx.clone();
+        video_tasks.spawn(async move {
+            if pump_video_output(socket, video_rx, config).await.is_err() {
+                let _ = fatal.send(()).await;
+            }
+        });
+    }
+    let mut video_tracks: BTreeMap<String, tokio::task::AbortHandle> = BTreeMap::new();
+    let mut next_video_source = 0_u32;
 
     let mut remote_audio_ready = false;
     loop {
@@ -275,7 +300,7 @@ async fn run_started_session(
                         anyhow::bail!("unexpected participant joined");
                     }
                 }
-                Some(RoomEvent::TrackSubscribed { track, participant, .. }) => {
+                Some(RoomEvent::TrackSubscribed { track, participant, publication }) => {
                     let identity = participant.identity();
                     if !allowed.contains(identity.0.as_str()) {
                         anyhow::bail!("unexpected participant published media");
@@ -294,8 +319,34 @@ async fn run_started_session(
                                 }
                             });
                         }
-                        _ => anyhow::bail!("unsupported remote media track"),
+                        RemoteTrack::Video(track) => {
+                            if let Some(config) = start.video {
+                                // One admitted participant can publish camera and screen-share.
+                                // Further tracks never create additional decoder queues.
+                                let sid = track.sid().to_string();
+                                if let Some(previous) = video_tracks.remove(&sid) { previous.abort(); }
+                                if video_tracks.len() < 2 {
+                                    next_video_source = next_video_source.checked_add(1).context("video source exhausted")?;
+                                    let output = video_tx.clone();
+                                    let fatal = fatal_tx.clone();
+                                    let source = next_video_source;
+                                    let handle = video_tasks.spawn(async move {
+                                        if pump_remote_video(track, output, config, source).await.is_err() {
+                                            let _ = fatal.send(()).await;
+                                        }
+                                    });
+                                    video_tracks.insert(sid, handle);
+                                } else {
+                                    publication.set_subscribed(false);
+                                }
+                            } else {
+                                publication.set_subscribed(false);
+                            }
+                        }
                     }
+                }
+                Some(RoomEvent::TrackUnsubscribed { track: RemoteTrack::Video(track), .. }) => {
+                    if let Some(handle) = video_tracks.remove(&track.sid().to_string()) { handle.abort(); }
                 }
                 Some(RoomEvent::Disconnected { .. }) | None => break,
                 _ => {}
@@ -312,18 +363,24 @@ async fn run_started_session(
                     _ => anyhow::bail!("local audio input failed"),
                 }
             },
-            _ = fatal_rx.recv() => anyhow::bail!("remote audio stream failed"),
+            _ = fatal_rx.recv() => anyhow::bail!("remote media stream failed"),
+            result = video_tasks.join_next(), if !video_tasks.is_empty() => {
+                if result.is_some_and(|result| result.is_err_and(|error| !error.is_cancelled())) {
+                    anyhow::bail!("video processing task failed");
+                }
+            },
         }
     }
 
     local_audio.abort();
     local_reader.abort();
+    video_tasks.abort_all();
     room.close().await?;
     send_event(&writer, ControlEvent::Stopped).await?;
     Ok(())
 }
 
-async fn run_session(stream: UnixStream) -> anyhow::Result<()> {
+async fn run_session(stream: UnixStream, video_listener: Option<UnixListener>) -> anyhow::Result<()> {
     let (read_half, write_half) = stream.into_split();
     let control = BufReader::new(read_half);
     let writer = Arc::new(Mutex::new(write_half));
@@ -332,11 +389,12 @@ async fn run_session(stream: UnixStream) -> anyhow::Result<()> {
         ControlEvent::Ready {
             output_gate: true,
             remote_audio_ready: true,
+            video_frames: true,
         },
     )
     .await?;
 
-    let result = run_started_session(control, writer.clone()).await;
+    let result = run_started_session(control, writer.clone(), video_listener).await;
     if result.is_err() {
         let _ = send_event(
             &writer,
@@ -351,14 +409,20 @@ async fn run_session(stream: UnixStream) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let socket_path = control_socket_arg()?;
+    let (socket_path, video_path) = socket_args()?;
     ensure!(!socket_path.exists(), "control socket already exists");
     let listener = UnixListener::bind(&socket_path).context("failed to bind control socket")?;
     std::fs::set_permissions(&socket_path, Permissions::from_mode(0o600))?;
+    let video_listener = if let Some(path) = video_path.as_ref() {
+        ensure!(!path.exists(), "video socket already exists");
+        let listener = UnixListener::bind(path).context("failed to bind video socket")?;
+        std::fs::set_permissions(path, Permissions::from_mode(0o600))?;
+        Some(listener)
+    } else { None };
 
     let result = async {
         let (stream, _) = listener.accept().await?;
-        run_session(stream).await
+        run_session(stream, video_listener).await
     }
     .await;
 
@@ -367,5 +431,6 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("matrix_rtc_media_fatal=true");
     }
     let _ = std::fs::remove_file(&socket_path);
+    if let Some(path) = video_path { let _ = std::fs::remove_file(path); }
     result
 }

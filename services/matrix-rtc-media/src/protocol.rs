@@ -13,6 +13,45 @@ pub const OUTPUT_FRAME_HEADER_BYTES: usize = 20;
 pub const MAX_OUTPUT_FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 const MAX_JWT_BYTES: usize = 16 * 1024;
 const MAX_IDENTITY_BYTES: usize = 512;
+pub const VIDEO_FRAME_HEADER_BYTES: usize = 32;
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VideoConfig {
+    pub interval_ms: u64,
+    pub max_dimension: u32,
+    pub max_bytes: usize,
+}
+
+impl VideoConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        ensure!((250..=60_000).contains(&self.interval_ms), "invalid video interval");
+        ensure!((64..=4096).contains(&self.max_dimension), "invalid video dimension limit");
+        ensure!((4096..=32 * 1024 * 1024).contains(&self.max_bytes), "invalid video byte limit");
+        Ok(())
+    }
+
+    pub fn frame_bytes(&self, width: u32, height: u32) -> Option<usize> {
+        if width == 0 || height == 0 || width > self.max_dimension || height > self.max_dimension {
+            return None;
+        }
+        let bytes = usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?.checked_mul(4)?;
+        (bytes <= self.max_bytes).then_some(bytes)
+    }
+}
+
+pub fn encode_video_frame_header(timestamp_ms: u64, width: u32, height: u32, source: u32, bytes: u32) -> [u8; VIDEO_FRAME_HEADER_BYTES] {
+    let mut header = [0_u8; VIDEO_FRAME_HEADER_BYTES];
+    header[..4].copy_from_slice(b"OCVF");
+    header[4] = 1;
+    header[5] = 1; // tightly packed RGBA; rotation is applied before publication
+    header[8..16].copy_from_slice(&timestamp_ms.to_be_bytes());
+    header[16..20].copy_from_slice(&width.to_be_bytes());
+    header[20..24].copy_from_slice(&height.to_be_bytes());
+    header[24..28].copy_from_slice(&source.to_be_bytes());
+    header[28..32].copy_from_slice(&bytes.to_be_bytes());
+    header
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -31,6 +70,8 @@ pub enum ControlMessage {
         encrypted: bool,
         allowed_remote_identities: Vec<String>,
         initial_keys: Vec<WireKey>,
+        #[serde(default)]
+        video: Option<VideoConfig>,
     },
     Key {
         participant_identity: String,
@@ -61,6 +102,7 @@ pub struct SessionStart {
     pub encrypted: bool,
     pub allowed_remote_identities: BTreeSet<String>,
     pub initial_keys: Vec<DecodedKey>,
+    pub video: Option<VideoConfig>,
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +118,7 @@ pub enum ControlEvent<'a> {
     Ready {
         output_gate: bool,
         remote_audio_ready: bool,
+        video_frames: bool,
     },
     Connected,
     RemoteAudioReady,
@@ -148,12 +191,16 @@ pub fn validate_start(message: ControlMessage) -> anyhow::Result<SessionStart> {
         encrypted,
         allowed_remote_identities,
         initial_keys,
+        video,
     } = message
     else {
         anyhow::bail!("first control message must start the session");
     };
 
     let url = url.trim().to_owned();
+    if let Some(video) = video {
+        video.validate()?;
+    }
     ensure!(url.starts_with("wss://"), "LiveKit URL must use wss");
     ensure!(
         !token.is_empty() && token.len() <= MAX_JWT_BYTES,
@@ -194,6 +241,7 @@ pub fn validate_start(message: ControlMessage) -> anyhow::Result<SessionStart> {
         encrypted,
         allowed_remote_identities,
         initial_keys,
+        video,
     })
 }
 
@@ -276,10 +324,11 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ControlEvent::Ready {
                 output_gate: true,
-                remote_audio_ready: true
+                remote_audio_ready: true,
+                video_frames: false,
             })
             .unwrap(),
-            r#"{"type":"ready","output_gate":true,"remote_audio_ready":true}"#
+            r#"{"type":"ready","output_gate":true,"remote_audio_ready":true,"video_frames":false}"#
         );
         assert_eq!(
             serde_json::to_string(&ControlEvent::RemoteAudioReady).unwrap(),
@@ -302,5 +351,26 @@ mod tests {
             .unwrap(),
             r#"{"type":"output_gate_set","gate":"paused"}"#
         );
+    }
+
+    #[test]
+    fn video_limits_are_bounded_before_frame_allocation() {
+        let config = VideoConfig { interval_ms: 1000, max_dimension: 1920, max_bytes: 16 * 1024 * 1024 };
+        assert!(config.validate().is_ok());
+        assert_eq!(config.frame_bytes(1920, 1080), Some(8_294_400));
+        assert_eq!(config.frame_bytes(1921, 1080), None);
+        assert_eq!(config.frame_bytes(0, 1080), None);
+        assert_eq!(VideoConfig { max_bytes: 4, ..config }.frame_bytes(2, 2), None);
+        assert!(VideoConfig { interval_ms: 0, ..config }.validate().is_err());
+    }
+
+    #[test]
+    fn video_frame_header_is_separate_from_pcm_and_control() {
+        let header = encode_video_frame_header(1234, 2, 1, 3, 8);
+        assert_eq!(&header[..8], b"OCVF\x01\x01\0\0");
+        assert_eq!(u64::from_be_bytes(header[8..16].try_into().unwrap()), 1234);
+        assert_eq!(u32::from_be_bytes(header[16..20].try_into().unwrap()), 2);
+        assert_eq!(u32::from_be_bytes(header[24..28].try_into().unwrap()), 3);
+        assert_eq!(u32::from_be_bytes(header[28..32].try_into().unwrap()), 8);
     }
 }
