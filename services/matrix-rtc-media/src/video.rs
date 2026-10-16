@@ -99,7 +99,8 @@ pub async fn pump_video_output(
             let mut pixels = vec![0_u8; bytes];
             VideoFrameBufferExt::to_argb(
                 &buffer,
-                VideoFormatType::RGBA,
+                // libyuv names register order: ABGR produces the RGBA bytes our wire/PNG path uses.
+                VideoFormatType::ABGR,
                 &mut pixels,
                 width * 4,
                 width as i32,
@@ -129,6 +130,65 @@ pub async fn pump_video_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn video_output_preserves_color_channels_and_opaque_alpha() -> anyhow::Result<()> {
+        // Limited-range BT.601 samples, allowing only integer-conversion rounding.
+        let colors = [
+            ([16, 128, 128], [0_u8, 0, 0]),
+            ([235, 128, 128], [255, 255, 255]),
+            ([81, 90, 240], [255, 0, 0]),
+            ([145, 54, 34], [0, 255, 0]),
+            ([41, 240, 110], [0, 0, 255]),
+        ];
+        let config = VideoConfig {
+            interval_ms: 1000,
+            max_dimension: 64,
+            max_bytes: 4096,
+        };
+        let (writer, mut reader) = UnixStream::pair()?;
+        let (sender, receiver) = mpsc::channel(colors.len());
+        for (index, ([y, u, v], _)) in colors.iter().copied().enumerate() {
+            let mut buffer = I420Buffer::new(2, 2);
+            let (data_y, data_u, data_v) = buffer.data_mut();
+            data_y.fill(y);
+            data_u.fill(u);
+            data_v.fill(v);
+            sender.try_send(VideoSample {
+                frame: VideoFrame {
+                    rotation: VideoRotation::VideoRotation0,
+                    timestamp_us: 0,
+                    buffer: Box::new(buffer),
+                },
+                source: 1,
+                timestamp_ms: index as u64,
+            })?;
+        }
+        drop(sender);
+        let verify = async move {
+            for (index, (_, rgb)) in colors.iter().enumerate() {
+                let mut header = [0_u8; 32];
+                reader.read_exact(&mut header).await?;
+                assert_eq!(header, encode_video_frame_header(index as u64, 2, 2, 1, 16));
+                let mut pixels = [0_u8; 16];
+                reader.read_exact(&mut pixels).await?;
+                for pixel in pixels.chunks_exact(4) {
+                    for channel in 0..3 {
+                        assert!(pixel[channel].abs_diff(rgb[channel]) <= 3);
+                    }
+                    assert_eq!(pixel[3], 255);
+                }
+            }
+            let mut trailing = Vec::new();
+            reader.read_to_end(&mut trailing).await?;
+            assert!(trailing.is_empty());
+            Ok::<(), anyhow::Error>(())
+        };
+        tokio::try_join!(pump_video_output(writer, receiver, config), verify)?;
+        Ok(())
+    }
 
     #[test]
     fn rotations_preserve_pixels_without_lossy_resizing() {
