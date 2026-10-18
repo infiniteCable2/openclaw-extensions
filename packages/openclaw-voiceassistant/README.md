@@ -5,6 +5,13 @@ PCM into OpenClaw's existing Meeting STT/agent/TTS engine. There is no second
 agent loop and no Voicecore runtime dependency. The Pi client lives in the
 separate `openclaw-devices/voiceassistant` repository.
 
+The adapter requires native service-owned device conversation admission and the
+V2 Meeting bindings. Each bridge uses a device-scoped conversation, not an agent
+subtask and not the private main session of an assumed speaker. The host retains
+the real pairing/command/assignment authority; mute or disconnect fences new audio
+and presentation without silently canceling already accepted work. No legacy
+agent-consult fallback is used when the required host capability is absent.
+
 The first paired Pi/Meeting adapter is deployed and has passed an end-to-end
 STT/TTS call. The wake-word, three-mode button, device-control and richer LED
 candidate described here is **not selected for production yet**. The Pi's local

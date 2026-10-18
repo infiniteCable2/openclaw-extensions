@@ -5,7 +5,7 @@ import type {
   OpenClawPluginServiceContext,
 } from "openclaw/plugin-sdk/plugin-entry";
 import {
-  createMeetingRealtimeEngineBindings,
+  createMeetingRealtimeEngineBindingsV2,
   createNodeMeetingRealtimeAudioTransport,
   prepareMeetingAgentRealtimeEngine,
   startMeetingAgentRealtimeEngine,
@@ -14,7 +14,7 @@ import {
   type MeetingRealtimeAudioTransport,
   type MeetingRealtimeEngineConfig,
 } from "openclaw/plugin-sdk/meeting-runtime";
-import type { VoiceassistantConfig } from "./config.js";
+import { parseVoiceassistantConfig, type VoiceassistantConfig } from "./config.js";
 import { VOICEASSISTANT_COMMAND } from "./node-policy.js";
 
 const PLATFORM = {
@@ -48,6 +48,9 @@ type ActiveSession = {
   engine: MeetingRealtimeAudioEngineHandle;
   preparation: MeetingAgentRealtimePreparation;
   startedAt: number;
+  input: Awaited<
+    ReturnType<NonNullable<OpenClawPluginServiceContext["prepareNodeConversationInput"]>>
+  >;
 };
 
 function payload(value: unknown): Record<string, unknown> {
@@ -101,8 +104,10 @@ export class VoiceassistantService {
     private readonly context: OpenClawPluginServiceContext,
     private readonly config: VoiceassistantConfig,
   ) {
-    if (!context.invokeNode) {
-      throw new Error("voiceassistant requires service-owned node invocation");
+    if (!context.invokeNode || !context.prepareNodeConversationInput) {
+      throw new Error(
+        "voiceassistant requires service-owned node invocation and native device conversation admission",
+      );
     }
   }
 
@@ -243,6 +248,9 @@ export class VoiceassistantService {
     let preparation: MeetingAgentRealtimePreparation | undefined;
     let transport: MeetingRealtimeAudioTransport | undefined;
     let bridgeId: string | undefined;
+    let input: ActiveSession["input"] | undefined;
+    let keepInput = false;
+    let bridgeCurrent = true;
     let keepListening: ReturnType<typeof setInterval> | undefined;
     try {
       const firstHold = await this.invoke({ action: "holdListening" });
@@ -285,6 +293,7 @@ export class VoiceassistantService {
       if (typeof started.bridgeId !== "string" || !/^[a-f0-9]{32}$/.test(started.bridgeId)) {
         throw new Error("voiceassistant bridge start was not confirmed");
       }
+      bridgeId = started.bridgeId;
       if (
         typeof started.outputGeneration !== "number" ||
         !Number.isSafeInteger(started.outputGeneration) ||
@@ -292,7 +301,6 @@ export class VoiceassistantService {
       ) {
         throw new Error("voiceassistant bridge output generation was not confirmed");
       }
-      bridgeId = started.bridgeId;
       const activeBridgeId = started.bridgeId;
       let lastActivity = "";
       let activityQueue = Promise.resolve();
@@ -320,7 +328,38 @@ export class VoiceassistantService {
         audioFormat: "pcm16-24khz",
         initialOutputGeneration: started.outputGeneration,
       });
-      const bindings = createMeetingRealtimeEngineBindings({
+      const stopTransport = transport.stop.bind(transport);
+      transport.stop = async () => {
+        bridgeCurrent = false;
+        input?.release();
+        await stopTransport();
+      };
+      const conversationId = randomUUID();
+      input = await this.context.prepareNodeConversationInput!({
+        nodeId: this.config.nodeId,
+        command: VOICEASSISTANT_COMMAND,
+        agentId: this.config.agentId,
+        conversationId,
+        label: "Room voiceassistant",
+        signal: this.abort.signal,
+        assertAssigned: (current) => {
+          const assigned = parseVoiceassistantConfig(
+            current.plugins?.entries?.voiceassistant?.config,
+          );
+          if (assigned.agentId !== this.config.agentId || assigned.nodeId !== this.config.nodeId) {
+            throw new Error("voiceassistant device assignment changed");
+          }
+        },
+        assertInputCurrent: () => {
+          if (!bridgeCurrent) throw new Error("voiceassistant audio bridge is closed");
+        },
+      });
+      const bindings = createMeetingRealtimeEngineBindingsV2({
+        inputSource: input.inputSource,
+        agentId: input.agentId,
+        conversationId: input.conversationId,
+        assertOutputCurrent: input.assertInputCurrent,
+        connectionPresentation: input.connectionPresentation,
         platform: PLATFORM,
         config: {
           realtime: {
@@ -343,19 +382,22 @@ export class VoiceassistantService {
         fullConfig: this.context.config,
         runtime,
         platform: bindings.platform,
-        meetingSessionId: randomUUID(),
-        requesterSessionKey: `agent:${this.config.agentId}:main`,
+        meetingSessionId: conversationId,
+        requesterSessionKey: input.sessionKey,
         ttsContext,
         transport,
         logger: this.context.logger,
         consultAgent: bindings.consultAgent,
+        nativeInput: bindings.nativeInput,
+        connectionPresentation: bindings.connectionPresentation,
         onActivity,
       });
       onActivity("listening");
-      this.active = { engine, preparation, startedAt: Date.now() };
+      this.active = { engine, preparation, input, startedAt: Date.now() };
       preparation = undefined;
       transport = undefined;
       bridgeId = undefined;
+      keepInput = true;
     } finally {
       if (keepListening) {
         clearInterval(keepListening);
@@ -365,6 +407,7 @@ export class VoiceassistantService {
       } else if (bridgeId) {
         await this.invoke({ action: "stop", bridgeId }, 5_000, true).catch(() => undefined);
       }
+      if (!keepInput) input?.release();
       await preparation?.release();
     }
   }
@@ -376,6 +419,7 @@ export class VoiceassistantService {
       return;
     }
     try {
+      session.input.release();
       await session.engine.stop();
     } finally {
       await session.preparation.release();
