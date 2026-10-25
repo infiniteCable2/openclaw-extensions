@@ -92,6 +92,13 @@ Use the existing accelerator-aware supervisor/lease binding; do not create a
 second lease owner or permit CPU/network fallbacks. A whole-model worker may
 be reaped by that existing owner when standby is requested.
 
+After successful warmup and CUDA verification, the worker performs one host-memory
+collection and, where available, glibc `malloc_trim(0)` before opening its listener.
+This returns unused CPU loading pages without unloading model/voice conditioning
+or clearing CUDA caches. It never runs per request or segment; unsupported host
+allocators are not readiness failures. Measure resident memory and subsequent
+synthesis latency rather than assuming packed checkpoint size equals runtime use.
+
 ## Expression contract
 
 `GET /v1/capabilities` advertises the installed backend's supported controls.

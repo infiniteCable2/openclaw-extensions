@@ -8,6 +8,7 @@ from pathlib import Path
 from .expression import KITTEN_EXPRESSION_CAPABILITIES, validate_plain_expression_text
 from .types import RenderedPcm
 from .speech_profile import KITTEN_SPEECH_PROFILE
+from .startup_memory import release_startup_memory
 from .voice_catalog import VoiceCatalog
 
 
@@ -73,6 +74,7 @@ class KittenTts2Backend:
                 max_new_tokens=200, advanced={"use_emotion": False},
             )
             self._pcm(waveform, np)
+            del waveform
         # These names are verified against the reviewed SDK; pin that SDK before
         # deployment. Missing/lazy/CPU components are not readiness success.
         self._verify_cuda_module(client.codec.s3gen, "codec")
@@ -87,6 +89,10 @@ class KittenTts2Backend:
         self.public_voices = catalog.public_voices
         self.requested_backend = self.observed_backend = "cuda"
         self.sample_rate = 24_000
+        # SDK loading expands packed weights on CPU before moving them to CUDA.
+        # Return unused host pages once, after all lazy components are warmed and
+        # verified, before the HTTP listener opens. Never trim the inference path.
+        release_startup_memory()
 
     @staticmethod
     def _verify_cuda_module(module, name: str) -> None:

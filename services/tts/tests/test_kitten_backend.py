@@ -54,6 +54,7 @@ def setup_backend(tmp_path, monkeypatch):
     kitten.KittenTTS = load
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "kittenml", kitten)
+    monkeypatch.setattr("openclaw_local_tts.kitten_backend.release_startup_memory", lambda: None)
     # Construction intentionally changes offline settings for its worker process.
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
@@ -82,6 +83,35 @@ def test_cuda_clone_switching_and_all_voices_warmed_before_ready(setup_backend):
     list(backend.synthesize_expressive_segments(["[joyful] Hallo <laugh> Welt."], voice_id="voice_a"))
     assert calls[-1][1]["advanced"]["use_emotion"] is True
     assert calls[-1][1]["preset"] == "expressive"
+
+
+def test_host_memory_cleanup_runs_once_after_warmup_not_during_synthesis(setup_backend, monkeypatch):
+    from openclaw_local_tts import kitten_backend
+
+    model, catalog, client, calls, _loads = setup_backend
+    cleanups = []
+
+    def cleanup():
+        assert len(calls) == len(catalog.voices)
+        assert client.codec.s3gen is not None and client.speaker_encoder._model is not None
+        cleanups.append(True)
+
+    monkeypatch.setattr(kitten_backend, "release_startup_memory", cleanup)
+    backend = KittenTts2Backend(model_path=model, cache_dir=model / "offline-cache", catalog=catalog)
+    assert cleanups == [True]
+    list(backend.synthesize_segments(["Hallo.", "Noch ein Satz."], voice_id="voice_a"))
+    list(backend.synthesize_expressive_segments(["[joyful] Hallo."], voice_id="voice_b"))
+    assert cleanups == [True]
+
+
+def test_failed_readiness_does_not_run_memory_cleanup(setup_backend, monkeypatch):
+    from openclaw_local_tts import kitten_backend
+
+    model, catalog, client, _calls, _loads = setup_backend
+    client.codec.s3gen = None
+    monkeypatch.setattr(kitten_backend, "release_startup_memory", lambda: pytest.fail("cleanup before verification"))
+    with pytest.raises(RuntimeError, match="was not loaded"):
+        KittenTts2Backend(model_path=model, cache_dir=model / "offline-cache", catalog=catalog)
 
 
 def test_no_implicit_reference_transcription(setup_backend):
