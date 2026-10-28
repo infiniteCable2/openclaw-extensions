@@ -39,7 +39,8 @@ function readControl(data: Buffer): LiveSpeechControl | undefined {
     control.cleanRms < 0 ||
     control.cleanRms > 64 ||
     counts.some((value) => !Number.isInteger(value) || value < 0 || value > 2) ||
-    control.highProbabilityFrames + control.midProbabilityFrames + control.lowProbabilityFrames !== 2 ||
+    control.highProbabilityFrames + control.midProbabilityFrames + control.lowProbabilityFrames !==
+      2 ||
     control.clippedFrames + control.mutedFrames > 2
   )
     return;
@@ -58,6 +59,7 @@ export type LiveSpeechFrame = {
 export type LiveSpeechProcessor = {
   connect(): Promise<void>;
   send(audio: Buffer): void;
+  drain(): Promise<void>;
   discardPartialInput(): void;
   close(): void;
 };
@@ -84,9 +86,12 @@ export function createLiveSpeechProcessor(params: {
   let readyResolve: (() => void) | undefined;
   let readyReject: ((error: Error) => void) | undefined;
   let startupTimer: NodeJS.Timeout | undefined;
+  let draining: { promise: Promise<void>; resolve(): void; reject(error: Error): void } | undefined;
 
   const reject = (error: Error) => {
     if (closed) return;
+    draining?.reject(error);
+    draining = undefined;
     readyReject?.(error);
     readyReject = undefined;
     try {
@@ -101,6 +106,8 @@ export function createLiveSpeechProcessor(params: {
     if (closed) return;
     closed = true;
     connected = false;
+    draining?.reject(new Error("Live speech processor closed before input drained"));
+    draining = undefined;
     if (startupTimer) clearTimeout(startupTimer);
     startupTimer = undefined;
     readyReject?.(new Error("Live speech processor closed before ready"));
@@ -209,6 +216,10 @@ export function createLiveSpeechProcessor(params: {
             reject(new Error("Live speech processor frame handler failed"));
             return;
           }
+          if (pending === 0) {
+            draining?.resolve();
+            draining = undefined;
+          }
         }
       });
       // stderr can contain native diagnostics; never forward its contents into logs.
@@ -217,6 +228,7 @@ export function createLiveSpeechProcessor(params: {
     },
     send(audio) {
       if (!connected || closed || audio.byteLength === 0) return;
+      if (draining) throw new Error("Live speech processor input is still draining");
       if (audio.byteLength > FRAME_BYTES * (MAX_PENDING_FRAMES + 1) - outgoing.byteLength) {
         reject(new Error("Live speech processor input backlog exceeded"));
         return;
@@ -259,6 +271,22 @@ export function createLiveSpeechProcessor(params: {
         }, RESPONSE_TIMEOUT_MS);
         partialTimer.unref?.();
       }
+    },
+    drain() {
+      if (!connected || closed) throw new Error("Live speech processor is not active");
+      if (outgoing.byteLength > 0) {
+        throw new Error("Local media input boundary requires complete real audio frames");
+      }
+      if (draining) return draining.promise;
+      if (pending === 0) return Promise.resolve();
+      let resolve!: () => void;
+      let reject!: (error: Error) => void;
+      const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      draining = { promise, resolve, reject };
+      return promise;
     },
     discardPartialInput() {
       outgoing = Buffer.alloc(0);

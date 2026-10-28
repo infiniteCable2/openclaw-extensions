@@ -161,6 +161,14 @@ defaults are provided; a meeting integration may override `baseUrl`, `model`,
 `maxQueuedUtterances` in its realtime provider configuration. `baseUrl` remains
 mandatory and loopback-only.
 
+Capture clients may use the native optional `finishInput()` boundary, advertised
+as `audio.supportsInputEnd` by the matching Gateway Talk relay. It drains real
+enhanced frames before ending the utterance; it never pads missing audio or
+bypasses minimum-speech and recognition checks. Incomplete frames are rejected,
+and close or native-worker failure rejects an outstanding boundary. An endpoint
+at an exact audio-batch cap settles existing work without consuming another STT
+queue slot. Clients that keep streaming silence retain their existing behavior.
+
 For agent-directed live speech, configure `speechProcessorPython` to the
 absolute Python executable in the installed STT runtime (for example,
 `/absolute/stt-venv/bin/python`) under

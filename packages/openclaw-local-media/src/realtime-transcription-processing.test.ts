@@ -51,6 +51,70 @@ function setup(overrides: Record<string, unknown> = {}) {
 }
 
 describe("realtime transcription processing lifecycle", () => {
+  it("finalizes an explicit real-audio boundary once while preserving speech confirmation", async () => {
+    const f = setup({ silenceMs: 700 });
+    await f.session.connect();
+    const audio = voiced(8);
+    f.session.sendAudio(audio);
+    expect(f.fetch).not.toHaveBeenCalled();
+    await f.session.finishInput?.();
+    await f.session.finishInput?.();
+    expect(f.events).toEqual([{ utteranceId: "utterance-1", state: "started" }]);
+    await vi.advanceTimersByTimeAsync(0);
+    const init = f.fetch.mock.calls[0]?.[1] as RequestInit;
+    const wav = Buffer.from(await ((init.body as FormData).get("file") as File).arrayBuffer());
+    expect(wav.readUInt32LE(40)).toBe(audio.byteLength * 2);
+    expect(f.onTranscript).not.toHaveBeenCalled();
+    await f.writer.write(new TextEncoder().encode(confirmation + transcript()));
+    await f.writer.close();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.events.map((event) => event.state)).toEqual([
+      "started",
+      "speech-confirmed",
+      "transcribed",
+    ]);
+    expect(f.onTranscript).toHaveBeenCalledExactlyOnceWith("Grüße", { utteranceId: "utterance-1" });
+    expect(f.fetch).toHaveBeenCalledOnce();
+    f.session.close();
+  });
+
+  it("does not turn short activity, transport loss, or partial frames into an explicit command", async () => {
+    const f = setup({ minSpeechMs: 200 });
+    await f.session.connect();
+    f.session.sendAudio(voiced(4));
+    await f.session.finishInput?.();
+    expect(f.fetch).not.toHaveBeenCalled();
+    f.session.sendAudio(voiced(12));
+    await vi.advanceTimersByTimeAsync(2_000);
+    await f.session.finishInput?.();
+    expect(f.fetch).not.toHaveBeenCalled();
+    f.session.sendAudio(Buffer.alloc(1, 0x80));
+    expect(() => f.session.finishInput?.()).toThrow("complete real audio frames");
+    expect(f.events).toEqual([]);
+    f.session.close();
+  });
+
+  it("finalizes prior work at an exact batch cap without sending an empty STT request", async () => {
+    const f = setup({ maxQueuedUtterances: 1 });
+    await f.session.connect();
+    f.session.sendAudio(voiced(50));
+    await f.session.finishInput?.();
+    await vi.advanceTimersByTimeAsync(0);
+    await f.writer.write(new TextEncoder().encode(confirmation + transcript("Complete request")));
+    await f.writer.close();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.onTranscript).toHaveBeenCalledExactlyOnceWith("Complete request", {
+      utteranceId: "utterance-1",
+    });
+    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(f.onError).not.toHaveBeenCalled();
+    expect(f.events.map((event) => event.state)).toEqual([
+      "started",
+      "speech-confirmed",
+      "transcribed",
+    ]);
+    f.session.close();
+  });
   it("marks short acoustic activity reversible without admitting a transcription job", async () => {
     const f = setup({ speechOnsetMs: 80, minSpeechMs: 200 });
     await f.session.connect();

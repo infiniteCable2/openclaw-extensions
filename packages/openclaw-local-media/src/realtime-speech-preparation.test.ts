@@ -12,6 +12,67 @@ describe("realtime speech readiness", () => {
     speechProcessorPython: "/opt/stt/bin/python",
   };
 
+  it("waits for every real enhanced frame before applying an explicit input boundary", async () => {
+    vi.useFakeTimers();
+    try {
+      let deliver: ((audio: Buffer) => void) | undefined;
+      const pending: Buffer[] = [];
+      let resolveDrain!: () => void;
+      const drained = new Promise<void>((resolve) => {
+        resolveDrain = resolve;
+      });
+      vi.mocked(createLiveSpeechProcessor).mockImplementation(({ onFrame }) => {
+        deliver = (audio) => {
+          onFrame({
+            audio,
+            speechProbability: 0.95,
+            gainDb: 0,
+            originalRms: 0.3,
+            originalPeak: 0.3,
+          });
+          if (pending.length === 0) resolveDrain();
+        };
+        return {
+          connect: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn(),
+          send: (audio) => pending.push(Buffer.from(audio)),
+          drain: () => (pending.length ? drained : Promise.resolve()),
+          discardPartialInput: vi.fn(),
+        };
+      });
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ text: "Ready" })));
+      vi.stubGlobal("fetch", fetchMock);
+      const onTranscript = vi.fn();
+      const session = buildLocalRealtimeTranscriptionProvider(
+        vi.fn().mockResolvedValue({ release: vi.fn() }),
+      ).createSession({
+        providerConfig: { ...providerConfig, speechOnsetMs: 40, minSpeechMs: 40 },
+        inputAudioFormat: "pcm16-16khz",
+        onTranscript,
+      });
+      await session.connect();
+      const frame = Buffer.alloc(640);
+      for (let offset = 0; offset < frame.byteLength; offset += 2)
+        frame.writeInt16LE(10_000, offset);
+      for (let index = 0; index < 4; index++) session.sendAudio(frame);
+      const boundary = session.finishInput?.();
+      expect(() => session.sendAudio(frame)).toThrow("boundary is still being processed");
+      deliver?.(pending.shift()!);
+      expect(fetchMock).not.toHaveBeenCalled();
+      while (pending.length) deliver?.(pending.shift()!);
+      await boundary;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(onTranscript).toHaveBeenCalledExactlyOnceWith("Ready");
+      const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+      const wav = Buffer.from(await ((init.body as FormData).get("file") as File).arrayBuffer());
+      expect(wav.readUInt32LE(40)).toBe(4 * frame.byteLength);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      session.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("selects linear audio and checks native readiness before accepting a call", async () => {
     const release = vi.fn();
     const connect = vi.fn().mockResolvedValue(undefined);
@@ -20,6 +81,7 @@ describe("realtime speech readiness", () => {
       connect,
       close,
       send: vi.fn(),
+      drain: vi.fn().mockResolvedValue(undefined),
       discardPartialInput: vi.fn(),
     });
     const provider = buildLocalRealtimeTranscriptionProvider(
@@ -45,6 +107,7 @@ describe("realtime speech readiness", () => {
       connect: vi.fn().mockRejectedValue(new Error("processor unavailable")),
       close,
       send: vi.fn(),
+      drain: vi.fn().mockResolvedValue(undefined),
       discardPartialInput: vi.fn(),
     });
     const provider = buildLocalRealtimeTranscriptionProvider(
@@ -69,6 +132,7 @@ describe("realtime speech readiness", () => {
           originalRms: Math.abs(audio.readInt16LE(0)) / 32768,
           originalPeak: Math.abs(audio.readInt16LE(0)) / 32768,
         }),
+      drain: vi.fn().mockResolvedValue(undefined),
       discardPartialInput: vi.fn(),
     }));
     const fetchMock = vi
@@ -139,6 +203,7 @@ describe("realtime speech readiness", () => {
       connect: vi.fn().mockResolvedValue(undefined),
       close: vi.fn(),
       send,
+      drain: vi.fn().mockResolvedValue(undefined),
       discardPartialInput: vi.fn(),
     });
     const provider = buildLocalRealtimeTranscriptionProvider(vi.fn());
@@ -162,6 +227,7 @@ describe("realtime speech readiness", () => {
           originalRms: 1,
           originalPeak: 1,
         }),
+      drain: vi.fn().mockResolvedValue(undefined),
       discardPartialInput: vi.fn(),
     }));
     const info = vi.fn();
@@ -199,6 +265,7 @@ describe("realtime speech readiness", () => {
           originalRms: Math.abs(audio.readInt16LE(0)) / 32768,
           originalPeak: Math.abs(audio.readInt16LE(0)) / 32768,
         }),
+      drain: vi.fn().mockResolvedValue(undefined),
       discardPartialInput: vi.fn(),
     }));
     const onSpeechStart = vi.fn();
@@ -244,6 +311,7 @@ describe("realtime speech readiness", () => {
           originalRms: Math.abs(audio.readInt16LE(0)) / 32768,
           originalPeak: Math.abs(audio.readInt16LE(0)) / 32768,
         }),
+      drain: vi.fn().mockResolvedValue(undefined),
       discardPartialInput: vi.fn(),
     }));
     const event = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;

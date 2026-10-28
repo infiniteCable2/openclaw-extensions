@@ -30,6 +30,56 @@ function responseFrame(): Buffer {
 }
 
 describe("live speech processor", () => {
+  it("drains actual native frames after their callbacks and rejects a partial boundary", async () => {
+    const child = mockChild();
+    const onFrame = vi.fn();
+    const processor = createLiveSpeechProcessor({
+      python: "/opt/stt/bin/python",
+      onFrame,
+      onError: vi.fn(),
+    });
+    const connected = processor.connect();
+    child.stdout.write(Buffer.from("APM4"));
+    await connected;
+    processor.send(Buffer.alloc(640 * 2));
+    let completed = false;
+    const drained = processor.drain().then(() => {
+      completed = true;
+      expect(onFrame).toHaveBeenCalledTimes(2);
+    });
+    expect(() => processor.send(Buffer.alloc(640))).toThrow("still draining");
+    child.stdout.write(responseFrame());
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    child.stdout.write(responseFrame());
+    await drained;
+    processor.send(Buffer.alloc(1));
+    expect(() => processor.drain()).toThrow("complete real audio frames");
+    processor.discardPartialInput();
+    await processor.drain();
+    processor.close();
+  });
+
+  it.each(["close", "failure"] as const)(
+    "rejects an outstanding input drain on %s",
+    async (mode) => {
+      const child = mockChild();
+      const processor = createLiveSpeechProcessor({
+        python: "/opt/stt/bin/python",
+        onFrame: vi.fn(),
+        onError: vi.fn(),
+      });
+      const connected = processor.connect();
+      child.stdout.write(Buffer.from("APM4"));
+      await connected;
+      processor.send(Buffer.alloc(640));
+      const rejection = expect(processor.drain()).rejects.toThrow();
+      if (mode === "close") processor.close();
+      else child.emit("error", new Error("native worker failed"));
+      await rejection;
+    },
+  );
+
   it("drops an abandoned partial raw frame instead of splicing it into later audio", async () => {
     vi.useFakeTimers();
     const child = mockChild();
@@ -43,7 +93,9 @@ describe("live speech processor", () => {
     child.stdout.write(Buffer.from("APM4"));
     await connected;
     processor.send(Buffer.alloc(37, 0xff));
+    expect(() => processor.drain()).toThrow("complete real audio frames");
     await vi.advanceTimersByTimeAsync(2_000);
+    await processor.drain();
     processor.send(Buffer.alloc(640));
     const response = responseFrame();
     child.stdout.write(response);

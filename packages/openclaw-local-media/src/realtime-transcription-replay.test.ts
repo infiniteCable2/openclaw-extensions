@@ -43,6 +43,7 @@ function replayWorker(evidence: ReplayFrame[]) {
       }
     },
     close() {},
+    drain: vi.fn().mockResolvedValue(undefined),
     discardPartialInput() {
       pending = Buffer.alloc(0);
     },

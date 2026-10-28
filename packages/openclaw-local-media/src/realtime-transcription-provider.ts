@@ -418,6 +418,13 @@ function createSession(
   let diagnosticSectionOrdinal = 0;
   let summaryReported = false;
   let inputGapTimer: NodeJS.Timeout | undefined;
+  let inputEnd:
+    | {
+        promise: Promise<void>;
+        resolve(): void;
+        reject(error: Error): void;
+      }
+    | undefined;
   let consecutiveLoudMs = 0;
   let utteranceSequence = 0n;
   let speechGeneration = 0;
@@ -655,6 +662,10 @@ function createSession(
     }
     closed = true;
     connected = false;
+    inputEnd?.reject(
+      error instanceof Error ? error : new Error("Local media transcription failed"),
+    );
+    inputEnd = undefined;
     processor?.close();
     sessionController.abort();
     cancelPending();
@@ -676,18 +687,20 @@ function createSession(
       reportUtterance(timings, "cancelled");
       return;
     }
-    if (queued >= config.maxQueuedUtterances) {
+    // An exact-cap endpoint only settles already queued work; it creates no STT job.
+    const occupiesQueueSlot = audio.byteLength > 0;
+    if (occupiesQueueSlot && queued >= config.maxQueuedUtterances) {
       reportUtterance(timings, "queue_overflow");
       fail(new Error("Local media realtime transcription queue limit exceeded"));
       return;
     }
-    // Audio caps bound STT work, not user turns. Only silence admits a final turn.
+    // Audio caps bound STT work; observed silence or an explicit capture boundary ends a turn.
     const utteranceId = silenceEndpoint ? turn.utteranceId : undefined;
     if (utteranceId) {
       turn.utteranceId = utteranceId;
       pendingUtterances.add(utteranceId);
     }
-    queued += 1;
+    if (occupiesQueueSlot) queued += 1;
     // Publish ownership at the endpoint, not after asynchronous queue/lease waits.
     if (utteranceId) {
       notifyProcessing(utteranceId, "started");
@@ -705,23 +718,26 @@ function createSession(
         }
         timings.queueWaitMs = elapsedMs(timings.endpointAt);
         try {
-          const result = await transcribeUtterance({
-            audio,
-            sampleRate: inputSampleRate,
-            alreadyEnhanced: enhancedLive,
-            config,
-            acquireLocalService,
-            signal: AbortSignal.any([sessionController.signal, turn.controller.signal]),
-            timings,
-            ...(request.onProcessing
-              ? {
-                  onSpeechConfirmed: () => {
-                    turn.speechConfirmed = true;
-                    confirmProcessing(turn);
-                  },
-                }
-              : {}),
-          });
+          const result: Awaited<ReturnType<typeof transcribeUtterance>> =
+            audio.byteLength === 0
+              ? { text: "" }
+              : await transcribeUtterance({
+                  audio,
+                  sampleRate: inputSampleRate,
+                  alreadyEnhanced: enhancedLive,
+                  config,
+                  acquireLocalService,
+                  signal: AbortSignal.any([sessionController.signal, turn.controller.signal]),
+                  timings,
+                  ...(request.onProcessing
+                    ? {
+                        onSpeechConfirmed: () => {
+                          turn.speechConfirmed = true;
+                          confirmProcessing(turn);
+                        },
+                      }
+                    : {}),
+                });
           const text = result.text;
           if (result.recognition) {
             timings.vadSpeechDurationMs = result.recognition.speechDurationMs;
@@ -822,22 +838,22 @@ function createSession(
       })
       .catch(fail)
       .finally(() => {
-        queued -= 1;
+        if (occupiesQueueSlot) queued -= 1;
       });
   };
 
-  const finishTurn = () => {
+  const finishTurn = (explicitInputEnd = false) => {
     const timings = captureTimings();
     input.endpoints = boundedAdd(input.endpoints, 1);
     const audio = Buffer.concat(utterance, utteranceBytes);
-    const silenceEndpoint = quietMs >= config.silenceMs;
+    const silenceEndpoint = explicitInputEnd || quietMs >= config.silenceMs;
     const turn = currentTurn;
     if (turn.speechObservation && liveSpeechGate && silenceEndpoint) {
       turn.speechObservation.frame = liveSpeechGate.captureObservation().frame;
     }
     turn.minimumSpeechReached ||= speechMs >= config.minSpeechMs;
     const shouldTranscribe =
-      (!silenceEndpoint || turn.minimumSpeechReached) && audio.byteLength > 0;
+      (!silenceEndpoint || turn.minimumSpeechReached) && (audio.byteLength > 0 || explicitInputEnd);
     if (silenceEndpoint) {
       resetTurn();
     } else {
@@ -1036,6 +1052,24 @@ function createSession(
       inputGapTimer.unref?.();
     }
   };
+  const finishInputBoundary = () => {
+    if (!inputEnd) return;
+    const boundary = inputEnd;
+    if (closed || !connected) {
+      boundary.reject(new Error("Local media transcription input is no longer active"));
+      return;
+    }
+    if (inputGapTimer) clearTimeout(inputGapTimer);
+    inputGapTimer = undefined;
+    if (speaking) finishTurn(true);
+    else resetTurn();
+    preRoll = [];
+    preRollBytes = 0;
+    if (closed)
+      boundary.reject(new Error("Local media transcription input failed at its boundary"));
+    else boundary.resolve();
+    inputEnd = undefined;
+  };
   const processor = config.speechProcessorPython
     ? createLiveSpeechProcessor({
         python: config.speechProcessorPython,
@@ -1068,6 +1102,7 @@ function createSession(
     },
     sendAudio(audio) {
       if (!connected || closed || audio.byteLength === 0) return;
+      if (inputEnd) throw new Error("Local media input boundary is still being processed");
       if (lastRawInputAt !== undefined && elapsedMs(lastRawInputAt) >= 2_000) {
         inputDiagnosticByte = undefined;
       }
@@ -1091,9 +1126,43 @@ function createSession(
         acceptAudio(audio);
       }
     },
+    finishInput() {
+      if (!connected || closed) {
+        throw new Error("Local media transcription input is no longer active");
+      }
+      if (inputEnd) return inputEnd.promise;
+      if (inputFrameBytes > 0) {
+        throw new Error("Local media input boundary requires complete real audio frames");
+      }
+      let resolve!: () => void;
+      let reject!: (error: Error) => void;
+      const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      inputEnd = { promise, resolve, reject };
+      try {
+        const drained = processor?.drain();
+        if (drained) {
+          void drained.then(finishInputBoundary).catch((error: unknown) => {
+            inputEnd?.reject(error instanceof Error ? error : new Error("Input drain failed"));
+            inputEnd = undefined;
+          });
+        } else {
+          finishInputBoundary();
+        }
+      } catch (error) {
+        // A partial raw frame remains recoverable; the caller may finish sending it.
+        inputEnd = undefined;
+        throw error;
+      }
+      return promise;
+    },
     close() {
       closed = true;
       connected = false;
+      inputEnd?.reject(new Error("Local media transcription input closed before its boundary"));
+      inputEnd = undefined;
       processor?.close();
       sessionController.abort();
       cancelPending();
