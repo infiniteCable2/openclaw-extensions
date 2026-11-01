@@ -85,6 +85,38 @@ def test_cuda_clone_switching_and_all_voices_warmed_before_ready(setup_backend):
     assert calls[-1][1]["preset"] == "expressive"
 
 
+def test_compiled_decode_uses_native_configuration_and_warms_both_presets(setup_backend, monkeypatch):
+    model, catalog, client, calls, _loads = setup_backend
+    config = SimpleNamespace()
+    client.model.generation_config = config
+    transformers = ModuleType("transformers")
+    transformers.CompileConfig = lambda **kwargs: SimpleNamespace(**kwargs)
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    KittenTts2Backend(model_path=model, cache_dir=model / "offline-cache", catalog=catalog,
+                     compile_model=True)
+    assert config.cache_implementation == "static"
+    assert config.disable_compile is False
+    assert config.compile_config.mode == "reduce-overhead"
+    assert config.compile_config.fullgraph is False
+    assert len(calls) == 3 * len(catalog.voices)
+    assert all(kwargs["max_new_tokens"] == 1000 for _, kwargs in calls)
+    assert [kwargs["preset"] for _, kwargs in calls] == ["stable", "stable", "expressive"] * len(catalog.voices)
+
+
+def test_compiled_warmup_failure_prevents_readiness(setup_backend, monkeypatch):
+    model, catalog, client, calls, _loads = setup_backend
+    client.model.generation_config = SimpleNamespace()
+    transformers = ModuleType("transformers")
+    transformers.CompileConfig = lambda **kwargs: SimpleNamespace(**kwargs)
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("compile failed")
+    client.generate = fail
+    with pytest.raises(RuntimeError, match="compile failed"):
+        KittenTts2Backend(model_path=model, cache_dir=model / "offline-cache", catalog=catalog,
+                         compile_model=True)
+
+
 def test_host_memory_cleanup_runs_once_after_warmup_not_during_synthesis(setup_backend, monkeypatch):
     from openclaw_local_tts import kitten_backend
 

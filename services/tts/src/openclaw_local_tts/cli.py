@@ -28,6 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-id")
     parser.add_argument("--kitten-weights", choices=["packed", "emb4"])
     parser.add_argument("--kitten-cache-dir", type=Path)
+    parser.add_argument("--kitten-compile", action="store_true",
+                        help="Use native static-cache compiled decode; requires compiler cache and extra memory")
     parser.add_argument("--voice-catalog", type=Path)
     parser.add_argument("--voice-reference", action="append", type=_voice_reference, default=[])
     parser.add_argument("--default-voice")
@@ -78,9 +80,10 @@ def main() -> None:
         backend = KittenTts2Backend(
             model_path=args.model_path, cache_dir=args.kitten_cache_dir, catalog=catalog,
             model_id=args.model_id or "kitten-tts-2", weights=args.kitten_weights or "packed",
+            compile_model=args.kitten_compile,
         )
     else:
-        if args.kitten_weights is not None or args.kitten_cache_dir is not None:
+        if args.kitten_weights is not None or args.kitten_cache_dir is not None or args.kitten_compile:
             raise SystemExit("Kitten arguments cannot be applied to Chatterbox")
         if not all([args.chatterbox_source, args.perth_source, args.s3tokenizer_source]):
             raise SystemExit("Chatterbox requires all three offline source paths")

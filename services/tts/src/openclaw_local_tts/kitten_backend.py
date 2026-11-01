@@ -20,7 +20,7 @@ class KittenTts2Backend:
 
     def __init__(
         self, *, model_path: Path, cache_dir: Path, catalog: VoiceCatalog,
-        model_id: str = "kitten-tts-2", weights: str = "packed",
+        model_id: str = "kitten-tts-2", weights: str = "packed", compile_model: bool = False,
     ) -> None:
         if not model_path.is_absolute() or model_path.is_symlink():
             raise ValueError("model_path must be an absolute non-symlink directory")
@@ -65,16 +65,39 @@ class KittenTts2Backend:
         self._verify_cuda_module(client.model, "language model")
         if client.sample_rate != 24_000:
             raise RuntimeError("KittenTTS 2 returned an unsupported sample rate")
+        if compile_model:
+            # Let Transformers own cache sizing and compiled decode dispatch.
+            # Do not compile the sampling loop or replace Kitten's speaker hook.
+            from transformers import CompileConfig
+
+            client.model.generation_config.cache_implementation = "static"
+            client.model.generation_config.disable_compile = False
+            client.model.generation_config.compile_config = CompileConfig(
+                mode="reduce-overhead", fullgraph=False,
+            )
         # Loading alone is not readiness: codec, embedding and clone conditioning are
         # lazy in upstream. Warm EVERY catalog voice before the listener is opened.
         for voice in catalog.voices:
             waveform = client.generate(
                 "Bereit.", reference=str(voice.reference_path),
                 reference_text=voice.reference_text, normalize=False, preset="stable",
-                max_new_tokens=200, advanced={"use_emotion": False},
+                max_new_tokens=1000 if compile_model else 200, advanced={"use_emotion": False},
             )
             self._pcm(waveform, np)
             del waveform
+            if compile_model:
+                # Pay common shape/preset compilation costs before readiness.
+                for expressive in (False, True):
+                    waveform = client.generate(
+                        "Wir prüfen die Sprachausgabe mit mehreren vollständigen Sätzen. "
+                        "Die Stimme soll ruhig und klar sprechen und den Text vollständig wiedergeben.",
+                        reference=str(voice.reference_path), reference_text=voice.reference_text,
+                        normalize=False, preset="expressive" if expressive else "stable",
+                        max_new_tokens=1000, advanced={"use_emotion": expressive,
+                                                    "chunk_chars": 0, "chunk_min_chars": 0},
+                    )
+                    self._pcm(waveform, np)
+                    del waveform
         # These names are verified against the reviewed SDK; pin that SDK before
         # deployment. Missing/lazy/CPU components are not readiness success.
         self._verify_cuda_module(client.codec.s3gen, "codec")
