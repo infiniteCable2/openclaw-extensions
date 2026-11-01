@@ -90,7 +90,11 @@ class KittenTts2Backend:
                 for expressive in (False, True):
                     waveform = client.generate(
                         "Wir prüfen die Sprachausgabe mit mehreren vollständigen Sätzen. "
-                        "Die Stimme soll ruhig und klar sprechen und den Text vollständig wiedergeben.",
+                        "Während unseres Spaziergangs betrachten wir die unterschiedlichen Pflanzen "
+                        "entlang des Gartenweges. Neben einem großen Baum stehen zwei gemütliche "
+                        "Bänke. Dahinter liegt ein kleiner Teich, dessen Wasser den blauen Himmel "
+                        "spiegelt. Gemeinsam genießen wir den freundlichen Nachmittag und setzen "
+                        "unseren Weg anschließend langsam fort.",
                         reference=str(voice.reference_path), reference_text=voice.reference_text,
                         normalize=False, preset="expressive" if expressive else "stable",
                         max_new_tokens=1000, advanced={"use_emotion": expressive,
