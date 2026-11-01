@@ -11,6 +11,10 @@ and textual copyright/trademark signs are preserved. Emotions, emphasis and voca
 events remain available; emoji are not automatically converted into vocal events.
 This filter does not guess ASCII emoticons such as `:)` from punctuation.
 
+The Unicode parser is qualified with regex 2026.7.19 and 2026.9.29. The bounded
+dependency range supports the existing Kitten runtime while preserving the
+separate Chatterbox deployment's original pinned constraints.
+
 A unit containing only removed decoration (possibly an emotion label and
 punctuation) produces 10 ms of silence without calling the model. This preserves
 the service's one-result-per-unit streaming contract and the existing join pauses.
