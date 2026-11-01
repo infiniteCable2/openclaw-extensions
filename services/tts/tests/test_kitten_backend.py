@@ -117,6 +117,21 @@ def test_compiled_warmup_failure_prevents_readiness(setup_backend, monkeypatch):
                          compile_model=True)
 
 
+@pytest.mark.parametrize("expressive", [False, True])
+def test_emoji_cleanup_is_model_only_and_preserves_each_unit(setup_backend, expressive):
+    model, catalog, client, calls, _loads = setup_backend
+    backend = KittenTts2Backend(model_path=model, cache_dir=model / "offline-cache", catalog=catalog)
+    calls.clear()
+    texts = ["[joyful] Hallo 🙂 <laugh>" if expressive else "Hallo 🙂", "😊!", "Weiter."]
+    original = list(texts)
+    render = backend.synthesize_expressive_segments if expressive else backend.synthesize_segments
+    results = list(render(texts, voice_id="voice_a"))
+    assert texts == original
+    assert len(results) == 3
+    assert results[1].data == b"\x00\x00" * 240
+    assert [text for text, _ in calls] == (["[joyful] Hallo <laugh>", "Weiter."] if expressive else ["Hallo", "Weiter."])
+
+
 def test_host_memory_cleanup_runs_once_after_warmup_not_during_synthesis(setup_backend, monkeypatch):
     from openclaw_local_tts import kitten_backend
 

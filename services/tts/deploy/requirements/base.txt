@@ -1,3 +1,4 @@
 Flask>=3,<4
 syntok==1.4.4
+regex==2026.7.19
 waitress==3.0.2

@@ -10,6 +10,7 @@ from .types import RenderedPcm
 from .speech_profile import KITTEN_SPEECH_PROFILE
 from .startup_memory import release_startup_memory
 from .voice_catalog import VoiceCatalog
+from .kitten_text import prepare_kitten_text
 
 
 class KittenTts2Backend:
@@ -155,6 +156,12 @@ class KittenTts2Backend:
         for text in texts:
             if not expressive:
                 validate_plain_expression_text(text)
+            text = prepare_kitten_text(text)
+            if not text:
+                # Keep the service's one-result-per-unit contract and existing
+                # join pauses, without asking the model to invent empty speech.
+                yield RenderedPcm(data=b"\x00\x00" * 240, sample_rate=24_000)
+                continue
             # The service owns bounded units and their joins. Do not split/merge a
             # short unit again or silently move inline controls across its boundary.
             waveform = self._client.generate(
