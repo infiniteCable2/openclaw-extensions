@@ -34,6 +34,37 @@ it cannot preempt a running GPU kernel. See `contracts/local-media-v1` for
 idempotent pre-arrival cancellation, expiry/error status, and registry bounds.
 HTTP thread headroom is reserved beyond the configured inference queue.
 
+### Optional word metadata and background analysis
+
+Multipart `timestamp_granularities[]=word` together with
+`response_format=verbose_json` requests `words` and `duration`. JSON returns
+them beside `text`/`model`; SSE adds them to its final `transcript.done` event.
+Omitting the option preserves existing responses and model arguments. No second
+model is loaded. Each word contains recognized `word`, `start`/`end` in seconds,
+and optional native `probability` (not calibrated confidence). Times refer to
+decoded input samples including silence; Faster-Whisper restores VAD offsets.
+These words never replace an application's original display text. Missing or
+invalid requested timing returns `timing_unavailable`, not fabricated positions.
+The response is bounded to 8192 words and 1MiB, including a maximum of 256
+codepoints per word; SSE retains its existing total mailbox/output bounds.
+
+Optional STT-only `X-OpenClaw-Work-Class: background-analysis` requires word
+metadata and forbids the `agent-speech` enhancement header. It admits only an
+otherwise idle/unreserved worker, skips if foreground work arrives before
+compute, and preserves foreground reservation capacity. It never queues behind
+conversational work or starts an extra model worker. With no spare queue slot,
+it returns 429. Background audio is bounded to eight decoded seconds and the
+request budget is capped at 1500ms, or a shorter caller/configured budget.
+Background active/retired IDs occupy at most one quarter of the existing
+request registry (and at most 256 entries), preserving foreground registry room
+even when optional requests repeatedly skip. Existing retirement periods remain.
+These are prototype input/cooperative bounds, **not hard GPU preemption or a
+measured foreground-latency guarantee**. A running native inference must settle.
+Callers skip expired/overloaded optional analysis instead of retrying it. Native
+GPU/mixed-load qualification is required before enabling a caption sidecar.
+The HTTP transcription service does not create agent input, turns or histories;
+the separate Talk adapter must preserve that boundary and existing lease rules.
+
 Both ordinary attachments and marked agent speech are incrementally decoded
 under a 900-second decoded-sample limit. This prevents highly compressed long
 uploads from being fully decoded before rejection. Playlist/concat demuxers and

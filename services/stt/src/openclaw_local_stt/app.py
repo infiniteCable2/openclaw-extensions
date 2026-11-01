@@ -14,6 +14,7 @@ from .backend import TranscriptionBackend
 from .inference_stream import InferenceStream
 from .request_lifecycle import RequestRegistry, RequestWork, ServiceError, ServiceState
 from .speech_frontend import enhance_speech_file
+from .word_timestamps import MAX_TIMING_BYTES
 
 _ALLOWED_AUDIO_TYPES = {
     "application/octet-stream",
@@ -45,6 +46,7 @@ _AUDIO_SUFFIXES = {
 }
 
 _ALLOWED_FILENAME_SUFFIXES = frozenset(_AUDIO_SUFFIXES.values())
+_MAX_BACKGROUND_AUDIO_SECONDS = 8
 
 
 def _error_response(error: ServiceError) -> tuple[Response, int]:
@@ -176,7 +178,7 @@ def create_app(
 
     def streaming_response(
         audio_path: Path, *, language: str | None, prompt: str | None,
-        speech_input: bool, work: RequestWork,
+        speech_input: bool, work: RequestWork, word_timestamps: bool = False,
     ) -> Response:
         # Capacity belongs to the whole response, but the model belongs only to
         # a complete inference unit, never to socket backpressure.
@@ -196,6 +198,9 @@ def create_app(
                     work.checkpoint()
                     events = backend.transcribe_stream(
                         audio_path, language=language, prompt=prompt, checkpoint=work.checkpoint,
+                        **({"word_timestamps": True} if word_timestamps else {}),
+                        **({"max_audio_seconds": _MAX_BACKGROUND_AUDIO_SECONDS}
+                           if work.work_class == "background-analysis" else {}),
                     )
                     with closing(events):
                         for event in events:
@@ -239,6 +244,15 @@ def create_app(
                 raise ServiceError("model_unavailable", "requested model is unavailable", 400, retryable=False)
             language = _validate_optional_text("language", request.form.get("language"), 35)
             prompt = _validate_optional_text("prompt", request.form.get("prompt"), 4096)
+            granularities = request.form.getlist("timestamp_granularities[]")
+            word_timestamps = bool(granularities)
+            if word_timestamps and (
+                granularities != ["word"] or request.form.get("response_format") != "verbose_json"
+            ):
+                raise ServiceError(
+                    "invalid_request", "word timestamps require verbose_json and word granularity",
+                    400, retryable=False,
+                )
             stream = request.form.get("stream")
             if stream not in {None, "false", "true"}:
                 raise ServiceError(
@@ -250,12 +264,18 @@ def create_app(
                     "invalid_request", "speech input purpose is invalid", 400, retryable=False
                 )
             speech_input = speech_input_header == "agent-speech"
+            if work.work_class == "background-analysis" and (not word_timestamps or speech_input):
+                raise ServiceError(
+                    "invalid_request", "background analysis requires word metadata and unmodified audio",
+                    400, retryable=False,
+                )
             audio_path = _store_bounded_upload(max_audio_bytes=max_audio_bytes)
             work.checkpoint()
             if stream == "true":
                 response = streaming_response(
                     audio_path, language=language, prompt=prompt, speech_input=speech_input,
                     work=work,
+                    word_timestamps=word_timestamps,
                 )
                 audio_path = None  # The response owns upload/admission cleanup.
                 work = None
@@ -266,11 +286,31 @@ def create_app(
                     audio_path.unlink(missing_ok=True)
                     audio_path = processed_path
                 work.checkpoint()
-                text = backend.transcribe(
-                    audio_path, language=language, prompt=prompt, checkpoint=work.checkpoint,
-                )
+                if word_timestamps:
+                    result = None
+                    with closing(backend.transcribe_stream(
+                        audio_path, language=language, prompt=prompt,
+                        checkpoint=work.checkpoint, word_timestamps=True,
+                        **({"max_audio_seconds": _MAX_BACKGROUND_AUDIO_SECONDS}
+                           if work.work_class == "background-analysis" else {}),
+                    )) as events:
+                        for event in events:
+                            work.checkpoint()
+                            if event["type"] == "transcript.done":
+                                result = {key: event[key] for key in ("text", "model", "words", "duration")}
+                    if result is None:
+                        raise RuntimeError("Transcription ended without a result")
+                    if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) > MAX_TIMING_BYTES:
+                        raise ServiceError(
+                            "output_too_large", "word metadata exceeds its limit",
+                            413, retryable=False,
+                        )
+                else:
+                    text = backend.transcribe(
+                        audio_path, language=language, prompt=prompt, checkpoint=work.checkpoint,
+                    )
                 work.checkpoint()
-            return jsonify(text=text, model=backend.model_id)
+            return jsonify(result) if word_timestamps else jsonify(text=text, model=backend.model_id)
         except ServiceError as error:
             return _error_response(error)
         except Exception as error:

@@ -9,7 +9,8 @@ from time import perf_counter
 from typing import Callable, Generator, Protocol
 
 from .recognition import RecognitionEvidence
-from .audio_decode import decode_bounded_audio
+from .audio_decode import decode_bounded_audio, MAX_AUDIO_SECONDS
+from .word_timestamps import WordTimestamp, append_segment_words, timing_number
 
 
 TranscriptionEvents = Generator[dict[str, object], None, None]
@@ -44,6 +45,8 @@ class TranscriptionBackend(Protocol):
         language: str | None,
         prompt: str | None,
         checkpoint: Callable[[], None] = lambda: None,
+        word_timestamps: bool = False,
+        max_audio_seconds: int = MAX_AUDIO_SECONDS,
     ) -> TranscriptionEvents: ...
 
 
@@ -106,6 +109,8 @@ class FasterWhisperBackend:
         language: str | None,
         prompt: str | None,
         checkpoint: Callable[[], None] = lambda: None,
+        word_timestamps: bool = False,
+        max_audio_seconds: int = MAX_AUDIO_SECONDS,
     ) -> TranscriptionEvents:
         started = perf_counter()
         prepare_finished: float | None = None
@@ -115,17 +120,25 @@ class FasterWhisperBackend:
         segments = None
         evidence = RecognitionEvidence()
         outcome = "failed"
+        words: list[WordTimestamp] = []
+        duration = 0.0
         try:
             try:
-                audio = decode_bounded_audio(audio_path, checkpoint=checkpoint)
+                audio = decode_bounded_audio(
+                    audio_path, checkpoint=checkpoint,
+                    **({"max_seconds": max_audio_seconds} if max_audio_seconds != MAX_AUDIO_SECONDS else {}),
+                )
                 checkpoint()
                 segments, info = self._model.transcribe(
                     audio,
                     language=language,
                     initial_prompt=prompt,
                     vad_filter=self.vad_filter,
+                    **({"word_timestamps": True} if word_timestamps else {}),
                 )
                 checkpoint()
+                if word_timestamps:
+                    duration = timing_number(getattr(info, "duration", None), maximum=900)
             finally:
                 prepare_finished = perf_counter()
             retained = getattr(info, "duration_after_vad", None)
@@ -151,6 +164,8 @@ class FasterWhisperBackend:
                         break
                     checkpoint()
                     evidence.add_segment()
+                    if word_timestamps:
+                        append_segment_words(words, segment, duration=duration)
                     evidence.add_signal(
                         "fasterWhisper.avgLogProbability",
                         getattr(segment, "avg_logprob", None), minimum=-100, maximum=0,
@@ -209,6 +224,7 @@ class FasterWhisperBackend:
         checkpoint()
         yield {
             "type": "transcript.done", "text": result, "model": self.model_id,
+            **({"words": words, "duration": duration} if word_timestamps else {}),
             "recognition": evidence.result(
                 audio_duration_ms=_duration_ms(getattr(info, "duration", None)),
                 speech_duration_ms=(

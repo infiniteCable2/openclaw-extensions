@@ -6,7 +6,9 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Iterator, Mapping
+from typing import Iterator, Mapping, Literal
+
+BACKGROUND_TIMEOUT_MS = 1500
 
 
 class ServiceError(RuntimeError):
@@ -22,6 +24,7 @@ class RequestWork:
     request_id: str
     deadline: float
     cancelled: threading.Event = field(default_factory=threading.Event)
+    work_class: Literal["foreground", "background-analysis"] = "foreground"
 
     def checkpoint(self) -> None:
         if self.cancelled.is_set():
@@ -49,16 +52,25 @@ class RequestRegistry:
         self.lock = threading.Lock()
         self.active: dict[str, RequestWork] = {}
         self.retired: dict[str, float] = {}
+        self.background_ids: set[str] = set()
 
     def _prune(self) -> None:
         now = time.monotonic()
         self.retired = {key: expiry for key, expiry in self.retired.items() if expiry > now}
+        if self.background_ids:
+            self.background_ids.intersection_update(self.active.keys() | self.retired.keys())
 
     def _check_capacity(self) -> None:
         if len(self.active) + len(self.retired) >= self.capacity:
             raise ServiceError("overloaded", "request registry is full", 429, retryable=True)
 
     def register(self, headers: Mapping[str, str]) -> RequestWork:
+        raw_class = headers.get("X-OpenClaw-Work-Class", "foreground")
+        if raw_class not in {"foreground", "background-analysis"}:
+            raise ServiceError("invalid_request", "work class is invalid", 400, retryable=False)
+        work_class: Literal["foreground", "background-analysis"] = (
+            "background-analysis" if raw_class == "background-analysis" else "foreground"
+        )
         identifier = request_id(headers.get("X-OpenClaw-Request-Id", str(uuid.uuid4())))
         raw_timeout = headers.get("X-OpenClaw-Request-Timeout-Ms")
         timeout = self.timeout_ms
@@ -69,13 +81,24 @@ class RequestRegistry:
             if timeout < 1 or timeout > 300_000:
                 raise ServiceError("invalid_request", "request timeout is invalid", 400, retryable=False)
             timeout = min(timeout, self.timeout_ms)
+        if work_class == "background-analysis":
+            # Cooperative bound, not GPU preemption. Live qualification must
+            # measure the remaining foreground delay of one native inference.
+            timeout = min(timeout, BACKGROUND_TIMEOUT_MS)
         with self.lock:
             self._prune()
             if identifier in self.active or identifier in self.retired:
                 raise ServiceError("cancelled", "request ID is unavailable", 409, retryable=False)
+            if work_class == "background-analysis" and (
+                len(self.background_ids) >= min(256, self.capacity // 4)
+                or len(self.active) + len(self.retired) >= self.capacity - 1
+            ):
+                raise ServiceError("overloaded", "background request registry is full", 429, retryable=True)
             self._check_capacity()
-            work = RequestWork(identifier, time.monotonic() + timeout / 1000)
+            work = RequestWork(identifier, time.monotonic() + timeout / 1000, work_class=work_class)
             self.active[identifier] = work
+            if work_class == "background-analysis":
+                self.background_ids.add(identifier)
             return work
 
     def finish(self, work: RequestWork) -> None:
@@ -108,6 +131,12 @@ class ServiceState:
         with self.condition:
             if work is not None:
                 work.checkpoint()
+            # Optional analysis never waits behind conversation work, occupies
+            # at most one reservation, and leaves admission room for foreground.
+            if work is not None and work.work_class == "background-analysis" and (
+                self.capacity < 2 or self.reserved_requests or self.active_requests or self.waiters
+            ):
+                raise ServiceError("overloaded", "background analysis is unavailable", 429, retryable=True)
             if self.reserved_requests >= self.capacity:
                 raise ServiceError("overloaded", "request queue is full", 429, retryable=True)
             self.reserved_requests += 1
@@ -123,6 +152,12 @@ class ServiceState:
         ticket = object()
         admitted = False
         with self.condition:
+            # Foreground can arrive between reservation and compute. Skip the
+            # sidecar then; do not turn it into a lower-priority FIFO blocker.
+            if work is not None and work.work_class == "background-analysis" and (
+                self.active_requests or self.waiters or self.reserved_requests > 1
+            ):
+                raise ServiceError("overloaded", "background analysis is unavailable", 429, retryable=True)
             if self.active_requests + len(self.waiters) >= self.capacity:
                 raise ServiceError("overloaded", "request queue is full", 429, retryable=True)
             self.waiters.append(ticket)

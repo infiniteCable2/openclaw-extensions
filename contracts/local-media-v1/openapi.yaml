@@ -103,6 +103,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/RequestId"
         - $ref: "#/components/parameters/RequestTimeout"
+        - $ref: "#/components/parameters/SttWorkClass"
       requestBody:
         required: true
         content:
@@ -126,6 +127,15 @@ paths:
                 prompt:
                   type: string
                   maxLength: 4096
+                response_format:
+                  type: string
+                  description: verbose_json is required when word granularity is requested; otherwise the legacy response is unchanged.
+                "timestamp_granularities[]":
+                  type: array
+                  minItems: 1
+                  maxItems: 1
+                  items: { const: word }
+                  description: Explicitly requests word metadata in the JSON response or final SSE transcript.done event.
                 stream:
                   type: boolean
                   default: false
@@ -159,6 +169,12 @@ paths:
           $ref: "#/components/responses/Expired"
         "409":
           $ref: "#/components/responses/Cancelled"
+        "422":
+          description: Requested word timing was missing, invalid, or outside the analyzed input extent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/Overloaded"
         "500":
@@ -308,6 +324,18 @@ components:
         minimum: 1
         maximum: 300000
       description: Monotonic request budget including queue and preparation time.
+    SttWorkClass:
+      name: X-OpenClaw-Work-Class
+      in: header
+      required: false
+      schema:
+        enum: [foreground, background-analysis]
+        default: foreground
+      description: >-
+        STT only. Background analysis requires word metadata and unmodified audio.
+        It skips busy/reserved workers, leaves foreground admission capacity,
+        accepts at most eight decoded seconds, and has a cooperative 1500ms ceiling.
+        It never preempts an already-running native model call.
   schemas:
     ServiceGeneration:
       type: string
@@ -375,6 +403,30 @@ components:
         model:
           type: string
           maxLength: 128
+        words:
+          $ref: "#/components/schemas/TranscriptionWords"
+        duration:
+          type: number
+          minimum: 0
+          maximum: 900
+    TranscriptionWords:
+      type: array
+      maxItems: 8192
+      description: >-
+        Optional only when requested. Start/end are seconds relative to decoded
+        input samples, including original silence; not wall time, receipt time,
+        or VAD-compressed time. Probability is the backend's uncalibrated word
+        score when available. Text is recognized text, not a display-text mapping.
+        Complete verbose JSON and SSE output are bounded to 1MiB.
+      items:
+        type: object
+        additionalProperties: false
+        required: [word, start, end]
+        properties:
+          word: { type: string, minLength: 1, maxLength: 256 }
+          start: { type: number, minimum: 0, maximum: 900 }
+          end: { type: number, minimum: 0, maximum: 900 }
+          probability: { type: number, minimum: 0, maximum: 1 }
     TranscriptionStreamEvent:
       oneOf:
         - type: object
@@ -396,6 +448,12 @@ components:
               maxLength: 128
             recognition:
               $ref: "#/components/schemas/RecognitionEvidence"
+            words:
+              $ref: "#/components/schemas/TranscriptionWords"
+            duration:
+              type: number
+              minimum: 0
+              maximum: 900
         - type: object
           additionalProperties: false
           required: [type, error]
@@ -415,6 +473,9 @@ components:
                       deadline_exceeded,
                       payload_too_large,
                       invalid_request,
+                      overloaded,
+                      output_too_large,
+                      timing_unavailable,
                     ]
                 message:
                   type: string
@@ -631,6 +692,8 @@ components:
                 - accelerator_unavailable
                 - model_unavailable
                 - inference_failed
+                - output_too_large
+                - timing_unavailable
             message:
               type: string
               maxLength: 512
