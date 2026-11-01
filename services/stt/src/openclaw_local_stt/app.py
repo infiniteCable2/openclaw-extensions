@@ -300,17 +300,23 @@ def create_app(
                                 result = {key: event[key] for key in ("text", "model", "words", "duration")}
                     if result is None:
                         raise RuntimeError("Transcription ended without a result")
-                    if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) > MAX_TIMING_BYTES:
-                        raise ServiceError(
-                            "output_too_large", "word metadata exceeds its limit",
-                            413, retryable=False,
-                        )
                 else:
                     text = backend.transcribe(
                         audio_path, language=language, prompt=prompt, checkpoint=work.checkpoint,
                     )
                 work.checkpoint()
-            return jsonify(result) if word_timestamps else jsonify(text=text, model=backend.model_id)
+            if word_timestamps:
+                # Bound the actual serializer bytes, including ASCII escaping;
+                # serialize only after releasing the shared inference token.
+                response = jsonify(result)
+                if len(response.get_data()) > MAX_TIMING_BYTES:
+                    raise ServiceError(
+                        "output_too_large", "word metadata exceeds its limit",
+                        413, retryable=False,
+                    )
+                work.checkpoint()
+                return response
+            return jsonify(text=text, model=backend.model_id)
         except ServiceError as error:
             return _error_response(error)
         except Exception as error:

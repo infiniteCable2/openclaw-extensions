@@ -40,6 +40,7 @@ def append_segment_words(
                 422, retryable=False,
             )
         return
+    previous_count = len(output)
     for word in words:
         text = getattr(word, "word", None)
         if not isinstance(text, str) or not text.strip() or len(text) > 256:
@@ -63,3 +64,8 @@ def append_segment_words(
         if probability is not None:
             item["probability"] = timing_number(probability, maximum=1)
         output.append(item)
+    if len(output) == previous_count and str(getattr(segment, "text", "")).strip():
+        raise ServiceError(
+            "timing_unavailable", "recognizer did not return requested word timing",
+            422, retryable=False,
+        )

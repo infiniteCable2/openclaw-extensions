@@ -17,11 +17,11 @@ from openclaw_local_stt.backend import FasterWhisperBackend
 from openclaw_local_stt.request_lifecycle import ServiceError, ServiceState
 
 
-def whisper(monkeypatch, tmp_path, word):
+def whisper(monkeypatch, tmp_path, word, *, segments=None):
     calls = []
     def transcribe(_audio, **kwargs):
         calls.append(kwargs)
-        return iter([SimpleNamespace(text=" Hallo", words=[word])]), SimpleNamespace(
+        return iter(segments if segments is not None else [SimpleNamespace(text=" Hallo", words=[word])]), SimpleNamespace(
             duration=2.0, duration_after_vad=0.4,
         )
     model = SimpleNamespace(model=SimpleNamespace(device="cuda"), transcribe=transcribe)
@@ -314,3 +314,33 @@ def test_invalid_analysis_class_or_frontend_combination_never_runs_model(timed, 
         assert client.post('/v1/audio/transcriptions', data=data(timed=timed), headers=headers).status_code == 400
         assert client.get('/status').get_json()['inFlightRequests'] == 0
     assert backend.calls == []
+
+
+@pytest.mark.parametrize('surrounded', [False, True])
+def test_nonempty_segment_without_words_is_not_success(monkeypatch, tmp_path, surrounded):
+    missing = SimpleNamespace(text='missing alignment', words=[])
+    segments = [missing]
+    if surrounded:
+        segments = [SimpleNamespace(text='first', words=[SimpleNamespace(word='first', start=0, end=0.2)]),
+                    missing, SimpleNamespace(text='last', words=[SimpleNamespace(word='last', start=1, end=1.2)])]
+    backend, _ = whisper(monkeypatch, tmp_path, None, segments=segments)
+    with pytest.raises(ServiceError) as error:
+        list(backend.transcribe_stream(tmp_path/'clip.wav', language=None, prompt=None, word_timestamps=True))
+    assert error.value.code == 'timing_unavailable'
+
+
+def test_verbose_limit_checks_actual_nonascii_response_bytes():
+    class LargeMetadata(TimingBackend):
+        def transcribe_stream(self, *_args, **_kwargs):
+            words = [{'word':'汉'*256,'start':0.0,'end':1.0}]*800
+            # This passes the old UTF8 estimate, but Flask's ASCII escaping
+            # makes the actual JSON response larger than the promised bound.
+            result = {'type':'transcript.done','text':'example','model':self.model_id,'words':words,'duration':2.0}
+            assert len(json.dumps(result,ensure_ascii=False).encode()) < 1024*1024
+            yield result
+    app = app_module.create_app(LargeMetadata())
+    with app.test_client() as client:
+        response = client.post('/v1/audio/transcriptions',data=data(timed=True))
+        assert response.status_code == 413
+        assert response.get_json()['error']['code'] == 'output_too_large'
+        assert len(response.data) < 1024*1024
