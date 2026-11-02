@@ -63,6 +63,7 @@ type RealtimeTranscriptionSessionCreateRequest = Parameters<
 type RealtimeTranscriptionSession = ReturnType<
   RealtimeTranscriptionProviderPlugin["createSession"]
 >;
+type InputBoundaryObservation = { activity: "none" | "observed" };
 type ProcessingState = Parameters<
   NonNullable<RealtimeTranscriptionSessionCreateRequest["onProcessing"]>
 >[0]["state"];
@@ -420,11 +421,15 @@ function createSession(
   let inputGapTimer: NodeJS.Timeout | undefined;
   let inputEnd:
     | {
-        promise: Promise<void>;
-        resolve(): void;
+        captureId?: string;
+        promise: Promise<InputBoundaryObservation>;
+        resolve(result: InputBoundaryObservation): void;
         reject(error: Error): void;
       }
     | undefined;
+  let completedInputEnd: { captureId: string; promise: Promise<InputBoundaryObservation> } | undefined;
+  // Acoustic endpoints may already be rejected or decoded before an explicit boundary.
+  let hadCandidateSincePreviousExplicitBoundary = false;
   let consecutiveLoudMs = 0;
   let utteranceSequence = 0n;
   let speechGeneration = 0;
@@ -925,6 +930,7 @@ function createSession(
         return;
       }
       speaking = true;
+      hadCandidateSincePreviousExplicitBoundary = true;
       speechGeneration += 1;
       currentTurn = {
         controller: new AbortController(),
@@ -1067,7 +1073,16 @@ function createSession(
     preRollBytes = 0;
     if (closed)
       boundary.reject(new Error("Local media transcription input failed at its boundary"));
-    else boundary.resolve();
+    else {
+      const result = Object.freeze({
+        activity: hadCandidateSincePreviousExplicitBoundary ? "observed" : "none",
+      } as const);
+      hadCandidateSincePreviousExplicitBoundary = false;
+      completedInputEnd = boundary.captureId === undefined
+        ? undefined
+        : { captureId: boundary.captureId, promise: boundary.promise };
+      boundary.resolve(result);
+    }
     inputEnd = undefined;
   };
   const processor = config.speechProcessorPython
@@ -1126,21 +1141,24 @@ function createSession(
         acceptAudio(audio);
       }
     },
-    finishInput() {
+    finishInput(options?: { captureId: string }) {
       if (!connected || closed) {
         throw new Error("Local media transcription input is no longer active");
+      }
+      if (options?.captureId !== undefined && options.captureId === completedInputEnd?.captureId) {
+        return completedInputEnd.promise;
       }
       if (inputEnd) return inputEnd.promise;
       if (inputFrameBytes > 0) {
         throw new Error("Local media input boundary requires complete real audio frames");
       }
-      let resolve!: () => void;
+      let resolve!: (result: InputBoundaryObservation) => void;
       let reject!: (error: Error) => void;
-      const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+      const promise = new Promise<InputBoundaryObservation>((resolvePromise, rejectPromise) => {
         resolve = resolvePromise;
         reject = rejectPromise;
       });
-      inputEnd = { promise, resolve, reject };
+      inputEnd = { captureId: options?.captureId, promise, resolve, reject };
       try {
         const drained = processor?.drain();
         if (drained) {

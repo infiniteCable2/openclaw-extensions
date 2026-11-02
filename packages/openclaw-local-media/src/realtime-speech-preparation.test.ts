@@ -12,7 +12,7 @@ describe("realtime speech readiness", () => {
     speechProcessorPython: "/opt/stt/bin/python",
   };
 
-  it("waits for every real enhanced frame before applying an explicit input boundary", async () => {
+  it.each([false, true])("drains enhanced frames, capture ID: %s", async (correlated) => {
     vi.useFakeTimers();
     try {
       let deliver: ((audio: Buffer) => void) | undefined;
@@ -55,12 +55,15 @@ describe("realtime speech readiness", () => {
       for (let offset = 0; offset < frame.byteLength; offset += 2)
         frame.writeInt16LE(10_000, offset);
       for (let index = 0; index < 4; index++) session.sendAudio(frame);
-      const boundary = session.finishInput?.();
+      const options = correlated ? { captureId: "capture-enhanced" } : undefined;
+      const boundary = session.finishInput?.(options);
+      expect(session.finishInput?.(options)).toBe(boundary);
       expect(() => session.sendAudio(frame)).toThrow("boundary is still being processed");
       deliver?.(pending.shift()!);
       expect(fetchMock).not.toHaveBeenCalled();
       while (pending.length) deliver?.(pending.shift()!);
-      await boundary;
+      await expect(boundary).resolves.toEqual({ activity: "observed" });
+      if (correlated) expect(session.finishInput?.(options)).toBe(boundary);
       await vi.advanceTimersByTimeAsync(0);
       expect(onTranscript).toHaveBeenCalledExactlyOnceWith("Ready");
       const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
