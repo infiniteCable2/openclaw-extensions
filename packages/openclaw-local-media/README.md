@@ -169,6 +169,18 @@ and close or native-worker failure rejects an outstanding boundary. An endpoint
 at an exact audio-batch cap settles existing work without consuming another STT
 queue slot. Clients that keep streaming silence retain their existing behavior.
 
+The provider advertises `supportsClientInputEnd`. A matching Gateway may select
+`inputEndMode: "client"` for a verified device that owns capture completion.
+In this mode acoustic pauses never finalize a request: bounded STT batches and
+cumulative partials keep the same utterance until `finishInput({ captureId })`.
+The boundary drains enhanced input and publishes pending processing ownership
+before acknowledging; final decoding remains asynchronous and retains that
+utterance ID. Duplicate current boundaries do not replay transcription.
+Minimum-speech checks, queue/text limits, transport-gap cancellation and complete
+audio-frame requirements still apply. Reaching a batch limit never dispatches
+truncated text. Absent this selection, or with `inputEndMode: "server"`, acoustic
+silence keeps its existing finalization behavior.
+
 For agent-directed live speech, configure `speechProcessorPython` to the
 absolute Python executable in the installed STT runtime (for example,
 `/absolute/stt-venv/bin/python`) under

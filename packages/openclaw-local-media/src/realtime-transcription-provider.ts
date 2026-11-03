@@ -69,6 +69,7 @@ type ProcessingState = Parameters<
 >[0]["state"];
 type LocalRealtimeTranscriptionProvider = RealtimeTranscriptionProviderPlugin & {
   readonly transcriptGranularity: "utterance";
+  readonly supportsClientInputEnd: true;
   prepareSession(request: {
     providerConfig: RealtimeTranscriptionProviderConfig;
     signal?: AbortSignal;
@@ -368,6 +369,7 @@ function createSession(
   logger?: DiagnosticLogger,
 ): RealtimeTranscriptionSession {
   const config = normalizeConfig(request.providerConfig);
+  const clientInputEnd = request.inputEndMode === "client";
   const enhancedLive = Boolean(config.speechProcessorPython);
   const liveSpeechGate = enhancedLive ? createLiveSpeechGate(config) : undefined;
   const liveSpeechDiagnostics = enhancedLive ? createLiveSpeechDiagnostics() : undefined;
@@ -427,7 +429,9 @@ function createSession(
         reject(error: Error): void;
       }
     | undefined;
-  let completedInputEnd: { captureId: string; promise: Promise<InputBoundaryObservation> } | undefined;
+  let completedInputEnd:
+    | { captureId: string; promise: Promise<InputBoundaryObservation> }
+    | undefined;
   // Acoustic endpoints may already be rejected or decoded before an explicit boundary.
   let hadCandidateSincePreviousExplicitBoundary = false;
   let consecutiveLoudMs = 0;
@@ -851,7 +855,7 @@ function createSession(
     const timings = captureTimings();
     input.endpoints = boundedAdd(input.endpoints, 1);
     const audio = Buffer.concat(utterance, utteranceBytes);
-    const silenceEndpoint = explicitInputEnd || quietMs >= config.silenceMs;
+    const silenceEndpoint = explicitInputEnd || (!clientInputEnd && quietMs >= config.silenceMs);
     const turn = currentTurn;
     if (turn.speechObservation && liveSpeechGate && silenceEndpoint) {
       turn.speechObservation.frame = liveSpeechGate.captureObservation().frame;
@@ -991,7 +995,7 @@ function createSession(
       utteranceMs >= config.maxUtteranceMs - Math.min(400, config.maxUtteranceMs / 5) &&
       quietMs >= 80;
     if (
-      quietMs >= config.silenceMs ||
+      (!clientInputEnd && quietMs >= config.silenceMs) ||
       nearCapQuietBoundary ||
       utteranceMs >= config.maxUtteranceMs
     ) {
@@ -1078,9 +1082,10 @@ function createSession(
         activity: hadCandidateSincePreviousExplicitBoundary ? "observed" : "none",
       } as const);
       hadCandidateSincePreviousExplicitBoundary = false;
-      completedInputEnd = boundary.captureId === undefined
-        ? undefined
-        : { captureId: boundary.captureId, promise: boundary.promise };
+      completedInputEnd =
+        boundary.captureId === undefined
+          ? undefined
+          : { captureId: boundary.captureId, promise: boundary.promise };
       boundary.resolve(result);
     }
     inputEnd = undefined;
@@ -1200,6 +1205,7 @@ export function buildLocalRealtimeTranscriptionProvider(
     id: LOCAL_MEDIA_PROVIDER_ID,
     label: "Local Media",
     transcriptGranularity: "utterance",
+    supportsClientInputEnd: true,
     defaultModel: DEFAULT_STT_MODEL,
     models: [DEFAULT_STT_MODEL],
     resolveInputAudioFormat: (providerConfig) =>
