@@ -171,7 +171,10 @@ pub fn decode_key(identity: String, index: u8, encoded: String) -> anyhow::Resul
     let key = STANDARD
         .decode(encoded.trim())
         .context("invalid media key encoding")?;
-    ensure!(key.len() == 16, "media key must be exactly 16 bytes");
+    ensure!(
+        matches!(key.len(), 16 | 32),
+        "media key must be exactly 16 or 32 bytes"
+    );
     Ok(DecodedKey {
         participant_identity,
         index,
@@ -284,17 +287,28 @@ mod tests {
     }
 
     #[test]
-    fn accepts_one_exact_remote_and_a_16_byte_key() {
-        let encoded = STANDARD.encode([7_u8; 16]);
-        let raw = start_json(
-            &["remote"],
-            true,
-            &format!(r#"[{{"participant_identity":"local","index":0,"key_base64":"{encoded}"}}]"#),
-        );
-        let parsed = serde_json::from_str(&raw).unwrap();
-        let start = validate_start(parsed).unwrap();
-        assert_eq!(start.allowed_remote_identities.len(), 1);
-        assert_eq!(start.initial_keys[0].key, vec![7_u8; 16]);
+    fn accepts_one_exact_remote_and_supported_media_keys_unchanged() {
+        for length in [16, 32] {
+            let encoded = STANDARD.encode(vec![7_u8; length]);
+            let raw = start_json(
+                &["remote"],
+                true,
+                &format!(r#"[{{"participant_identity":"local","index":0,"key_base64":"{encoded}"}}]"#),
+            );
+            let parsed = serde_json::from_str(&raw).unwrap();
+            let start = validate_start(parsed).unwrap();
+            assert_eq!(start.allowed_remote_identities.len(), 1);
+            assert_eq!(start.initial_keys[0].key, vec![7_u8; length]);
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_media_key_lengths() {
+        for length in [0, 15, 17, 24, 31, 33] {
+            assert!(
+                decode_key("remote".to_owned(), 0, STANDARD.encode(vec![7_u8; length])).is_err()
+            );
+        }
     }
 
     #[test]
