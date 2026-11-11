@@ -293,7 +293,9 @@ mod tests {
             let raw = start_json(
                 &["remote"],
                 true,
-                &format!(r#"[{{"participant_identity":"local","index":0,"key_base64":"{encoded}"}}]"#),
+                &format!(
+                    r#"[{{"participant_identity":"local","index":0,"key_base64":"{encoded}"}}]"#
+                ),
             );
             let parsed = serde_json::from_str(&raw).unwrap();
             let start = validate_start(parsed).unwrap();

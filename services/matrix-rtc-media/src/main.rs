@@ -42,6 +42,25 @@ const MAX_CONTROL_LINE_BYTES: usize = 128 * 1024;
 // than filling this buffer; only confirmed cancellation clears it.
 const OUTPUT_QUEUE_MS: u32 = 1_000;
 
+#[test]
+fn installs_supported_hkdf_media_keys() {
+    let provider = KeyProvider::new(KeyProviderOptions {
+        key_derivation_algorithm: KeyDerivationAlgorithm::HKDF,
+        ..Default::default()
+    });
+    for length in [16, 32] {
+        install_key(
+            &provider,
+            DecodedKey {
+                participant_identity: "remote".to_owned(),
+                index: 0,
+                key: vec![7_u8; length],
+            },
+        )
+        .unwrap();
+    }
+}
+
 fn socket_args() -> anyhow::Result<(PathBuf, Option<PathBuf>)> {
     let mut args = env::args_os();
     let _program = args.next();
