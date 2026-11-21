@@ -31,6 +31,9 @@ export type ManagedDevice = {
   siteId: string;
   room: string;
   provider: string;
+  personalReadProfileId?: string;
+  providers?: readonly string[];
+  sources?: readonly ({ provider: string } & DeviceProviderMetadata)[];
   capabilities: readonly string[];
   capabilityAccess?: ReadonlyMap<string, DeviceCapabilityAccess>;
   tools: Readonly<Partial<Record<DeviceToolRole, string>>>;
@@ -39,6 +42,7 @@ export type ManagedDevice = {
 
 export type DeviceRegistry = ReadonlyMap<string, ManagedDevice>;
 export type DeviceProviderMetadata = Pick<ManagedDevice, "capabilities" | "capabilityAccess" | "tools">;
+type ProviderDeclaration = DeviceProviderMetadata & { statusByBrand?: ReadonlyMap<string, string> };
 
 const idPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const toolPattern = /^[a-z][a-z0-9_]*$/;
@@ -84,7 +88,7 @@ function tool(value: unknown, label: string): string {
 }
 
 /** Plugin-owned data only: never imports or executes a configured module. */
-export function loadProviderMetadata(provider: string, packageRoot: string): DeviceProviderMetadata {
+export function loadProviderMetadata(provider: string, packageRoot: string): ProviderDeclaration {
   if (!isAbsolute(packageRoot)) throw new DevicePolicyError("invalid_config", `Provider ${provider} requires an absolute package directory`);
   const readJson = (name: string, limit: number): Record<string, unknown> => {
     try {
@@ -97,7 +101,7 @@ export function loadProviderMetadata(provider: string, packageRoot: string): Dev
     }
   };
   const metadata = readJson("device-provider.json", 64 * 1024);
-  keys(metadata, ["version", "provider", "capabilities", "capabilityAccess", "tools"], "provider metadata");
+  keys(metadata, ["version", "provider", "capabilities", "capabilityAccess", "tools", "statusByBrand"], "provider metadata");
   if (metadata.version !== 1 || metadata.provider !== provider) throw new DevicePolicyError("invalid_config", `Provider ${provider} metadata identity or version does not match`);
   const manifest = readJson("openclaw.plugin.json", 1024 * 1024);
   const contracts = object(manifest.contracts, "plugin contracts");
@@ -136,15 +140,32 @@ export function loadProviderMetadata(provider: string, packageRoot: string): Dev
   if (access && Object.keys(access).length !== capabilities.length) {
     throw new DevicePolicyError("invalid_config", "Unexpected capability access rule");
   }
-  return { capabilities, ...(capabilityAccess && { capabilityAccess }), tools };
+  const declaration = { capabilities, ...(capabilityAccess && { capabilityAccess }), tools };
+  if (metadata.statusByBrand === undefined) return declaration;
+  const brandEntries = Object.entries(object(metadata.statusByBrand, "provider brand status tools"));
+  if (brandEntries.length < 1 || brandEntries.length > 32) throw new DevicePolicyError("invalid_config", `Provider ${provider} has invalid brand status tools`);
+  const statusByBrand = new Map<string, string>();
+  for (const [brand, value] of brandEntries) {
+    if (!idPattern.test(brand)) throw new DevicePolicyError("invalid_config", `Provider ${provider} has an invalid brand`);
+    const name = tool(value, "provider brand status tool");
+    if (!contracts.tools.includes(name) || Object.entries(tools).some(([role, toolName]) => role !== "status" && toolName === name)) {
+      throw new DevicePolicyError("invalid_config", `Provider ${provider} has an invalid brand status tool`);
+    }
+    statusByBrand.set(brand, name);
+  }
+  return { ...declaration, statusByBrand };
 }
 
 export function parseDeviceRegistry(raw: unknown): DeviceRegistry {
+  return parseRegistry(raw);
+}
+
+function parseRegistry(raw: unknown, binding?: (provider: string, device: string) => Record<string, unknown>): DeviceRegistry {
   const root = object(raw, "device-management config");
   keys(root, ["providers", "devices", "diagnosticViewers"], "device-management config");
   const rawProviders = object(root.providers, "providers");
   if (Object.keys(rawProviders).length < 1 || Object.keys(rawProviders).length > 32) throw new DevicePolicyError("invalid_config", "providers must contain 1-32 entries");
-  const providers = new Map<string, DeviceProviderMetadata>();
+  const providers = new Map<string, ProviderDeclaration>();
   for (const [provider, directory] of Object.entries(rawProviders)) {
     id(provider, "provider id");
     providers.set(provider, loadProviderMetadata(provider, string(directory, "provider package directory", 4096)));
@@ -156,14 +177,30 @@ export function parseDeviceRegistry(raw: unknown): DeviceRegistry {
   for (const [index, item] of root.devices.entries()) {
     const label = `devices[${index}]`;
     const entry = object(item, label);
-    keys(entry, ["id", "name", "kind", "siteId", "room", "provider", "grants"], label);
+    keys(entry, ["id", "name", "kind", "siteId", "room", "provider", "additionalProviders", "grants", "personalReadProfileId"], label);
     const deviceId = id(entry.id, `${label}.id`);
     if (devices.has(deviceId)) throw new DevicePolicyError("invalid_config", `duplicate device id ${deviceId}`);
     if (!kinds.has(entry.kind as DeviceKind)) throw new DevicePolicyError("invalid_config", `${label}.kind is invalid`);
+    const personalReadProfileId = entry.personalReadProfileId;
+    if (personalReadProfileId !== undefined &&
+        (entry.kind !== "vehicle" || typeof personalReadProfileId !== "string" || !idPattern.test(personalReadProfileId))) {
+      throw new DevicePolicyError("invalid_config", `${label}.personalReadProfileId requires a vehicle and a valid profile ID`);
+    }
     const provider = id(entry.provider, `${label}.provider`);
-    const metadata = providers.get(provider);
-    if (!metadata) throw new DevicePolicyError("invalid_config", `${label}.provider has no metadata binding`);
-    const { tools, capabilities, capabilityAccess } = metadata;
+    if (!providers.has(provider)) throw new DevicePolicyError("invalid_config", `${label}.provider has no metadata binding`);
+    const extra = entry.additionalProviders ?? [];
+    if (!Array.isArray(extra) || extra.length > 7) throw new DevicePolicyError("invalid_config", `${label}.additionalProviders is invalid`);
+    const bindings = [provider, ...extra.map((item) => id(item, `${label}.additionalProviders`))];
+    if (new Set(bindings).size !== bindings.length || bindings.some((item) => !providers.has(item))) {
+      throw new DevicePolicyError("invalid_config", `${label}.additionalProviders is duplicated or unbound`);
+    }
+    const sources = bindings.map((providerId) => {
+      const { statusByBrand, ...metadata } = providers.get(providerId)!;
+      const brand = binding?.(providerId, deviceId).brand;
+      const status = entry.kind === "vehicle" && typeof brand === "string" ? statusByBrand?.get(brand) : undefined;
+      return { ...metadata, provider: providerId, tools: status ? { ...metadata.tools, status } : metadata.tools };
+    });
+    const { tools, capabilities, capabilityAccess } = sources[0]!;
     const rawGrants = object(entry.grants, `${label}.grants`);
     if (Object.keys(rawGrants).length < 1 || Object.keys(rawGrants).length > 32) {
       throw new DevicePolicyError("invalid_config", `${label}.grants must contain 1-32 agents`);
@@ -177,7 +214,7 @@ export function parseDeviceRegistry(raw: unknown): DeviceRegistry {
       const set = new Set(value as DevicePermission[]);
       if (set.size !== value.length) throw new DevicePolicyError("invalid_config", `${label}.grants.${agent} contains duplicates`);
       for (const permission of set) {
-        if (permission === "control" && !tools.control || permission === "observe" && !tools.observe || permission === "guide" && !tools.guide) {
+        if (permission === "control" && !sources.some((source) => source.tools.control) || permission === "observe" && !sources.some((source) => source.tools.observe) || permission === "guide" && !sources.some((source) => source.tools.guide)) {
           throw new DevicePolicyError("invalid_config", `${label}.grants.${agent} lacks a corresponding tool`);
         }
       }
@@ -190,7 +227,9 @@ export function parseDeviceRegistry(raw: unknown): DeviceRegistry {
       siteId: id(entry.siteId, `${label}.siteId`),
       room: string(entry.room, `${label}.room`),
       provider,
-      capabilities,
+      ...(personalReadProfileId !== undefined ? { personalReadProfileId } : {}),
+      ...(bindings.length > 1 ? { providers: bindings, sources } : {}),
+      capabilities: bindings.length > 1 ? [...new Set(sources.flatMap((source) => source.capabilities))] : capabilities,
       capabilityAccess,
       tools,
       grants,
@@ -206,25 +245,27 @@ export function registryFromOpenClawConfig(config: unknown): DeviceRegistry {
   const entries = object(plugins.entries, "plugins.entries");
   const manager = object(entries["device-management"], "plugins.entries.device-management");
   if (manager.enabled === false) throw new DevicePolicyError("unavailable", "Device management is disabled");
-  const registry = parseDeviceRegistry(manager.config);
-  for (const device of registry.values()) {
-    const provider = entries[device.provider];
+  return parseRegistry(manager.config, (providerId, deviceId) => {
+    const provider = entries[providerId];
     if (!provider || typeof provider !== "object" || Array.isArray(provider) || (provider as Record<string, unknown>).enabled === false) {
-      throw new DevicePolicyError("unavailable", `Provider ${device.provider} is not enabled`);
+      throw new DevicePolicyError("unavailable", `Provider ${providerId} is not enabled`);
     }
     const providerConfig = (provider as Record<string, unknown>).config;
     const providerDevices = providerConfig && typeof providerConfig === "object" && !Array.isArray(providerConfig)
       ? (providerConfig as Record<string, unknown>).devices : undefined;
-    if (!Array.isArray(providerDevices) || !providerDevices.some((entry) =>
-      entry && typeof entry === "object" && !Array.isArray(entry) && (entry as Record<string, unknown>).id === device.id)) {
-      throw new DevicePolicyError("invalid_config", `Device ${device.id} is not configured in provider ${device.provider}`);
-    }
-  }
-  return registry;
+    const device = Array.isArray(providerDevices) ? providerDevices.find((entry): entry is Record<string, unknown> =>
+      entry && typeof entry === "object" && !Array.isArray(entry) && (entry as Record<string, unknown>).id === deviceId) : undefined;
+    if (!device) throw new DevicePolicyError("invalid_config", `Device ${deviceId} is not configured in provider ${providerId}`);
+    return device;
+  });
 }
 
 export function authorizedDevices(registry: DeviceRegistry, agentId: string | undefined): ManagedDevice[] {
   return agentId ? [...registry.values()].filter((device) => device.grants.has(agentId)) : [];
+}
+
+export function hasDeviceProvider(device: ManagedDevice, provider: string): boolean {
+  return device.provider === provider || device.providers?.includes(provider) === true;
 }
 
 export function assertDeviceGrant(
@@ -235,14 +276,42 @@ export function assertDeviceGrant(
   permission: DevicePermission,
 ): ManagedDevice {
   const device = registry.get(deviceId);
-  if (!agentId || !device || device.provider !== provider || !device.grants.get(agentId)?.has(permission)) {
+  if (!agentId || !device || !hasDeviceProvider(device, provider) || !device.grants.get(agentId)?.has(permission)) {
     throw new DevicePolicyError("device_denied", "Device is not available to this agent");
   }
   return device;
 }
 
-export function publicDevice(device: ManagedDevice, agentId: string) {
-  const grants = device.grants.get(agentId);
+export type VehicleReadToolContext = {
+  readonly agentId?: string;
+  readonly senderIsOwner?: boolean;
+  readonly isPrivateRequesterProfile?: (profileId: string) => boolean;
+  readonly assertInvocationCurrent?: () => void;
+};
+
+export function vehicleReadAuthority(
+  device: ManagedDevice,
+  context: VehicleReadToolContext,
+  allowPersonal = true,
+): { kind: "owner"; profileId?: never } | { kind: "personal"; profileId: string } | undefined {
+  if (!context.agentId || !device.grants.get(context.agentId)?.has("read")) return;
+  if (context.senderIsOwner === true) return { kind: "owner" };
+  const profileId = device.personalReadProfileId;
+  if (!allowPersonal || device.kind !== "vehicle" || !profileId) return;
+  try {
+    if (context.isPrivateRequesterProfile?.(profileId) === true) return { kind: "personal", profileId };
+  } catch {
+    // A revoked or unavailable host proof must not make a vehicle visible.
+  }
+}
+
+export function publicDevice(device: ManagedDevice, agentId: string, readOnly = false) {
+  const deviceGrants = device.grants.get(agentId);
+  const grants = readOnly ? new Set(deviceGrants?.has("read") ? ["read" as const] : []) : deviceGrants;
+  const availableTools = (tools: ManagedDevice["tools"]) => Object.fromEntries(Object.entries(tools).filter(([role, name]) => {
+    if (readOnly) return grants?.has("read") && role === "status" && (name === "smartcar_vehicle" || name === "cupra_vehicle");
+    return grants?.has(deviceToolPermissions[role as DeviceToolRole]);
+  }));
   return {
     id: device.id,
     name: device.name,
@@ -250,9 +319,13 @@ export function publicDevice(device: ManagedDevice, agentId: string) {
     siteId: device.siteId,
     room: device.room,
     provider: device.provider,
+    ...(device.sources ? { sources: device.sources.map((source) => ({
+      provider: source.provider,
+      capabilities: source.capabilities,
+      tools: availableTools(source.tools),
+    })) } : {}),
     capabilities: device.capabilities,
     permissions: [...(grants ?? [])],
-    tools: Object.fromEntries(Object.entries(device.tools).filter(([role]) =>
-      grants?.has(deviceToolPermissions[role as DeviceToolRole]))),
+    tools: availableTools(device.tools),
   };
 }

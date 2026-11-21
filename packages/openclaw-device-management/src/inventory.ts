@@ -73,7 +73,7 @@ function configuredNodeBinding(value: unknown): NodeBinding | undefined {
   return { nodeId, profileId, commands, sessionKey, channels };
 }
 
-export function deviceUsesNodeRules(device: ManagedDevice): boolean {
+export function deviceUsesNodeRules(device: Pick<ManagedDevice, "capabilityAccess">): boolean {
   return (
     !!device.capabilityAccess &&
     [...device.capabilityAccess.values()].some((rules) =>

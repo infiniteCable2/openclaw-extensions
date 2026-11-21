@@ -97,6 +97,17 @@
               "type": "string",
               "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
             },
+            "additionalProviders": {
+              "type": "array",
+              "maxItems": 7,
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" }
+            },
+            "personalReadProfileId": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+              "description": "Private requester profile permitted to use the vehicle's read-only tools."
+            },
             "grants": {
               "type": "object",
               "minProperties": 1,
