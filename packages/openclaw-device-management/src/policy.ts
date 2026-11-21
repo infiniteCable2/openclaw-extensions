@@ -3,7 +3,7 @@ import { isAbsolute, join } from "node:path";
 
 /** The single owner of device identity, location, presentation and agent grants. */
 export type DevicePermission = "read" | "control" | "observe" | "guide";
-export type DeviceKind = "light" | "switch" | "media_receiver" | "television" | "computer" | "speaker" | "vehicle";
+export type DeviceKind = "light" | "switch" | "media_receiver" | "television" | "computer" | "speaker" | "vehicle" | "ev_charger";
 export type DeviceToolRole = "status" | "control" | "observe" | "guide" | "stations";
 export type DeviceCapabilityAccess = Readonly<Partial<Record<DeviceToolRole, true | readonly string[]>>>;
 
@@ -42,7 +42,7 @@ export type DeviceProviderMetadata = Pick<ManagedDevice, "capabilities" | "capab
 
 const idPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const toolPattern = /^[a-z][a-z0-9_]*$/;
-const kinds = new Set<DeviceKind>(["light", "switch", "media_receiver", "television", "computer", "speaker", "vehicle"]);
+const kinds = new Set<DeviceKind>(["light", "switch", "media_receiver", "television", "computer", "speaker", "vehicle", "ev_charger"]);
 const permissions = new Set<DevicePermission>(["read", "control", "observe", "guide"]);
 
 export class DevicePolicyError extends Error {

@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "provider": "goe",
+  "capabilities": ["charging_status"],
+  "capabilityAccess": { "charging_status": { "status": ["network.device.read"] } },
+  "tools": { "status": "goe_status" }
+}

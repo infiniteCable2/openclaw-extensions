@@ -80,7 +80,8 @@
                 "television",
                 "computer",
                 "speaker",
-                "vehicle"
+                "vehicle",
+                "ev_charger"
               ]
             },
             "siteId": {

@@ -1,0 +1,44 @@
+{
+  "id": "goe",
+  "name": "go-e Chargers",
+  "description": "Read the status of an assigned go-e charger via its paired Matrix Node.",
+  "version": "0.1.0",
+  "activation": { "onStartup": false, "onConfigPaths": ["plugins.entries.goe.config"] },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["devices"],
+    "properties": {
+      "devices": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 128,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "nodeId", "profileId", "commands"],
+          "properties": {
+            "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+            "nodeId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "profileId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+            "commands": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": { "type": "string", "enum": ["network.device.read"] }
+            }
+          }
+        }
+      }
+    }
+  },
+  "contracts": { "tools": ["goe_status"] },
+  "toolMetadata": {
+    "goe_status": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": false,
+      "configSignals": [{ "rootPath": "plugins.entries.goe.config", "required": ["devices"] }]
+    }
+  }
+}
