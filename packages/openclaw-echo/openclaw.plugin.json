@@ -1,0 +1,95 @@
+{
+  "id": "echo",
+  "name": "Echo Devices",
+  "description": "Read and control assigned Echo speakers through their native node connection.",
+  "version": "0.1.0",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["devices"],
+    "properties": {
+      "devices": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 128,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "nodeId", "profileId", "commands"],
+          "properties": {
+            "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+            "nodeId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "profileId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+            "sessionKey": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "channels": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" }
+            },
+            "commands": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "echo.status.v1",
+                  "echo.alarm.list.v1",
+                  "echo.alarm.set.v1",
+                  "echo.alarm.delete.v1",
+                  "echo.alarm.repeat.v1",
+                  "echo.alarm.enabled.set.v1",
+                  "echo.alarm.stop.v1",
+                  "echo.alarm.snooze.v1",
+                  "echo.reminder.list.v1",
+                  "echo.reminder.set.v1",
+                  "echo.reminder.delete.v1",
+                  "echo.timer.stop.v1",
+                  "echo.timer.list.v1",
+                  "echo.timer.start.v1",
+                  "echo.timer.pause.v1",
+                  "echo.timer.resume.v1",
+                  "echo.timer.cancel.v1",
+                  "echo.timer.adjust.v1",
+                  "echo.inventory.v1",
+                  "echo.privacy.status.v1",
+                  "echo.audio.status.v1",
+                  "echo.audio.volume.set.v1",
+                  "echo.audio.pause.v1",
+                  "echo.audio.resume.v1",
+                  "echo.audio.stop.v1",
+                  "echo.audio.next.v1",
+                  "echo.audio.previous.v1",
+                  "echo.bluetooth.status.v1",
+                  "echo.bluetooth.phone.pair.v1",
+                  "echo.bluetooth.phone.reconnect.v1",
+                  "echo.bluetooth.phone.disconnect.v1",
+                  "echo.bluetooth.output.scan.v1",
+                  "echo.bluetooth.output.scan.stop.v1",
+                  "echo.bluetooth.output.reconnect.v1",
+                  "echo.bluetooth.output.disconnect.v1",
+                  "echo.bluetooth.output.choose.v1",
+                  "echo.radio.status.v1",
+                  "echo.radio.play.v1",
+                  "echo.radio.stop.v1",
+                  "echo.weather.status.v1",
+                  "echo.display.weather.v1",
+                  "echo.display.radar.v1",
+                  "echo.display.calendar.v1",
+                  "echo.display.notify.v1",
+                  "echo.display.notify.status.v1",
+                  "echo.display.notify.dismiss.v1",
+                  "echo.capture.photo.v1",
+                  "echo.capture.audio.v1"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "contracts": { "tools": ["echo_status", "echo_control", "echo_capture"] }
+}

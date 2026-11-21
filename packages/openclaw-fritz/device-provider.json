@@ -2,5 +2,14 @@
   "version": 1,
   "provider": "fritz",
   "capabilities": ["power", "power_meter"],
+  "capabilityAccess": {
+    "power": {
+      "status": true,
+      "control": true
+    },
+    "power_meter": {
+      "status": true
+    }
+  },
   "tools": { "status": "fritz_status", "control": "fritz_control" }
 }

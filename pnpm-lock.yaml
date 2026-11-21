@@ -33,8 +33,30 @@ importers:
         specifier: 26.3.0
         version: 26.3.0
       openclaw:
-        specifier: 2026.8.1
-        version: 2026.8.1
+        specifier: link:../../../openclaw
+        version: link:../../../openclaw
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@26.3.0)(vite@8.2.2(@types/node@26.3.0)(jiti@2.7.0)(yaml@2.9.0))
+
+  packages/openclaw-echo:
+    dependencies:
+      '@infinitecable2/openclaw-device-management':
+        specifier: workspace:*
+        version: link:../openclaw-device-management
+      typebox:
+        specifier: 1.3.30
+        version: 1.3.30
+    devDependencies:
+      '@types/node':
+        specifier: 26.3.0
+        version: 26.3.0
+      openclaw:
+        specifier: link:../../../openclaw
+        version: link:../../../openclaw
       typescript:
         specifier: 6.0.3
         version: 6.0.3

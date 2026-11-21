@@ -25,7 +25,9 @@ Example (agent and site names are fictional; replace IDs with the exact currentl
 }
 ```
 
-`device_inventory` lists only assigned devices, their functional kind and which specialized tools the agent may use. Direct technology-tool calls also check this registry at execution time against the current OpenClaw config. `example_other` and `ops` receive no devices in this example. The register is not a substitute for OpenClaw's normal per-agent optional-tool allowlist: enable `device_inventory` and the required technology tools for the intended agents.
+`device_inventory` lists assigned devices and the functions reachable through the current turn's callable tools. For node commands, a matching private binding and the connected node's current command approval are also required. Providers can map capability groups to tool roles or exact commands in `capabilityAccess`. Legacy providers describe only provider-wide groups, which are shown when all their roles are callable. The technology tool checks authorization again at execution time.
+
+`device_inventory_diagnostics` is an optional read-only tool. To use it, allow the tool in OpenClaw's normal tool policy and add a matching `{ agentId, profileId }` to `diagnosticViewers`. It requires a host-verified private requester for that profile on every call. It includes installed device capabilities and reasons when a capability is unavailable. This grant carries no device-control permissions.
 
 Computers use kind `computer`. The optional [Wake-on-LAN provider](../openclaw-wake-on-lan/README.md) supplies the `wake_on_lan` capability and its read/control tool references. Its example-computer template grants access only to `example_owner`; adding this provider does not change existing home-device grants.
 

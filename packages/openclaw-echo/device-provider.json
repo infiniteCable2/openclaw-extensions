@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "provider": "echo",
+  "capabilities": [
+    "device_status",
+    "alarms",
+    "timers",
+    "audio",
+    "bluetooth",
+    "radio",
+    "weather",
+    "display",
+    "capture"
+  ],
+  "capabilityAccess": {
+    "device_status": {
+      "status": [
+        "echo.status.v1",
+        "echo.inventory.v1",
+        "echo.privacy.status.v1"
+      ]
+    },
+    "alarms": {
+      "status": [
+        "echo.alarm.list.v1",
+        "echo.reminder.list.v1"
+      ],
+      "control": [
+        "echo.alarm.set.v1",
+        "echo.alarm.delete.v1",
+        "echo.alarm.repeat.v1",
+        "echo.alarm.enabled.set.v1",
+        "echo.alarm.stop.v1",
+        "echo.alarm.snooze.v1",
+        "echo.reminder.set.v1",
+        "echo.reminder.delete.v1"
+      ]
+    },
+    "timers": {
+      "status": [
+        "echo.timer.list.v1"
+      ],
+      "control": [
+        "echo.timer.start.v1",
+        "echo.timer.pause.v1",
+        "echo.timer.resume.v1",
+        "echo.timer.cancel.v1",
+        "echo.timer.stop.v1",
+        "echo.timer.adjust.v1"
+      ]
+    },
+    "audio": {
+      "status": [
+        "echo.audio.status.v1"
+      ],
+      "control": [
+        "echo.audio.volume.set.v1",
+        "echo.audio.pause.v1",
+        "echo.audio.resume.v1",
+        "echo.audio.stop.v1",
+        "echo.audio.next.v1",
+        "echo.audio.previous.v1"
+      ]
+    },
+    "bluetooth": {
+      "status": [
+        "echo.bluetooth.status.v1"
+      ],
+      "control": [
+        "echo.bluetooth.phone.pair.v1",
+        "echo.bluetooth.phone.reconnect.v1",
+        "echo.bluetooth.phone.disconnect.v1",
+        "echo.bluetooth.output.scan.v1",
+        "echo.bluetooth.output.scan.stop.v1",
+        "echo.bluetooth.output.reconnect.v1",
+        "echo.bluetooth.output.disconnect.v1",
+        "echo.bluetooth.output.choose.v1"
+      ]
+    },
+    "radio": {
+      "status": [
+        "echo.radio.status.v1"
+      ],
+      "control": [
+        "echo.radio.play.v1",
+        "echo.radio.stop.v1"
+      ]
+    },
+    "weather": {
+      "status": [
+        "echo.weather.status.v1"
+      ]
+    },
+    "display": {
+      "control": [
+        "echo.display.weather.v1",
+        "echo.display.radar.v1",
+        "echo.display.calendar.v1",
+        "echo.display.notify.v1",
+        "echo.display.notify.dismiss.v1"
+      ],
+      "status": [
+        "echo.display.notify.status.v1"
+      ]
+    },
+    "capture": {
+      "observe": [
+        "echo.capture.photo.v1",
+        "echo.capture.audio.v1"
+      ]
+    }
+  },
+  "tools": { "status": "echo_status", "control": "echo_control", "observe": "echo_capture" }
+}

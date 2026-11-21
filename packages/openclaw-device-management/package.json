@@ -21,11 +21,11 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.8.1"
+    "openclaw": ">=2026.11.1"
   },
   "devDependencies": {
     "@types/node": "26.3.0",
-    "openclaw": "2026.8.1",
+    "openclaw": "link:../../../openclaw",
     "typescript": "6.0.3",
     "vitest": "4.1.11"
   },
@@ -34,12 +34,12 @@
       "./dist/index.js"
     ],
     "compat": {
-      "pluginApi": ">=2026.8.1",
-      "minGatewayVersion": ">=2026.8.1"
+      "pluginApi": ">=2026.11.1",
+      "minGatewayVersion": ">=2026.11.1"
     },
     "build": {
-      "openclawVersion": "2026.8.1",
-      "pluginSdkVersion": "2026.8.1"
+      "openclawVersion": "2026.11.1",
+      "pluginSdkVersion": "2026.11.1"
     }
   }
 }

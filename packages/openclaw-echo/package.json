@@ -1,0 +1,42 @@
+{
+  "name": "@infinitecable2/openclaw-echo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Managed Echo device tools over OpenClaw's native node transport",
+  "files": [
+    "device-provider.json",
+    "dist",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@infinitecable2/openclaw-device-management": "workspace:*",
+    "typebox": "1.3.30"
+  },
+  "devDependencies": {
+    "@types/node": "26.3.0",
+    "openclaw": "link:../../../openclaw",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.11.1"
+  },
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.11.1",
+      "minGatewayVersion": ">=2026.11.1"
+    }
+  }
+}

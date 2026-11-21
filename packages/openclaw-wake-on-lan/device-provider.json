@@ -2,5 +2,11 @@
   "version": 1,
   "provider": "wake-on-lan",
   "capabilities": ["wake_on_lan"],
+  "capabilityAccess": {
+    "wake_on_lan": {
+      "status": true,
+      "control": true
+    }
+  },
   "tools": { "status": "wake_on_lan_status", "control": "wake_on_lan" }
 }

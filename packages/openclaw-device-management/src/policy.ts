@@ -3,7 +3,26 @@ import { isAbsolute, join } from "node:path";
 
 /** The single owner of device identity, location, presentation and agent grants. */
 export type DevicePermission = "read" | "control" | "observe" | "guide";
-export type DeviceKind = "light" | "switch" | "media_receiver" | "television" | "computer";
+export type DeviceKind = "light" | "switch" | "media_receiver" | "television" | "computer" | "speaker" | "vehicle";
+export type DeviceToolRole = "status" | "control" | "observe" | "guide" | "stations";
+export type DeviceCapabilityAccess = Readonly<Partial<Record<DeviceToolRole, true | readonly string[]>>>;
+
+export const deviceToolPermissions: Readonly<Record<DeviceToolRole, DevicePermission>> = {
+  status: "read", stations: "read", control: "control", observe: "observe", guide: "guide",
+};
+
+export type DeviceBindingScope = { profileId: string; sessionKey?: string; channels?: readonly string[] };
+type DeviceBindingContext = {
+  sessionKey?: string;
+  messageChannel?: string;
+  isPrivateRequesterProfile?: (profileId: string) => boolean;
+};
+
+export function matchesDeviceBinding(context: DeviceBindingContext, binding: DeviceBindingScope): boolean {
+  return (!binding.sessionKey || binding.sessionKey === context.sessionKey) &&
+    (!binding.channels || (context.messageChannel !== undefined && binding.channels.includes(context.messageChannel))) &&
+    context.isPrivateRequesterProfile?.(binding.profileId) === true;
+}
 
 export type ManagedDevice = {
   id: string;
@@ -13,16 +32,17 @@ export type ManagedDevice = {
   room: string;
   provider: string;
   capabilities: readonly string[];
-  tools: Readonly<Partial<Record<"status" | "control" | "observe" | "guide" | "stations", string>>>;
+  capabilityAccess?: ReadonlyMap<string, DeviceCapabilityAccess>;
+  tools: Readonly<Partial<Record<DeviceToolRole, string>>>;
   grants: ReadonlyMap<string, ReadonlySet<DevicePermission>>;
 };
 
 export type DeviceRegistry = ReadonlyMap<string, ManagedDevice>;
-export type DeviceProviderMetadata = Pick<ManagedDevice, "capabilities" | "tools">;
+export type DeviceProviderMetadata = Pick<ManagedDevice, "capabilities" | "capabilityAccess" | "tools">;
 
 const idPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const toolPattern = /^[a-z][a-z0-9_]*$/;
-const kinds = new Set<DeviceKind>(["light", "switch", "media_receiver", "television", "computer"]);
+const kinds = new Set<DeviceKind>(["light", "switch", "media_receiver", "television", "computer", "speaker", "vehicle"]);
 const permissions = new Set<DevicePermission>(["read", "control", "observe", "guide"]);
 
 export class DevicePolicyError extends Error {
@@ -77,7 +97,7 @@ export function loadProviderMetadata(provider: string, packageRoot: string): Dev
     }
   };
   const metadata = readJson("device-provider.json", 64 * 1024);
-  keys(metadata, ["version", "provider", "capabilities", "tools"], "provider metadata");
+  keys(metadata, ["version", "provider", "capabilities", "capabilityAccess", "tools"], "provider metadata");
   if (metadata.version !== 1 || metadata.provider !== provider) throw new DevicePolicyError("invalid_config", `Provider ${provider} metadata identity or version does not match`);
   const manifest = readJson("openclaw.plugin.json", 1024 * 1024);
   const contracts = object(manifest.contracts, "plugin contracts");
@@ -96,12 +116,32 @@ export function loadProviderMetadata(provider: string, packageRoot: string): Dev
   }
   const capabilities = metadata.capabilities.map((value) => id(value, "provider capability"));
   if (new Set(capabilities).size !== capabilities.length) throw new DevicePolicyError("invalid_config", `Provider ${provider} has duplicate capabilities`);
-  return { capabilities, tools };
+  const access = metadata.capabilityAccess === undefined
+    ? undefined
+    : object(metadata.capabilityAccess, "provider capability access");
+  const capabilityAccess = access && new Map(capabilities.map((capability) => {
+    const rules = object(access[capability], `access for ${capability}`);
+    if (!Object.keys(rules).length) throw new DevicePolicyError("invalid_config", "Capability access is empty");
+    const entries = Object.entries(rules).map(([role, commands]) => {
+      if (!Object.hasOwn(tools, role) || (commands !== true &&
+          (!Array.isArray(commands) || commands.length < 1 || commands.length > 128 ||
+           new Set(commands).size !== commands.length ||
+           commands.some((command) => typeof command !== "string" || !/^[a-z][a-z0-9_.-]{1,127}$/.test(command))))) {
+        throw new DevicePolicyError("invalid_config", "Invalid capability access rule");
+      }
+      return [role, commands];
+    });
+    return [capability, Object.fromEntries(entries) as DeviceCapabilityAccess] as const;
+  }));
+  if (access && Object.keys(access).length !== capabilities.length) {
+    throw new DevicePolicyError("invalid_config", "Unexpected capability access rule");
+  }
+  return { capabilities, ...(capabilityAccess && { capabilityAccess }), tools };
 }
 
 export function parseDeviceRegistry(raw: unknown): DeviceRegistry {
   const root = object(raw, "device-management config");
-  keys(root, ["providers", "devices"], "device-management config");
+  keys(root, ["providers", "devices", "diagnosticViewers"], "device-management config");
   const rawProviders = object(root.providers, "providers");
   if (Object.keys(rawProviders).length < 1 || Object.keys(rawProviders).length > 32) throw new DevicePolicyError("invalid_config", "providers must contain 1-32 entries");
   const providers = new Map<string, DeviceProviderMetadata>();
@@ -123,7 +163,7 @@ export function parseDeviceRegistry(raw: unknown): DeviceRegistry {
     const provider = id(entry.provider, `${label}.provider`);
     const metadata = providers.get(provider);
     if (!metadata) throw new DevicePolicyError("invalid_config", `${label}.provider has no metadata binding`);
-    const { tools, capabilities } = metadata;
+    const { tools, capabilities, capabilityAccess } = metadata;
     const rawGrants = object(entry.grants, `${label}.grants`);
     if (Object.keys(rawGrants).length < 1 || Object.keys(rawGrants).length > 32) {
       throw new DevicePolicyError("invalid_config", `${label}.grants must contain 1-32 agents`);
@@ -151,6 +191,7 @@ export function parseDeviceRegistry(raw: unknown): DeviceRegistry {
       room: string(entry.room, `${label}.room`),
       provider,
       capabilities,
+      capabilityAccess,
       tools,
       grants,
     });
@@ -212,6 +253,6 @@ export function publicDevice(device: ManagedDevice, agentId: string) {
     capabilities: device.capabilities,
     permissions: [...(grants ?? [])],
     tools: Object.fromEntries(Object.entries(device.tools).filter(([role]) =>
-      role === "status" || role === "stations" ? grants?.has("read") : grants?.has(role === "control" ? "control" : role === "observe" ? "observe" : "guide"))),
+      grants?.has(deviceToolPermissions[role as DeviceToolRole]))),
   };
 }

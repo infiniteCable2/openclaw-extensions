@@ -17,6 +17,20 @@
       "devices"
     ],
     "properties": {
+      "diagnosticViewers": {
+        "type": "array",
+        "maxItems": 32,
+        "uniqueItems": true,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["agentId", "profileId"],
+          "properties": {
+            "agentId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+            "profileId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" }
+          }
+        }
+      },
       "providers": {
         "type": "object",
         "minProperties": 1,
@@ -64,7 +78,9 @@
                 "switch",
                 "media_receiver",
                 "television",
-                "computer"
+                "computer",
+                "speaker",
+                "vehicle"
               ]
             },
             "siteId": {
@@ -110,10 +126,22 @@
   },
   "contracts": {
     "tools": [
-      "device_inventory"
+      "device_inventory",
+      "device_inventory_diagnostics"
     ]
   },
   "toolMetadata": {
+    "device_inventory_diagnostics": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": false,
+      "configSignals": [
+        {
+          "rootPath": "plugins.entries.device-management.config",
+          "required": ["diagnosticViewers"]
+        }
+      ]
+    },
     "device_inventory": {
       "optional": true,
       "replaySafe": true,

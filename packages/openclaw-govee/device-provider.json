@@ -2,5 +2,23 @@
   "version": 1,
   "provider": "govee",
   "capabilities": ["power", "brightness", "color", "color_temperature"],
+  "capabilityAccess": {
+    "power": {
+      "status": true,
+      "control": true
+    },
+    "brightness": {
+      "status": true,
+      "control": true
+    },
+    "color": {
+      "status": true,
+      "control": true
+    },
+    "color_temperature": {
+      "status": true,
+      "control": true
+    }
+  },
   "tools": { "status": "govee_status", "control": "govee_control" }
 }
