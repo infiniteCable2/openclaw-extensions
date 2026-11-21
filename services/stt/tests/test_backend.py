@@ -6,6 +6,7 @@ import math
 import sys
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from openclaw_local_stt import backend as backend_module
@@ -28,6 +29,22 @@ def diagnostic_records(caplog):
         for record in caplog.records
         if record.name == "openclaw_local_stt.app"
     ]
+
+
+def test_opted_in_impulse_is_rejected_before_whisper_or_speech_confirmation(monkeypatch, tmp_path):
+    def must_not_transcribe(*_args, **_kwargs):
+        raise AssertionError("Whisper must not receive the impulse")
+
+    backend = make_backend(monkeypatch, tmp_path, must_not_transcribe)
+    audio = np.zeros(16_000, dtype=np.float32)
+    audio[3200] = 0.85
+    monkeypatch.setattr(backend_module, "decode_bounded_audio", lambda *_args, **_kwargs: audio)
+    events = list(backend.transcribe_stream(
+        tmp_path / "impulse.wav", language="de", prompt=None, reject_impulse_noise=True,
+    ))
+    assert [event["type"] for event in events] == ["transcript.done"]
+    assert events[0]["text"] == ""
+    assert events[0]["recognition"]["speechDurationMs"] == 0
 
 
 @pytest.mark.parametrize(

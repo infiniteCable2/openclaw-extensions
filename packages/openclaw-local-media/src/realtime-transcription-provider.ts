@@ -90,6 +90,7 @@ type LocalRealtimeConfig = {
   maxUtteranceMs: number;
   requestTimeoutMs: number;
   maxQueuedUtterances: number;
+  impulseNoiseFilter: boolean;
   speechProcessorPython?: string;
 };
 
@@ -202,6 +203,7 @@ function normalizeConfig(raw: RealtimeTranscriptionProviderConfig): LocalRealtim
     requestTimeoutMs: boundedNumber(raw.requestTimeoutMs, 300_000, 1_000, 600_000),
     maxQueuedUtterances: Math.floor(boundedNumber(raw.maxQueuedUtterances, 2, 1, 8)),
     speechProcessorPython: optionalString(raw.speechProcessorPython),
+    impulseNoiseFilter: raw.impulseNoiseFilter === true,
   };
 }
 
@@ -327,6 +329,7 @@ async function transcribeUtterance(params: {
         headers: {
           ...job.headers,
           ...(!params.alreadyEnhanced ? { "x-openclaw-speech-input": "agent-speech" } : {}),
+          ...(params.config.impulseNoiseFilter ? { "x-openclaw-speech-impulse-filter": "v1" } : {}),
           ...(params.onSpeechConfirmed ? { accept: "text/event-stream" } : {}),
         },
       });

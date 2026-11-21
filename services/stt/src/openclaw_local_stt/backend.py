@@ -9,7 +9,8 @@ from time import perf_counter
 from typing import Callable, Generator, Protocol
 
 from .recognition import RecognitionEvidence
-from .audio_decode import decode_bounded_audio, MAX_AUDIO_SECONDS
+from .audio_decode import decode_bounded_audio, MAX_AUDIO_SECONDS, SAMPLE_RATE
+from .impulse_noise import is_isolated_impulse
 from .word_timestamps import WordTimestamp, append_segment_words, timing_number
 
 
@@ -36,6 +37,7 @@ class TranscriptionBackend(Protocol):
         language: str | None,
         prompt: str | None,
         checkpoint: Callable[[], None] = lambda: None,
+        reject_impulse_noise: bool = False,
     ) -> str: ...
 
     def transcribe_stream(
@@ -47,6 +49,7 @@ class TranscriptionBackend(Protocol):
         checkpoint: Callable[[], None] = lambda: None,
         word_timestamps: bool = False,
         max_audio_seconds: int = MAX_AUDIO_SECONDS,
+        reject_impulse_noise: bool = False,
     ) -> TranscriptionEvents: ...
 
 
@@ -93,9 +96,11 @@ class FasterWhisperBackend:
         language: str | None,
         prompt: str | None,
         checkpoint: Callable[[], None] = lambda: None,
+        reject_impulse_noise: bool = False,
     ) -> str:
         with closing(self.transcribe_stream(
             audio_path, language=language, prompt=prompt, checkpoint=checkpoint,
+            reject_impulse_noise=reject_impulse_noise,
         )) as events:
             for event in events:
                 if event["type"] == "transcript.done":
@@ -111,6 +116,7 @@ class FasterWhisperBackend:
         checkpoint: Callable[[], None] = lambda: None,
         word_timestamps: bool = False,
         max_audio_seconds: int = MAX_AUDIO_SECONDS,
+        reject_impulse_noise: bool = False,
     ) -> TranscriptionEvents:
         started = perf_counter()
         prepare_finished: float | None = None
@@ -129,6 +135,19 @@ class FasterWhisperBackend:
                     **({"max_seconds": max_audio_seconds} if max_audio_seconds != MAX_AUDIO_SECONDS else {}),
                 )
                 checkpoint()
+                if reject_impulse_noise and is_isolated_impulse(audio):
+                    checkpoint()
+                    outcome = "impulse_rejected"
+                    prepare_finished = perf_counter()
+                    yield {
+                        "type": "transcript.done", "text": "", "model": self.model_id,
+                        **({"words": [], "duration": audio.size / SAMPLE_RATE} if word_timestamps else {}),
+                        "recognition": evidence.result(
+                            audio_duration_ms=round(audio.size * 1000 / SAMPLE_RATE),
+                            speech_duration_ms=0,
+                        ),
+                    }
+                    return
                 segments, info = self._model.transcribe(
                     audio,
                     language=language,
@@ -140,7 +159,8 @@ class FasterWhisperBackend:
                 if word_timestamps:
                     duration = timing_number(getattr(info, "duration", None), maximum=900)
             finally:
-                prepare_finished = perf_counter()
+                if prepare_finished is None:
+                    prepare_finished = perf_counter()
             retained = getattr(info, "duration_after_vad", None)
             if (
                 self.vad_filter
@@ -185,7 +205,8 @@ class FasterWhisperBackend:
             finally:
                 decode_finished = perf_counter()
         except GeneratorExit:
-            outcome = "cancelled"
+            if outcome != "impulse_rejected":
+                outcome = "cancelled"
             raise
         finally:
             if callable(close_segments := getattr(segments, "close", None)):
@@ -198,8 +219,11 @@ class FasterWhisperBackend:
                         "event": "local_media_stt_backend",
                         "outcome": outcome,
                         "vadEnabled": self.vad_filter,
-                        "durationMs": _duration_ms(getattr(info, "duration", None)),
-                        "durationAfterVadMs": _duration_ms(
+                        "durationMs": (
+                            round(audio.size * 1000 / SAMPLE_RATE) if outcome == "impulse_rejected"
+                            else _duration_ms(getattr(info, "duration", None))
+                        ),
+                        "durationAfterVadMs": 0 if outcome == "impulse_rejected" else _duration_ms(
                             getattr(info, "duration_after_vad", None)
                         ),
                         "segmentCount": evidence.segment_count,

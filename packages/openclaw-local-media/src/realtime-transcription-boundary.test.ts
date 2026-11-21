@@ -6,7 +6,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function fixture(minSpeechMs = 40) {
+function fixture(minSpeechMs = 40, impulseNoiseFilter = false) {
   vi.useFakeTimers();
   const release = vi.fn();
   const acquire = vi.fn(async () => ({ release }));
@@ -29,6 +29,7 @@ function fixture(minSpeechMs = 40) {
       minSpeechMs,
       silenceMs: 200,
       preRollMs: 40,
+      impulseNoiseFilter,
     },
     onSpeechActivity,
     onProcessing,
@@ -82,37 +83,44 @@ describe("explicit transcription capture observations", () => {
     },
   );
 
-  it("observes earlier endpoint work without waiting for decoding or replaying it", async () => {
-    const f = fixture();
-    await f.session.connect();
-    f.session.sendAudio(Buffer.concat([voiced(), quiet()]));
-    await vi.advanceTimersByTimeAsync(0);
-    try {
-      const first = f.session.finishInput?.({ captureId: "capture-decoding" });
-      await expect(first).resolves.toEqual({ activity: "observed" });
-      expect(f.session.finishInput?.({ captureId: "capture-decoding" })).toBe(first);
-      expect(f.onTranscript).not.toHaveBeenCalled();
-      await f.writer.write(
-        new TextEncoder().encode(
-          'data: {"type":"speech.confirmed"}\n\n' +
-            'data: {"type":"transcript.done","text":"Synthetic request","model":"test"}\n\n',
-        ),
-      );
-      await f.writer.close();
+  it.each([false, true])(
+    "observes earlier endpoint work with impulse filter %s",
+    async (enabled) => {
+      const f = fixture(40, enabled);
+      await f.session.connect();
+      f.session.sendAudio(Buffer.concat([voiced(), quiet()]));
       await vi.advanceTimersByTimeAsync(0);
-      expect(f.fetch).toHaveBeenCalledOnce();
-      expect(f.onProcessing.mock.calls.map(([event]) => event.state)).toEqual([
-        "started",
-        "speech-confirmed",
-        "transcribed",
-      ]);
-      expect(f.onTranscript).toHaveBeenCalledExactlyOnceWith("Synthetic request", {
-        utteranceId: "utterance-1",
-      });
-    } finally {
-      f.session.close();
-    }
-  });
+      try {
+        const first = f.session.finishInput?.({ captureId: "capture-decoding" });
+        await expect(first).resolves.toEqual({ activity: "observed" });
+        expect(f.session.finishInput?.({ captureId: "capture-decoding" })).toBe(first);
+        expect(f.onTranscript).not.toHaveBeenCalled();
+        await f.writer.write(
+          new TextEncoder().encode(
+            'data: {"type":"speech.confirmed"}\n\n' +
+              'data: {"type":"transcript.done","text":"Synthetic request","model":"test"}\n\n',
+          ),
+        );
+        await f.writer.close();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(f.fetch).toHaveBeenCalledOnce();
+        const request = f.fetch.mock.lastCall as unknown as [string, RequestInit];
+        expect(new Headers(request[1].headers).get("x-openclaw-speech-impulse-filter")).toBe(
+          enabled ? "v1" : null,
+        );
+        expect(f.onProcessing.mock.calls.map(([event]) => event.state)).toEqual([
+          "started",
+          "speech-confirmed",
+          "transcribed",
+        ]);
+        expect(f.onTranscript).toHaveBeenCalledExactlyOnceWith("Synthetic request", {
+          utteranceId: "utterance-1",
+        });
+      } finally {
+        f.session.close();
+      }
+    },
+  );
 
   it("resets only the completed interval and keeps one duplicate separate from new input", async () => {
     const f = fixture(200);

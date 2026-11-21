@@ -27,15 +27,17 @@ class StreamingBackend:
         self.closed_event = threading.Event()
         self.decoding = threading.Event()
         self.calls = 0
+        self.reject_impulse_noise = False
 
     def transcribe(self, _path, **_kwargs):
         if self.fail:
             raise ValueError("PRIVATE_ERROR")
         return self.text
 
-    def transcribe_stream(self, path, checkpoint=lambda: None, **_kwargs):
+    def transcribe_stream(self, path, checkpoint=lambda: None, reject_impulse_noise=False, **_kwargs):
         assert path.exists()
         self.calls += 1
+        self.reject_impulse_noise = reject_impulse_noise
         try:
             if self.confirmed:
                 yield {"type": "speech.confirmed"}
@@ -79,6 +81,17 @@ def setup_service(monkeypatch, tmp_path, **kwargs):
     app = create_app(backend, max_queued_requests=0)
     app.config.update(TESTING=True)
     return app, backend
+
+
+def test_stream_request_opts_into_impulse_filter(monkeypatch, tmp_path):
+    app, backend = setup_service(monkeypatch, tmp_path)
+    with app.test_client().post(
+        "/v1/audio/transcriptions", data=request_data(),
+        headers={"X-OpenClaw-Speech-Impulse-Filter": "v1"},
+    ) as response:
+        assert response.status_code == 200
+        assert b"transcript.done" in response.get_data()
+    assert backend.reject_impulse_noise
 
 
 def test_early_confirmation_precedes_complete_inference_and_close_cancels(monkeypatch, tmp_path):

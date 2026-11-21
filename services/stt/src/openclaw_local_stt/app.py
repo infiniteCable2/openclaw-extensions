@@ -179,6 +179,7 @@ def create_app(
     def streaming_response(
         audio_path: Path, *, language: str | None, prompt: str | None,
         speech_input: bool, work: RequestWork, word_timestamps: bool = False,
+        reject_impulse_noise: bool = False,
     ) -> Response:
         # Capacity belongs to the whole response, but the model belongs only to
         # a complete inference unit, never to socket backpressure.
@@ -199,6 +200,7 @@ def create_app(
                     events = backend.transcribe_stream(
                         audio_path, language=language, prompt=prompt, checkpoint=work.checkpoint,
                         **({"word_timestamps": True} if word_timestamps else {}),
+                        **({"reject_impulse_noise": True} if reject_impulse_noise else {}),
                         **({"max_audio_seconds": _MAX_BACKGROUND_AUDIO_SECONDS}
                            if work.work_class == "background-analysis" else {}),
                     )
@@ -264,7 +266,16 @@ def create_app(
                     "invalid_request", "speech input purpose is invalid", 400, retryable=False
                 )
             speech_input = speech_input_header == "agent-speech"
-            if work.work_class == "background-analysis" and (not word_timestamps or speech_input):
+            impulse_filter = request.headers.get("X-OpenClaw-Speech-Impulse-Filter")
+            if impulse_filter not in {None, "v1"}:
+                raise ServiceError(
+                    "invalid_request", "speech impulse filter version is invalid",
+                    400, retryable=False,
+                )
+            reject_impulse_noise = impulse_filter == "v1"
+            if work.work_class == "background-analysis" and (
+                not word_timestamps or speech_input or reject_impulse_noise
+            ):
                 raise ServiceError(
                     "invalid_request", "background analysis requires word metadata and unmodified audio",
                     400, retryable=False,
@@ -276,6 +287,7 @@ def create_app(
                     audio_path, language=language, prompt=prompt, speech_input=speech_input,
                     work=work,
                     word_timestamps=word_timestamps,
+                    reject_impulse_noise=reject_impulse_noise,
                 )
                 audio_path = None  # The response owns upload/admission cleanup.
                 work = None
@@ -291,6 +303,7 @@ def create_app(
                     with closing(backend.transcribe_stream(
                         audio_path, language=language, prompt=prompt,
                         checkpoint=work.checkpoint, word_timestamps=True,
+                        **({"reject_impulse_noise": True} if reject_impulse_noise else {}),
                         **({"max_audio_seconds": _MAX_BACKGROUND_AUDIO_SECONDS}
                            if work.work_class == "background-analysis" else {}),
                     )) as events:
@@ -303,6 +316,7 @@ def create_app(
                 else:
                     text = backend.transcribe(
                         audio_path, language=language, prompt=prompt, checkpoint=work.checkpoint,
+                        **({"reject_impulse_noise": True} if reject_impulse_noise else {}),
                     )
                 work.checkpoint()
             if word_timestamps:

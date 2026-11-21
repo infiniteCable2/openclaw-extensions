@@ -161,6 +161,11 @@ defaults are provided; a meeting integration may override `baseUrl`, `model`,
 `maxQueuedUtterances` in its realtime provider configuration. `baseUrl` remains
 mandatory and loopback-only.
 
+`impulseNoiseFilter: true` opts the realtime provider into the STT worker's
+CPU filter for isolated broadband impulses. The worker checks bounded PCM
+before calling Faster-Whisper. Clearly voiced or ambiguous audio continues
+through the existing VAD and recognizer. Enable it with the matching STT worker.
+
 Capture clients may use the native optional `finishInput()` boundary, advertised
 as `audio.supportsInputEnd` by the matching Gateway Talk relay. It drains real
 enhanced frames before ending the utterance; it never pads missing audio or
