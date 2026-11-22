@@ -4,11 +4,11 @@ import { isAbsolute, join } from "node:path";
 /** The single owner of device identity, location, presentation and agent grants. */
 export type DevicePermission = "read" | "control" | "observe" | "guide";
 export type DeviceKind = "light" | "switch" | "media_receiver" | "television" | "computer" | "speaker" | "vehicle" | "ev_charger";
-export type DeviceToolRole = "status" | "control" | "observe" | "guide" | "stations";
+export type DeviceToolRole = "status" | "history" | "control" | "observe" | "guide" | "stations";
 export type DeviceCapabilityAccess = Readonly<Partial<Record<DeviceToolRole, true | readonly string[]>>>;
 
 export const deviceToolPermissions: Readonly<Record<DeviceToolRole, DevicePermission>> = {
-  status: "read", stations: "read", control: "control", observe: "observe", guide: "guide",
+  status: "read", history: "read", stations: "read", control: "control", observe: "observe", guide: "guide",
 };
 
 export type DeviceBindingScope = { profileId: string; sessionKey?: string; channels?: readonly string[] };
@@ -107,7 +107,7 @@ export function loadProviderMetadata(provider: string, packageRoot: string): Pro
   const contracts = object(manifest.contracts, "plugin contracts");
   if (manifest.id !== provider || !Array.isArray(contracts.tools)) throw new DevicePolicyError("invalid_config", `Provider ${provider} manifest does not match`);
   const rawTools = object(metadata.tools, "provider tools");
-  keys(rawTools, ["status", "control", "observe", "guide", "stations"], "provider tools");
+  keys(rawTools, Object.keys(deviceToolPermissions), "provider tools");
   if (!rawTools.status) throw new DevicePolicyError("invalid_config", `Provider ${provider} requires a status tool`);
   const tools: Record<string, string> = {};
   for (const [role, value] of Object.entries(rawTools)) {

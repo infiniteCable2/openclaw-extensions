@@ -2,16 +2,18 @@
 
 `device_inventory` shows managed chargers by name. `goe_status` uses the assigned node and private requester binding. It automatically selects a single charger available to the current requester. When several chargers are available, pass the inventory ID of the selected charger.
 
-The optional `section` argument selects one group. `charging` is the default and preserves the basic status from earlier nodes. Nodes with telemetry add charging power in kW, current by phase, phase mode, cable state and energy since the vehicle was plugged in. `grid` gives measured voltage, frequency and grid diagnostics. `device` gives reachability, firmware, error, temperature and energy information as the charger provides it. `history` gives completed sessions. Use `limit` to choose the page size (1–20, default 3). If the response has a `nextOffset`, pass it as `offset` with the same date bounds to read the next page.
+The optional `section` argument of `goe_status` selects a group. `charging` is the default and preserves the basic status from earlier nodes. Nodes with telemetry add charging power in kW, current by phase, phase mode, cable state and energy since the vehicle was plugged in. `grid` gives measured voltage, frequency and grid diagnostics. `device` gives reachability, firmware, error, temperature and energy information as the charger provides it. Use `goe_history` for completed sessions. Existing callers can continue to pass `section: "history"` to `goe_status`.
 
 1. Load `goe` and `device-management` using their built packages. Point `device-management.config.providers.goe` to the absolute go-e package directory containing `device-provider.json`.
 2. Add a managed device with `kind: "ev_charger"`, `provider: "goe"`, its display name, site and room, and a `read` grant for the intended agent.
 3. In `goe.config.devices`, bind the same `id` to the existing paired `nodeId` and the private requester `profileId`. For a compatible Node, include `network.device.read.v2` in `commands` and set the approved charger's six-digit `deviceKey`. Add `network.device.history.v1` and `network.device.stop.v1` to the binding for the features approved on that charger. The inventory shows each feature when its bound command is live and the corresponding tool and device permission are effective. Each charger on the same Node needs a distinct key. A Node with a single assignment may use `commands: ["network.device.read"]` without a key until it supports v2. The host must support the selected Matrix Node command through turn-bound `callGatewayTool`.
-4. Allow `goe_status` and `device_inventory` in the intended agent's tool policy. Keep the existing gateway command and Element approval. Element selects the locally approved charger on its approved Wi-Fi.
+4. Allow `goe_status`, `goe_history` and `device_inventory` in the intended agent's tool policy. Live status and history both use the charger's `read` grant and private binding. Element selects the locally approved charger on its approved Wi-Fi. Grant `control` and allow `goe_stop` separately for a user who should be able to request a locally confirmed stop.
 
 Store the real node ID, profile ID and device key in the deployment configuration. The extension accepts a v2 result only when the node confirms the assigned device key. `allowedCurrentAmps` is the currently allowed current, in amps.
 
 ### Completed sessions
+
+Use `limit` to choose the page size (1–20, default 3). If the response has a `nextOffset`, pass it as `offset` with the same date bounds to read the next page.
 
 For a date range, pass either or both bounds as timestamps with an explicit timezone, for example `from: "2026-10-01T00:00:00+02:00"` and `to: "2026-11-01T00:00:00+01:00"`. The range includes sessions that started at or after `from` and before `to`. Results are ordered by most recent session end.
 

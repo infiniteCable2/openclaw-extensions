@@ -12,8 +12,8 @@
     "charging_status": { "status": ["network.device.read", "network.device.read.v2"] },
     "grid_status": { "status": ["network.device.read.v2"] },
     "device_status": { "status": ["network.device.read.v2"] },
-    "charging_history": { "status": ["network.device.history.v1"] },
+    "charging_history": { "history": ["network.device.history.v1"] },
     "charging_stop": { "control": ["network.device.stop.v1"] }
   },
-  "tools": { "status": "goe_status", "control": "goe_stop" }
+  "tools": { "status": "goe_status", "history": "goe_history", "control": "goe_stop" }
 }

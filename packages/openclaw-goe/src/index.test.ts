@@ -99,12 +99,13 @@ function fixture() {
   plugin.register!(api as unknown as OpenClawPluginApi);
   const factory = registerTool.mock.calls[0]![0] as ToolFactory;
   const stopFactory = registerTool.mock.calls[1]![0] as ToolFactory;
+  const historyFactory = registerTool.mock.calls[2]![0] as ToolFactory;
 
   const registerInventory = vi.fn<(factory: unknown) => void>();
   const inventoryApi = { ...api, registerTool: registerInventory, pluginConfig: managerConfig };
   inventoryPlugin.register!(inventoryApi as unknown as OpenClawPluginApi);
   const inventoryFactory = registerInventory.mock.calls[0]![0] as ToolFactory;
-  return { config, context, factory, stopFactory, inventoryFactory, list };
+  return { config, context, factory, stopFactory, historyFactory, inventoryFactory, list };
 }
 
 function sharedNodeFixture() {
@@ -145,10 +146,11 @@ describe("managed go-e charger", () => {
     });
     const statusTool = f.factory.create(f.context)!;
     const stopTool = f.stopFactory.create(f.context)!;
+    const historyTool = f.historyFactory.create(f.context)!;
     const inventoryTool = f.inventoryFactory.create(f.context)!;
     inventoryViews.get(inventoryTool)!(
       (provider, tool) =>
-        provider === "goe" && (tool === statusTool.name || tool === stopTool.name),
+        provider === "goe" && [statusTool.name, historyTool.name, stopTool.name].includes(tool),
     );
 
     const available = (await inventoryTool.execute("inventory", {})).details;
@@ -165,7 +167,7 @@ describe("managed go-e charger", () => {
           ],
           commands: [v2Command, historyCommand, stopCommand],
           permissions: ["read", "control"],
-          tools: { status: "goe_status", control: "goe_stop" },
+          tools: { status: "goe_status", history: "goe_history", control: "goe_stop" },
         },
         {
           id: f.secondId,
@@ -193,6 +195,60 @@ describe("managed go-e charger", () => {
     });
     expect(JSON.stringify(revoked)).not.toContain("goe_stop");
     expect(gateway.call).not.toHaveBeenCalled();
+  });
+
+  it("offers the dedicated history tool to readers and identifies missing history at the node", async () => {
+    const f = sharedNodeFixture();
+    const history = f.historyFactory.create(f.context)!;
+    expect(history.name).toBe("goe_history");
+    expect(f.stopFactory.create(f.context)).toBeUndefined();
+    expect((await history.execute("history", { device: chargerId })).details).toMatchObject({
+      error: { code: "device_history_command_unavailable" },
+    });
+    expect(
+      (await history.execute("history", { device: chargerId, from: "2026-11-01" })).details,
+    ).toMatchObject({ error: { code: "invalid_history_query" } });
+    expect(gateway.call).not.toHaveBeenCalled();
+
+    f.list.mockResolvedValue({
+      nodes: [{ nodeId, connected: true, invocableCommands: [v2Command, historyCommand] }],
+    });
+    gateway.call.mockRejectedValueOnce({
+      gatewayCode: "UNAVAILABLE",
+      details: { nodeCommandDispatched: true, nodeError: { code: "GO_E_HISTORY_UNAVAILABLE" } },
+    });
+    expect((await history.execute("export", { device: chargerId })).details).toMatchObject({
+      error: { code: "device_history_unavailable", message: expect.stringContaining("Element") },
+    });
+    expect(gateway.call.mock.calls[0]?.[2]).toMatchObject({
+      command: historyCommand,
+      params: { plugin: "go-e", deviceKey: f.firstKey, limit: 3 },
+    });
+    gateway.call.mockResolvedValueOnce({
+      payload: {
+        deviceKey: f.firstKey,
+        sessions: [
+          {
+            startUnix: Date.UTC(2026, 10, 2, 15),
+            endUnix: Date.UTC(2026, 10, 2, 16),
+            energy: 6.1,
+            still_running: false,
+          },
+        ],
+        hasMore: true,
+      },
+    });
+    const page = await history.execute("page", {
+      device: chargerId,
+      limit: 1,
+      from: "2026-11-01T00:00:00+01:00",
+    });
+    expect(page.details).toMatchObject({
+      ok: true,
+      section: "history",
+      sessions: [{ energyKwh: 6.1 }],
+      nextOffset: 1,
+    });
   });
 
   it("returns the latest completed sessions from the addressed node as structured data", async () => {

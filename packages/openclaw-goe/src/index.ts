@@ -107,6 +107,8 @@ function bindingFor(
 const failureMessages = {
   invalid_request:
     "Specify a supported operation and select the charger using its ID from device_inventory.",
+  invalid_history_query:
+    "Use an explicit timezone in from and to, for example 2026-11-01T00:00:00+01:00. The start bound must precede the end; limit is 1–20 and offset is nonnegative.",
   device_selection_required: "Select a charger from device_inventory.",
   device_not_assigned: "That charger is unavailable for this assistant. Check device_inventory.",
   device_assignment_invalid:
@@ -150,7 +152,11 @@ const failureMessages = {
   device_android_read_failed: "The Android device reported that it could not read the charger.",
   device_reply_invalid: "The paired device did not return a valid charging status.",
   device_metrics_unavailable: "The paired node did not report measurements for this section.",
-  device_history_unavailable: "No verified charging-session export is available for this charger.",
+  device_history_command_unavailable:
+    "The assigned node does not currently offer go-e charging history.",
+  device_history_report_unavailable: "The configured charging-session report could not be read.",
+  device_history_reply_invalid: "The paired node returned an invalid charging-session reply.",
+  device_history_unavailable: "Element could not obtain a verified go-e charging-session export.",
   device_stop_unavailable: "The paired node does not offer the confirmed charger stop action.",
   device_stop_declined: "The stop was not confirmed on the paired device.",
   device_stop_unconfirmed:
@@ -181,6 +187,7 @@ const androidFailures = new Map<string, FailureCode>([
   ["GO_E_HTTP_REJECTED", "device_android_http_rejected"],
   ["GO_E_INVALID_RESPONSE", "device_android_invalid_response"],
   ["GO_E_IDENTITY_MISMATCH", "device_android_identity_mismatch"],
+  ["GO_E_HISTORY_UNAVAILABLE", "device_history_unavailable"],
   ["NOT_AUTHORIZED", "device_android_permission_required"],
   ["NOT_AVAILABLE", "device_android_read_failed"],
   ["EXECUTION_FAILED", "device_android_read_failed"],
@@ -238,8 +245,9 @@ export default definePluginEntry({
     "Read assigned go-e charger data and request a locally confirmed stop through its paired node.",
   configSchema: buildJsonPluginConfigSchema(configSchema),
   register(api) {
-    function registerChargerTool(stop: boolean) {
-      const name = stop ? "goe_stop" : "goe_status";
+    function registerChargerTool(name: "goe_status" | "goe_history" | "goe_stop") {
+      const stop = name === "goe_stop";
+      const historyOnly = name === "goe_history";
       const timeoutMs = stop ? 35_000 : 10_000;
       api.registerTool(
         {
@@ -277,7 +285,7 @@ export default definePluginEntry({
                     matchesDeviceBinding(context, { profileId })
                   ) {
                     const binding = bindingFor(entries, device.id);
-                    if (!stop || binding?.command === addressedCommand)
+                    if (name === "goe_status" || binding?.command === addressedCommand)
                       assigned.set(device.id, binding);
                   }
                 }
@@ -290,17 +298,25 @@ export default definePluginEntry({
 
             return {
               name,
-              label: stop ? "Stop go-e charging" : "go-e charging status",
+              label: stop
+                ? "Stop go-e charging"
+                : historyOnly
+                  ? "go-e charging history"
+                  : "go-e charging status",
               description: stop
                 ? "Stop an active charging session only when the user explicitly asks. The paired device asks for local confirmation. Go-e uses forced off and the owner can restore automatic charging in the go-e app."
-                : "Read an assigned go-e charger. Use section=charging for live charging, grid for electrical measurements, device for charger information, or history for completed sessions. Charging is the default. Choose a charger from device_inventory if multiple are assigned. History defaults to the last three sessions. Set a limit or filter by session start time. Use nextOffset with the same filter for the next page.",
+                : historyOnly
+                  ? "Read completed charging sessions for an assigned go-e charger. Defaults to the last three sessions. Set a limit or filter by session start time. Pass nextOffset as offset with the same time bounds for the next page. Choose the charger from device_inventory if needed."
+                  : "Read an assigned go-e charger. Use section=charging for live charging, grid for electrical measurements, or device for charger information. Charging is the default. Use goe_history for completed sessions. Choose a charger from device_inventory if multiple are assigned.",
               parameters: {
                 type: "object",
                 additionalProperties: false,
                 properties: {
                   device: { type: "string", pattern: idPattern },
-                  ...(!stop && {
+                  ...(name === "goe_status" && {
                     section: { type: "string", enum: statusSections },
+                  }),
+                  ...(!stop && {
                     limit: {
                       type: "integer",
                       minimum: 1,
@@ -330,26 +346,28 @@ export default definePluginEntry({
               async execute(toolCallId: string, args: unknown, signal?: AbortSignal) {
                 const input = record(args);
                 const requested = input?.device;
-                const section = statusSections.find(
-                  (item) => item === (input?.section ?? "charging"),
-                );
-                const historyQuery = input && parseHistoryQuery(input);
+                const section = historyOnly
+                  ? "history"
+                  : statusSections.find((item) => item === (input?.section ?? "charging"));
                 if (
                   !input ||
                   Object.keys(input).some(
                     (key) =>
                       key !== "device" &&
-                      (stop ||
-                        (key !== "section" && !(section === "history" && historyFields.has(key)))),
+                      !(name === "goe_status" && key === "section") &&
+                      !(section === "history" && historyFields.has(key)),
                   ) ||
                   !section ||
                   input.section === null ||
-                  !historyQuery ||
                   (requested !== undefined &&
                     (typeof requested !== "string" || !id.test(requested))) ||
                   !toolCallId
                 ) {
                   return failure("invalid_request");
+                }
+                const historyQuery = parseHistoryQuery(input);
+                if (!historyQuery) {
+                  return failure(historyOnly ? "invalid_history_query" : "invalid_request");
                 }
 
                 const hasCurrentTurn = () => {
@@ -395,18 +413,18 @@ export default definePluginEntry({
                 let stopDispatched = false;
                 try {
                   if (section === "history" && !selected.deviceKey)
-                    return failure("device_history_unavailable");
+                    return failure("device_history_command_unavailable");
                   if (section === "history" && selected.historyReport && selected.deviceKey) {
                     const history = await readHistoryReport(
                       selected.historyReport,
                       selected.deviceKey,
                       historyQuery,
                       signal,
-                    );
+                    ).catch(() => undefined);
                     assertCurrent();
                     return history
                       ? jsonResult({ ok: true, device, section, ...history })
-                      : failure("device_history_unavailable");
+                      : failure("device_history_report_unavailable");
                   }
                   const { nodes } = await api.runtime.nodes.list({ connected: true });
                   assertCurrent();
@@ -419,7 +437,7 @@ export default definePluginEntry({
                       stop
                         ? "device_stop_unavailable"
                         : section === "history"
-                          ? "device_history_unavailable"
+                          ? "device_history_command_unavailable"
                           : "device_command_unavailable",
                     );
                   }
@@ -489,7 +507,7 @@ export default definePluginEntry({
                           source: "go-e",
                           ...historyPage(sessions, historyQuery, payload.hasMore === true),
                         })
-                      : failure("device_history_unavailable");
+                      : failure("device_history_reply_invalid");
                   }
                   const status = projectStatus(payload, section);
                   if (!status)
@@ -507,7 +525,6 @@ export default definePluginEntry({
                     return failure("device_stop_unconfirmed");
                   if (!hasCurrentTurn()) return failure("device_private_turn_required");
                   if (!assignmentIsCurrent()) return failure("device_not_assigned");
-                  if (section === "history") return failure("device_history_unavailable");
                   return failure(stop ? stopFailure(error) : gatewayFailure(error));
                 }
               },
@@ -517,7 +534,8 @@ export default definePluginEntry({
         { name, optional: true, workspaceAccess: false },
       );
     }
-    registerChargerTool(false);
-    registerChargerTool(true);
+    registerChargerTool("goe_status");
+    registerChargerTool("goe_stop");
+    registerChargerTool("goe_history");
   },
 });

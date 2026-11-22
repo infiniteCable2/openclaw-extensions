@@ -2,7 +2,7 @@
   "id": "goe",
   "name": "go-e Chargers",
   "description": "Read data for an assigned go-e charger and request a locally confirmed charging stop.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "uiHints": {
     "devices[].deviceKey": { "label": "Approved go-e device key", "sensitive": true },
     "devices[].historyReport": {
@@ -76,12 +76,18 @@
       }
     }
   },
-  "contracts": { "tools": ["goe_status", "goe_stop"] },
+  "contracts": { "tools": ["goe_status", "goe_history", "goe_stop"] },
   "toolMetadata": {
     "goe_stop": {
       "optional": true,
       "replaySafe": false,
       "sideEffecting": true,
+      "configSignals": [{ "rootPath": "plugins.entries.goe.config", "required": ["devices"] }]
+    },
+    "goe_history": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": false,
       "configSignals": [{ "rootPath": "plugins.entries.goe.config", "required": ["devices"] }]
     },
     "goe_status": {
