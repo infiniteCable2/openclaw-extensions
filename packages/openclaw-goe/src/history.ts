@@ -3,6 +3,53 @@ import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 
 const maxReportBytes = 2 * 1024 * 1024;
+export const maxHistoryPageSize = 20;
+export const historyFields = new Set(["limit", "offset", "from", "to"]);
+
+type HistoryWindow = { from?: number; to?: number };
+type HistoryQuery = HistoryWindow & { limit: number; offset?: number };
+
+function parseHistoryBound(value: unknown) {
+  if (typeof value !== "string") return;
+  const match =
+    /^(\d{4}-\d{2}-\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,3})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(
+      value,
+    );
+  if (!match) return;
+  const date = Date.parse(`${match[1]}T00:00:00Z`);
+  if (!Number.isFinite(date) || new Date(date).toISOString().slice(0, 10) !== match[1]) return;
+  const instant = Date.parse(value);
+  return Number.isFinite(instant) ? instant : undefined;
+}
+
+export function parseHistoryQuery(input: Record<string, unknown>): HistoryQuery | undefined {
+  const limit = input.limit === undefined ? 3 : input.limit;
+  const offset = input.offset;
+  const from = parseHistoryBound(input.from);
+  const to = parseHistoryBound(input.to);
+  if (
+    typeof limit !== "number" ||
+    !Number.isInteger(limit) ||
+    limit < 1 ||
+    limit > maxHistoryPageSize ||
+    (offset !== undefined &&
+      (typeof offset !== "number" ||
+        !Number.isSafeInteger(offset) ||
+        offset < 0 ||
+        offset > Number.MAX_SAFE_INTEGER - maxHistoryPageSize)) ||
+    (input.from !== undefined && from === undefined) ||
+    (input.to !== undefined && to === undefined) ||
+    (from !== undefined && to !== undefined && from >= to)
+  )
+    return;
+  return {
+    limit,
+    ...(offset !== undefined && { offset }),
+    ...(from !== undefined && { from }),
+    ...(to !== undefined && { to }),
+  };
+}
+
 type Session = {
   startMs: number;
   endMs: number;
@@ -10,10 +57,15 @@ type Session = {
   activeChargingSeconds?: number;
 };
 
-function latestSessions(items: Iterable<Session>, limit: number) {
+function latestSessions(
+  items: Iterable<Session>,
+  limit: number,
+  { from = -Infinity, to = Infinity, offset = 0 }: HistoryWindow & { offset?: number } = {},
+) {
   return [...items]
+    .filter(({ startMs }) => startMs >= from && startMs < to)
     .sort((a, b) => b.endMs - a.endMs || b.startMs - a.startMs)
-    .slice(0, limit)
+    .slice(offset, offset + limit)
     .map(({ startMs, endMs, energyKwh, activeChargingSeconds }) => ({
       startedAt: new Date(startMs).toISOString(),
       endedAt: new Date(endMs).toISOString(),
@@ -22,7 +74,7 @@ function latestSessions(items: Iterable<Session>, limit: number) {
     }));
 }
 
-export function structuredSessions(rows: unknown, limit: number) {
+export function structuredSessions(rows: unknown, limit: number, window?: HistoryWindow) {
   if (!Array.isArray(rows)) return;
   const result: Session[] = [];
   for (const item of rows as unknown[]) {
@@ -53,7 +105,17 @@ export function structuredSessions(rows: unknown, limit: number) {
       seconds !== undefined && seconds <= (endUnix - startUnix) / 1000 ? seconds : undefined;
     result.push({ startMs: startUnix, endMs: endUnix, energyKwh: energy, activeChargingSeconds });
   }
-  return latestSessions(result, limit);
+  return latestSessions(result, limit, window);
+}
+
+export function historyPage<T>(rows: T[], query: HistoryQuery, hasMore: boolean) {
+  const nextOffset = (query.offset ?? 0) + query.limit;
+  return {
+    sessions: rows.slice(0, query.limit),
+    ...(hasMore &&
+      rows.length >= query.limit &&
+      nextOffset <= Number.MAX_SAFE_INTEGER - maxHistoryPageSize && { nextOffset }),
+  };
 }
 
 export function configuredReport(value: unknown): string | undefined {
@@ -181,7 +243,12 @@ function goEInterval(id: string, start: string, end: string, duration: string) {
   return { startMs, endMs };
 }
 
-export function reportSessions(text: string, key: string, limit: number) {
+export function reportSessions(
+  text: string,
+  key: string,
+  limit: number,
+  filter?: HistoryWindow & { offset?: number },
+) {
   for (const separator of [";", ",", "\t"]) {
     const report = rows(text.replace(/^\uFEFF/, ""), separator);
     if (!report?.length) continue;
@@ -236,14 +303,14 @@ export function reportSessions(text: string, key: string, limit: number) {
       sessions.set(id, session);
     }
     if (report.length > 1 && !matchedCharger) return;
-    return latestSessions(sessions.values(), limit);
+    return latestSessions(sessions.values(), limit, filter);
   }
 }
 
 export async function readHistoryReport(
   path: string,
   key: string,
-  limit: number,
+  query: HistoryQuery,
   signal?: AbortSignal,
 ) {
   const handle = await open(
@@ -265,13 +332,14 @@ export async function readHistoryReport(
     const sessions = reportSessions(
       new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, size)),
       key,
-      limit,
+      query.limit + 1,
+      query,
     );
     return (
       sessions && {
         source: "configuredExport",
         reportModifiedAt: stat.mtime.toISOString(),
-        sessions,
+        ...historyPage(sessions, query, sessions.length > query.limit),
       }
     );
   } finally {

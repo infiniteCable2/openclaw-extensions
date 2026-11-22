@@ -15,7 +15,15 @@ import {
   type OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/plugin-entry";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
-import { configuredReport, readHistoryReport, structuredSessions } from "./history.js";
+import {
+  configuredReport,
+  historyFields,
+  historyPage,
+  maxHistoryPageSize,
+  parseHistoryQuery,
+  readHistoryReport,
+  structuredSessions,
+} from "./history.js";
 import { object as record, projectStatus, statusSections } from "./telemetry.js";
 
 const provider = "goe";
@@ -275,7 +283,7 @@ export default definePluginEntry({
               label: stop ? "Stop go-e charging" : "go-e charging status",
               description: stop
                 ? "Stop an active charging session only when the user explicitly asks. The paired device asks for local confirmation. Go-e uses forced off and the owner can restore automatic charging in the go-e app."
-                : "Read assigned go-e charging, grid, device or completed-session history. Charging is the default. Choose a charger from device_inventory if multiple are assigned. History defaults to the last three sessions.",
+                : "Read assigned go-e charging, grid, device or completed-session history. Charging is the default. Choose a charger from device_inventory if multiple are assigned. History defaults to the last three sessions. Set a limit or filter by session start time. Use nextOffset with the same filter for the next page.",
               parameters: {
                 type: "object",
                 additionalProperties: false,
@@ -283,7 +291,29 @@ export default definePluginEntry({
                   device: { type: "string", pattern: idPattern },
                   ...(!stop && {
                     section: { type: "string", enum: statusSections },
-                    limit: { type: "integer", minimum: 1, maximum: 20 },
+                    limit: {
+                      type: "integer",
+                      minimum: 1,
+                      maximum: maxHistoryPageSize,
+                      description: "History page size. Defaults to 3.",
+                    },
+                    offset: {
+                      type: "integer",
+                      minimum: 0,
+                      description: "History continuation from nextOffset. Keep the same bounds.",
+                    },
+                    from: {
+                      type: "string",
+                      format: "date-time",
+                      description:
+                        "Inclusive lower bound for session start, with explicit timezone.",
+                    },
+                    to: {
+                      type: "string",
+                      format: "date-time",
+                      description:
+                        "Exclusive upper bound for session start, with explicit timezone.",
+                    },
                   }),
                 },
               } as never,
@@ -293,20 +323,18 @@ export default definePluginEntry({
                 const section = statusSections.find(
                   (item) => item === (input?.section ?? "charging"),
                 );
-                const limit = input?.limit ?? 3;
+                const historyQuery = input && parseHistoryQuery(input);
                 if (
                   !input ||
                   Object.keys(input).some(
-                    (key) => key !== "device" && (stop || (key !== "section" && key !== "limit")),
+                    (key) =>
+                      key !== "device" &&
+                      (stop ||
+                        (key !== "section" && !(section === "history" && historyFields.has(key)))),
                   ) ||
                   !section ||
                   input.section === null ||
-                  (input.limit !== undefined &&
-                    (section !== "history" || typeof input.limit !== "number")) ||
-                  typeof limit !== "number" ||
-                  !Number.isInteger(limit) ||
-                  limit < 1 ||
-                  limit > 20 ||
+                  !historyQuery ||
                   (requested !== undefined &&
                     (typeof requested !== "string" || !id.test(requested))) ||
                   !toolCallId
@@ -362,7 +390,7 @@ export default definePluginEntry({
                     const history = await readHistoryReport(
                       selected.historyReport,
                       selected.deviceKey,
-                      limit,
+                      historyQuery,
                       signal,
                     );
                     assertCurrent();
@@ -398,7 +426,7 @@ export default definePluginEntry({
                           ? {
                               plugin: "go-e",
                               deviceKey: selected.deviceKey,
-                              ...(section === "history" && { limit }),
+                              ...(section === "history" && historyQuery),
                             }
                           : {},
                       timeoutMs,
@@ -412,7 +440,7 @@ export default definePluginEntry({
                             selected.nodeId,
                             command,
                             selected.deviceKey,
-                            ...(section === "history" ? [limit] : []),
+                            ...(section === "history" ? [historyQuery] : []),
                           ]),
                         )
                         .digest("hex"),
@@ -441,9 +469,16 @@ export default definePluginEntry({
                   }
                   if (!payload) return failure("device_reply_invalid");
                   if (section === "history") {
-                    const sessions = structuredSessions(payload.sessions, limit);
+                    const { from, to, limit } = historyQuery;
+                    const sessions = structuredSessions(payload.sessions, limit, { from, to });
                     return sessions
-                      ? jsonResult({ ok: true, device, section, source: "go-e", sessions })
+                      ? jsonResult({
+                          ok: true,
+                          device,
+                          section,
+                          source: "go-e",
+                          ...historyPage(sessions, historyQuery, payload.hasMore === true),
+                        })
                       : failure("device_history_unavailable");
                   }
                   const status = projectStatus(payload, section);

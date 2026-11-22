@@ -212,6 +212,57 @@ describe("managed go-e charger", () => {
     expect(reportSessions(report.replace("02:50:00", "02:57:00"), "012345", 3)).toEqual([]);
   });
 
+  it("forwards the history window and returns the offset for the next page", async () => {
+    const f = sharedNodeFixture();
+    const startUnix = Date.UTC(2026, 10, 1, 0);
+    f.list.mockResolvedValue({
+      nodes: [{ nodeId, connected: true, invocableCommands: [historyCommand] }],
+    });
+    gateway.call.mockResolvedValue({
+      payload: {
+        deviceKey: f.firstKey,
+        hasMore: true,
+        sessions: [{ startUnix, endUnix: startUnix + 3_600_000, energy: 5, still_running: false }],
+      },
+    });
+    const tool = f.factory.create(f.context)!;
+    const result = await tool.execute("history", {
+      device: chargerId,
+      section: "history",
+      from: "2026-11-01T01:00:00+01:00",
+      to: "2026-12-01T00:00:00+01:00",
+      limit: 1,
+      offset: 2,
+    });
+    expect(result.details).toMatchObject({ ok: true, nextOffset: 3, sessions: [{ energyKwh: 5 }] });
+    expect(gateway.call.mock.calls[0]?.[2]).toMatchObject({
+      command: historyCommand,
+      params: {
+        plugin: "go-e",
+        deviceKey: f.firstKey,
+        from: startUnix,
+        to: Date.UTC(2026, 10, 30, 23),
+        limit: 1,
+        offset: 2,
+      },
+    });
+  });
+
+  it.each([
+    { from: "2026-02-30T00:00:00Z" },
+    { from: "2026-11-01T00:00:00" },
+    { from: "2026-11-02T00:00:00Z", to: "2026-11-01T00:00:00Z" },
+    { offset: -1 },
+    { limit: 21 },
+  ])("rejects invalid history parameters before dispatch", async (args) => {
+    const f = sharedNodeFixture();
+    const tool = f.factory.create(f.context)!;
+    expect(
+      (await tool.execute("invalid-history", { section: "history", ...args })).details,
+    ).toMatchObject({ error: { code: "invalid_request" } });
+    expect(gateway.call).not.toHaveBeenCalled();
+  });
+
   it("groups a verified telemetry snapshot and keeps only the requested fields", async () => {
     const f = sharedNodeFixture();
     const tool = f.factory.create(f.context)!;
@@ -304,6 +355,24 @@ describe("managed go-e charger", () => {
       expect(JSON.stringify(result.details)).not.toMatch(
         /Private card|Other charger|012345|history\.csv/,
       );
+      expect(result.details).toHaveProperty("nextOffset", 1);
+      const next = await f.factory.create(f.context)!.execute("history-next", {
+        device: chargerId,
+        section: "history",
+        limit: 1,
+        offset: 1,
+      });
+      expect(next.details).toMatchObject({ sessions: [{ energyKwh: 8.52 }] });
+      expect(next.details).not.toHaveProperty("nextOffset");
+      const page = await f.factory.create(f.context)!.execute("history-window", {
+        device: chargerId,
+        section: "history",
+        from: "2026-01-01T12:00:00Z",
+        to: "2026-01-02T12:00:00Z",
+        limit: 1,
+      });
+      expect(page.details).toMatchObject({ sessions: [{ energyKwh: 8.52 }] });
+      expect(page.details).not.toHaveProperty("nextOffset");
       expect(gateway.call).not.toHaveBeenCalled();
     } finally {
       await rm(path, { force: true });
