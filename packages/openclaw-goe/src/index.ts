@@ -31,6 +31,7 @@ const legacyCommand = "network.device.read";
 const addressedCommand = "network.device.read.v2";
 const stopCommand = "network.device.stop.v1";
 const historyCommand = "network.device.history.v1";
+const addressedCommands = new Set([addressedCommand, historyCommand, stopCommand]);
 const idPattern = "^[a-z0-9][a-z0-9_-]{0,63}$";
 const id = new RegExp(idPattern);
 const deviceKeyPattern = /^[0-9]{6}$/;
@@ -43,18 +44,30 @@ type ChargerRoute =
   | { command: typeof addressedCommand; deviceKey: string };
 type ChargerBinding = { nodeId: string; profileId: string; historyReport?: string } & ChargerRoute;
 
+function boundReadCommand(commands: unknown) {
+  if (!Array.isArray(commands)) return;
+  if (commands.length === 1 && commands[0] === legacyCommand) return legacyCommand;
+  if (
+    commands.includes(addressedCommand) &&
+    commands.every((command) => addressedCommands.has(command)) &&
+    new Set(commands).size === commands.length
+  ) {
+    return addressedCommand;
+  }
+}
+
 function chargerRoute(entry: Record<string, unknown>): ChargerRoute | undefined {
   const { commands, deviceKey } = entry;
-  if (!Array.isArray(commands) || commands.length !== 1) return;
-  if (commands[0] === legacyCommand && deviceKey === undefined) {
-    return { command: legacyCommand };
+  const command = boundReadCommand(commands);
+  if (command === legacyCommand && deviceKey === undefined) {
+    return { command };
   }
   if (
-    commands[0] === addressedCommand &&
+    command === addressedCommand &&
     typeof deviceKey === "string" &&
     deviceKeyPattern.test(deviceKey)
   ) {
-    return { command: addressedCommand, deviceKey };
+    return { command, deviceKey };
   }
 }
 
@@ -257,11 +270,8 @@ export default definePluginEntry({
                   }
                   const row = entries.find((item) => item.id === device.id);
                   const profileId = row?.profileId;
-                  const commands = row?.commands;
                   if (
-                    Array.isArray(commands) &&
-                    commands.length === 1 &&
-                    (commands[0] === legacyCommand || commands[0] === addressedCommand) &&
+                    boundReadCommand(row?.commands) !== undefined &&
                     typeof profileId === "string" &&
                     id.test(profileId) &&
                     matchesDeviceBinding(context, { profileId })
@@ -283,7 +293,7 @@ export default definePluginEntry({
               label: stop ? "Stop go-e charging" : "go-e charging status",
               description: stop
                 ? "Stop an active charging session only when the user explicitly asks. The paired device asks for local confirmation. Go-e uses forced off and the owner can restore automatic charging in the go-e app."
-                : "Read assigned go-e charging, grid, device or completed-session history. Charging is the default. Choose a charger from device_inventory if multiple are assigned. History defaults to the last three sessions. Set a limit or filter by session start time. Use nextOffset with the same filter for the next page.",
+                : "Read an assigned go-e charger. Use section=charging for live charging, grid for electrical measurements, device for charger information, or history for completed sessions. Charging is the default. Choose a charger from device_inventory if multiple are assigned. History defaults to the last three sessions. Set a limit or filter by session start time. Use nextOffset with the same filter for the next page.",
               parameters: {
                 type: "object",
                 additionalProperties: false,

@@ -2,10 +2,13 @@
   "id": "goe",
   "name": "go-e Chargers",
   "description": "Read data for an assigned go-e charger and request a locally confirmed charging stop.",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "uiHints": {
     "devices[].deviceKey": { "label": "Approved go-e device key", "sensitive": true },
-    "devices[].historyReport": { "label": "Approved charger history export file", "sensitive": true }
+    "devices[].historyReport": {
+      "label": "Approved charger history export file",
+      "sensitive": true
+    }
   },
   "activation": { "onStartup": false, "onConfigPaths": ["plugins.entries.goe.config"] },
   "configSchema": {
@@ -30,16 +33,44 @@
             "commands": {
               "type": "array",
               "minItems": 1,
-              "maxItems": 1,
-              "items": { "type": "string", "enum": ["network.device.read", "network.device.read.v2"] }
+              "maxItems": 3,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "network.device.read",
+                  "network.device.read.v2",
+                  "network.device.history.v1",
+                  "network.device.stop.v1"
+                ]
+              }
             }
           },
           "if": { "required": ["deviceKey"] },
           "then": {
-            "properties": { "commands": { "type": "array", "items": { "const": "network.device.read.v2" } } }
+            "properties": {
+              "commands": {
+                "type": "array",
+                "contains": { "const": "network.device.read.v2" },
+                "items": {
+                  "enum": [
+                    "network.device.read.v2",
+                    "network.device.history.v1",
+                    "network.device.stop.v1"
+                  ]
+                }
+              }
+            }
           },
           "else": {
-            "properties": { "commands": { "type": "array", "items": { "const": "network.device.read" } }, "historyReport": false }
+            "properties": {
+              "commands": {
+                "type": "array",
+                "maxItems": 1,
+                "items": { "const": "network.device.read" }
+              },
+              "historyReport": false
+            }
           }
         }
       }

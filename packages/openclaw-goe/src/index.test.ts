@@ -132,6 +132,69 @@ beforeEach(() => {
 });
 
 describe("managed go-e charger", () => {
+  it("shows each assigned go-e capability with its actual callable tool and live node command", async () => {
+    const f = sharedNodeFixture();
+    f.devices[0]!.commands = [stopCommand, v2Command, historyCommand];
+    f.config.plugins.entries["device-management"].config.devices[0]!.grants.fixture_agent.push(
+      "control",
+    );
+    f.list.mockResolvedValue({
+      nodes: [
+        { nodeId, connected: true, invocableCommands: [v2Command, historyCommand, stopCommand] },
+      ],
+    });
+    const statusTool = f.factory.create(f.context)!;
+    const stopTool = f.stopFactory.create(f.context)!;
+    const inventoryTool = f.inventoryFactory.create(f.context)!;
+    inventoryViews.get(inventoryTool)!(
+      (provider, tool) =>
+        provider === "goe" && (tool === statusTool.name || tool === stopTool.name),
+    );
+
+    const available = (await inventoryTool.execute("inventory", {})).details;
+    expect(available).toMatchObject({
+      devices: [
+        {
+          id: chargerId,
+          capabilities: [
+            "charging_status",
+            "grid_status",
+            "device_status",
+            "charging_history",
+            "charging_stop",
+          ],
+          commands: [v2Command, historyCommand, stopCommand],
+          permissions: ["read", "control"],
+          tools: { status: "goe_status", control: "goe_stop" },
+        },
+        {
+          id: f.secondId,
+          capabilities: ["charging_status", "grid_status", "device_status"],
+          commands: [v2Command],
+          permissions: ["read"],
+          tools: { status: "goe_status" },
+        },
+      ],
+    });
+
+    f.list.mockResolvedValue({
+      nodes: [{ nodeId, connected: true, invocableCommands: [v2Command, historyCommand] }],
+    });
+    const revoked = (await inventoryTool.execute("inventory-revoked", { device: chargerId }))
+      .details;
+    expect(revoked).toMatchObject({
+      devices: [
+        {
+          id: chargerId,
+          capabilities: ["charging_status", "grid_status", "device_status", "charging_history"],
+          permissions: ["read"],
+        },
+      ],
+    });
+    expect(JSON.stringify(revoked)).not.toContain("goe_stop");
+    expect(gateway.call).not.toHaveBeenCalled();
+  });
+
   it("returns the latest completed sessions from the addressed node as structured data", async () => {
     const f = sharedNodeFixture();
     const firstEnd = Date.UTC(2026, 10, 6, 22);

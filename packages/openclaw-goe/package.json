@@ -1,6 +1,6 @@
 {
   "name": "@infinitecable2/openclaw-goe",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Managed go-e charger data and confirmed stops over a paired node",
   "type": "module",
