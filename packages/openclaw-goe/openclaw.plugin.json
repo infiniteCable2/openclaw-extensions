@@ -3,6 +3,9 @@
   "name": "go-e Chargers",
   "description": "Read the status of an assigned go-e charger via its paired Matrix Node.",
   "version": "0.1.0",
+  "uiHints": {
+    "devices[].deviceKey": { "label": "Approved go-e device key", "sensitive": true }
+  },
   "activation": { "onStartup": false, "onConfigPaths": ["plugins.entries.goe.config"] },
   "configSchema": {
     "type": "object",
@@ -21,12 +24,20 @@
             "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
             "nodeId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "profileId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
+            "deviceKey": { "type": "string", "pattern": "^[0-9]{6}$" },
             "commands": {
               "type": "array",
               "minItems": 1,
               "maxItems": 1,
-              "items": { "type": "string", "enum": ["network.device.read"] }
+              "items": { "type": "string", "enum": ["network.device.read", "network.device.read.v2"] }
             }
+          },
+          "if": { "required": ["deviceKey"] },
+          "then": {
+            "properties": { "commands": { "type": "array", "items": { "const": "network.device.read.v2" } } }
+          },
+          "else": {
+            "properties": { "commands": { "type": "array", "items": { "const": "network.device.read" } } }
           }
         }
       }
