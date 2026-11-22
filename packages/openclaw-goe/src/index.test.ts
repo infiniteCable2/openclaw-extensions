@@ -1,4 +1,7 @@
 import { fileURLToPath } from "node:url";
+import { mkdtemp, rm, rmdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import inventoryPlugin from "@infinitecable2/openclaw-device-management";
 import type {
   AnyAgentTool,
@@ -32,12 +35,14 @@ const profileId = "private_fixture";
 const nodeId = "a".repeat(64);
 const command = "network.device.read";
 const v2Command = "network.device.read.v2";
+const stopCommand = "network.device.stop.v1";
 type FixtureBinding = {
   id: string;
   nodeId: string;
   profileId: string;
   commands: string[];
   deviceKey?: string;
+  historyReport?: string;
 };
 const managerConfig = {
   providers: { goe: fileURLToPath(new URL("../", import.meta.url)) },
@@ -91,12 +96,13 @@ function fixture() {
   };
   plugin.register!(api as unknown as OpenClawPluginApi);
   const factory = registerTool.mock.calls[0]![0] as ToolFactory;
+  const stopFactory = registerTool.mock.calls[1]![0] as ToolFactory;
 
   const registerInventory = vi.fn<(factory: unknown) => void>();
   const inventoryApi = { ...api, registerTool: registerInventory, pluginConfig: managerConfig };
   inventoryPlugin.register!(inventoryApi as unknown as OpenClawPluginApi);
   const inventoryFactory = registerInventory.mock.calls[0]![0] as ToolFactory;
-  return { config, context, factory, inventoryFactory, list };
+  return { config, context, factory, stopFactory, inventoryFactory, list };
 }
 
 function sharedNodeFixture() {
@@ -108,9 +114,13 @@ function sharedNodeFixture() {
   devices[0] = { id: chargerId, nodeId, profileId, commands: [v2Command], deviceKey: firstKey };
   devices.push({ id: secondId, nodeId, profileId, commands: [v2Command], deviceKey: secondKey });
   f.config.plugins.entries["device-management"].config.devices.push({
-    ...managerConfig.devices[0]!, id: secondId, name: "Second charger",
+    ...managerConfig.devices[0]!,
+    id: secondId,
+    name: "Second charger",
   });
-  f.list.mockResolvedValue({ nodes: [{ nodeId, connected: true, invocableCommands: [v2Command] }] });
+  f.list.mockResolvedValue({
+    nodes: [{ nodeId, connected: true, invocableCommands: [v2Command] }],
+  });
   return { ...f, secondId, firstKey, secondKey, devices };
 }
 
@@ -120,6 +130,136 @@ beforeEach(() => {
 });
 
 describe("managed go-e charger", () => {
+  it("groups a verified telemetry snapshot and keeps only the requested fields", async () => {
+    const f = sharedNodeFixture();
+    const tool = f.factory.create(f.context)!;
+    gateway.call.mockResolvedValue({
+      payload: {
+        deviceKey: f.firstKey,
+        chargingState: "charging",
+        chargingAllowed: true,
+        telemetry: {
+          nrg: [230, 232, 234, 0, 16, 0, 13.1, 3680, 0, 3065, 0, 6745, 100, 0, 99],
+          psm: 2,
+          cus: 3,
+          wh: 9012.5,
+          cdi: { type: 1, value: 180_000 },
+          fhz: 50.02,
+          typ: "go-eCharger",
+          fwv: "059.4",
+          dll: "https://example.org/private-export",
+        },
+      },
+    });
+    const supplied = { device: chargerId };
+    expect(
+      (await tool.execute("charging", { ...supplied, section: "charging" })).details,
+    ).toMatchObject({
+      section: "charging",
+      powerKw: 6.745,
+      phasesDrawingCurrent: ["L1", "L3"],
+      phaseMode: "threePhase",
+      cableLockState: "locked",
+      energySincePluggedInKwh: 9.0125,
+      chargingDurationSeconds: 180,
+    });
+    expect((await tool.execute("grid", { ...supplied, section: "grid" })).details).toMatchObject({
+      section: "grid",
+      voltageVByPhase: { L1: 230, L2: 232, L3: 234 },
+      frequencyHz: 50.02,
+    });
+    const device = (await tool.execute("device", { ...supplied, section: "device" })).details;
+    expect(device).toEqual({
+      ok: true,
+      device: chargerId,
+      section: "device",
+      reachable: true,
+      model: "go-eCharger",
+      firmwareVersion: "059.4",
+    });
+    expect(gateway.call.mock.calls.map((call) => call[2])).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          command: v2Command,
+          params: { plugin: "go-e", deviceKey: f.firstKey },
+        }),
+      ]),
+    );
+  });
+
+  it("reads only completed sessions for the assigned charger from an operator-selected export", async () => {
+    const f = sharedNodeFixture();
+    const folder = await mkdtemp(join(tmpdir(), "go-e-report-"));
+    const path = join(folder, "history.csv");
+    try {
+      f.devices[0]!.historyReport = path;
+      await writeFile(
+        path,
+        [
+          "Charger serial number;Session start time;Session stop time;Total energy consumed (kWh);Total active charging time (s);Private card name",
+          '012345;2026-01-01T12:00:00Z;2026-01-01T13:00:00Z;8,52;2520;"a; name"',
+          "678901;2026-01-03T12:00:00Z;2026-01-03T13:00:00Z;9;1800;Other charger",
+          "012345;2026-01-02T12:00:00Z;2026-01-02T14:00:00Z;10,2;3600;Private card",
+          "012345;2026-01-04T12:00:00Z;;0;;Ongoing",
+        ].join("\r\n"),
+      );
+      const result = await f.factory
+        .create(f.context)!
+        .execute("history", { device: chargerId, section: "history", limit: 1 });
+      expect(result.details).toMatchObject({
+        ok: true,
+        device: chargerId,
+        source: "configuredExport",
+        sessions: [
+          {
+            startedAt: "2026-01-02T12:00:00.000Z",
+            endedAt: "2026-01-02T14:00:00.000Z",
+            energyKwh: 10.2,
+            activeChargingSeconds: 3600,
+          },
+        ],
+      });
+      expect(JSON.stringify(result.details)).not.toMatch(
+        /Private card|Other charger|012345|history\.csv/,
+      );
+      expect(gateway.call).not.toHaveBeenCalled();
+    } finally {
+      await rm(path, { force: true });
+      await rmdir(folder);
+    }
+  });
+
+  it("requires a current control grant and a confirmed addressed stop result", async () => {
+    const f = sharedNodeFixture();
+    expect(f.stopFactory.create(f.context)).toBeUndefined();
+    f.config.plugins.entries["device-management"].config.devices[0]!.grants.fixture_agent.push(
+      "control",
+    );
+    const tool = f.stopFactory.create(f.context)!;
+    expect((await tool.execute("absent", { device: chargerId })).details).toMatchObject({
+      error: { code: "device_stop_unavailable" },
+    });
+    expect(gateway.call).not.toHaveBeenCalled();
+    f.list.mockResolvedValue({
+      nodes: [{ nodeId, connected: true, invocableCommands: [v2Command, stopCommand] }],
+    });
+    gateway.call.mockResolvedValue({ payload: { deviceKey: f.secondKey, stopState: "stopped" } });
+    expect((await tool.execute("wrong-key", { device: chargerId })).details).toMatchObject({
+      error: { code: "device_stop_unconfirmed" },
+    });
+    gateway.call.mockResolvedValue({
+      payload: { deviceKey: f.firstKey, stopState: "alreadyStopped" },
+    });
+    expect((await tool.execute("approved", { device: chargerId })).details).toEqual({
+      ok: true,
+      device: chargerId,
+      stopState: "alreadyStopped",
+    });
+    expect(gateway.call.mock.calls.at(-1)?.[2]).toMatchObject({
+      command: stopCommand,
+      params: { plugin: "go-e", deviceKey: f.firstKey },
+    });
+  });
   it("resolves an inventory ID to exactly one authorized fixed read and projects only charger data", async () => {
     const f = fixture();
     const statusTool = f.factory.create(f.context)!;
@@ -307,10 +447,12 @@ describe("managed go-e charger", () => {
     const inventory = f.inventoryFactory.create(f.context)!;
     inventoryViews.get(inventory)!((provider, tool) => provider === "goe" && tool === status.name);
     const visible = (await inventory.execute("list", {})).details;
-    expect(visible).toMatchObject({ devices: [
-      { id: chargerId, commands: [v2Command], tools: { status: "goe_status" } },
-      { id: f.secondId, commands: [v2Command], tools: { status: "goe_status" } },
-    ] });
+    expect(visible).toMatchObject({
+      devices: [
+        { id: chargerId, commands: [v2Command], tools: { status: "goe_status" } },
+        { id: f.secondId, commands: [v2Command], tools: { status: "goe_status" } },
+      ],
+    });
     expect(JSON.stringify(visible)).not.toContain(f.firstKey);
     expect(JSON.stringify(visible)).not.toContain(f.secondKey);
     expect((await status.execute("no_selection", {})).details).toMatchObject({
@@ -319,7 +461,9 @@ describe("managed go-e charger", () => {
     expect((await status.execute("foreign_id", { device: "not_assigned" })).details).toMatchObject({
       error: { code: "device_not_assigned" },
     });
-    expect((await status.execute("override", { device: chargerId, deviceKey: f.secondKey })).details).toMatchObject({
+    expect(
+      (await status.execute("override", { device: chargerId, deviceKey: f.secondKey })).details,
+    ).toMatchObject({
       error: { code: "invalid_request" },
     });
     expect(gateway.call).not.toHaveBeenCalled();
@@ -327,16 +471,22 @@ describe("managed go-e charger", () => {
       .mockResolvedValueOnce({ payload: { deviceKey: f.firstKey, chargingState: "idle" } })
       .mockResolvedValueOnce({ payload: { deviceKey: f.secondKey, chargingState: "charging" } });
     expect((await status.execute("first", { device: chargerId })).details).toEqual({
-      ok: true, device: chargerId, chargingState: "idle",
+      ok: true,
+      device: chargerId,
+      chargingState: "idle",
     });
     expect((await status.execute("second", { device: f.secondId })).details).toEqual({
-      ok: true, device: f.secondId, chargingState: "charging",
+      ok: true,
+      device: f.secondId,
+      chargingState: "charging",
     });
-    expect(gateway.call.mock.calls.map(([, , request]) => ({
-      nodeId: request.nodeId,
-      command: request.command,
-      params: request.params,
-    }))).toEqual([
+    expect(
+      gateway.call.mock.calls.map(([, , request]) => ({
+        nodeId: request.nodeId,
+        command: request.command,
+        params: request.params,
+      })),
+    ).toEqual([
       { nodeId, command: v2Command, params: { plugin: "go-e", deviceKey: f.firstKey } },
       { nodeId, command: v2Command, params: { plugin: "go-e", deviceKey: f.secondKey } },
     ]);
@@ -350,7 +500,8 @@ describe("managed go-e charger", () => {
     });
     const result = await tool.execute("identify", { device: chargerId });
     expect(result.details).toMatchObject({
-      ok: false, error: { code: "device_android_identity_mismatch" },
+      ok: false,
+      error: { code: "device_android_identity_mismatch" },
     });
     expect(JSON.stringify(result)).not.toContain(f.secondKey);
     expect(JSON.stringify(result)).not.toContain("chargingState");
@@ -373,7 +524,9 @@ describe("managed go-e charger", () => {
     });
     expect(f.list).not.toHaveBeenCalled();
     f.devices[1]!.deviceKey = f.secondKey;
-    f.list.mockResolvedValueOnce({ nodes: [{ nodeId, connected: true, invocableCommands: [command] }] });
+    f.list.mockResolvedValueOnce({
+      nodes: [{ nodeId, connected: true, invocableCommands: [command] }],
+    });
     expect((await tool.execute("old_node", { device: chargerId })).details).toMatchObject({
       error: { code: "device_command_unavailable" },
     });
@@ -395,10 +548,16 @@ describe("managed go-e charger", () => {
 
   it.each([
     [
-      { gatewayCode: "FORBIDDEN", message: "Matrix node invoke requires a current admitted agent run for this room and node" },
+      {
+        gatewayCode: "FORBIDDEN",
+        message: "Matrix node invoke requires a current admitted agent run for this room and node",
+      },
       "device_private_turn_required",
     ],
-    [{ details: { code: "ROUTE_CHANGED", nodeCommandDispatched: false } }, "device_dispatch_failed"],
+    [
+      { details: { code: "ROUTE_CHANGED", nodeCommandDispatched: false } },
+      "device_dispatch_failed",
+    ],
     [
       { details: { nodeError: { code: "NOT_CONNECTED" }, nodeCommandDispatched: false } },
       "device_offline",
@@ -409,41 +568,59 @@ describe("managed go-e charger", () => {
     ],
     [{ code: "CLIENT_TIMEOUT" }, "device_read_timeout"],
     [
-      { gatewayCode: "UNAVAILABLE", details: { nodeError: { code: "UNKNOWN_COMMAND" }, nodeCommandDispatched: true } },
+      {
+        gatewayCode: "UNAVAILABLE",
+        details: { nodeError: { code: "UNKNOWN_COMMAND" }, nodeCommandDispatched: true },
+      },
       "device_android_read_failed",
     ],
     [
-      { gatewayCode: "UNAVAILABLE", details: { nodeError: { code: "NOT_AUTHORIZED" }, nodeCommandDispatched: true } },
+      {
+        gatewayCode: "UNAVAILABLE",
+        details: { nodeError: { code: "NOT_AUTHORIZED" }, nodeCommandDispatched: true },
+      },
       "device_android_permission_required",
     ],
     [
-      { gatewayCode: "UNAVAILABLE", details: { nodeError: { code: "NOT_AVAILABLE" }, nodeCommandDispatched: true } },
+      {
+        gatewayCode: "UNAVAILABLE",
+        details: { nodeError: { code: "NOT_AVAILABLE" }, nodeCommandDispatched: true },
+      },
       "device_android_read_failed",
     ],
     [
-      { gatewayCode: "UNAVAILABLE", details: { nodeError: { code: "UNKNOWN_COMMAND" }, nodeCommandDispatched: false } },
+      {
+        gatewayCode: "UNAVAILABLE",
+        details: { nodeError: { code: "UNKNOWN_COMMAND" }, nodeCommandDispatched: false },
+      },
       "device_dispatch_failed",
     ],
     [
-      { gatewayCode: "UNAVAILABLE", details: { nodeError: { code: "UNAVAILABLE" }, nodeCommandDispatched: true } },
+      {
+        gatewayCode: "UNAVAILABLE",
+        details: { nodeError: { code: "UNAVAILABLE" }, nodeCommandDispatched: true },
+      },
       "device_dispatch_unconfirmed",
     ],
     [
       { details: { nodeError: { code: "NOT_AUTHORIZED" }, nodeCommandDispatched: true } },
       "device_dispatch_failed",
     ],
-  ])("classifies structured connector failures without exposing their data (%#)", async (error, code) => {
-    const f = fixture();
-    const tool = f.factory.create(f.context)!;
-    const sensitive = "http://fixture.invalid/private-query?token=never-return";
-    gateway.call.mockRejectedValueOnce(
-      Object.assign(new Error(sensitive), error, { diagnostic: sensitive }),
-    );
-    const response = await tool.execute("classified_failure", {});
-    expect(response.details).toMatchObject({ ok: false, error: { code } });
-    expect(JSON.stringify(response)).not.toContain(sensitive);
-    expect(JSON.stringify(response)).not.toContain("nodeCommandDispatched");
-  });
+  ])(
+    "classifies structured connector failures without exposing their data (%#)",
+    async (error, code) => {
+      const f = fixture();
+      const tool = f.factory.create(f.context)!;
+      const sensitive = "http://fixture.invalid/private-query?token=never-return";
+      gateway.call.mockRejectedValueOnce(
+        Object.assign(new Error(sensitive), error, { diagnostic: sensitive }),
+      );
+      const response = await tool.execute("classified_failure", {});
+      expect(response.details).toMatchObject({ ok: false, error: { code } });
+      expect(JSON.stringify(response)).not.toContain(sensitive);
+      expect(JSON.stringify(response)).not.toContain("nodeCommandDispatched");
+    },
+  );
 
   it.each([
     ["GO_E_WLAN_APPROVAL_REQUIRED", "device_android_permission_required"],
@@ -479,9 +656,21 @@ describe("managed go-e charger", () => {
   });
 
   it.each([
-    ["GO_E_WIFI_UNAVAILABLE", "device_android_wifi_unavailable", "Element needs an active Wi-Fi connection outside a VPN to read the charger."],
-    ["GO_E_WIFI_NOT_APPROVED", "device_android_wifi_not_approved", "Approve the current Wi-Fi once in Element's Wallbox settings."],
-    ["GO_E_WIFI_CHANGED", "device_android_wifi_changed", "Element stopped the read after the Wi-Fi changed. Retry on an approved Wi-Fi network."],
+    [
+      "GO_E_WIFI_UNAVAILABLE",
+      "device_android_wifi_unavailable",
+      "Element needs an active Wi-Fi connection outside a VPN to read the charger.",
+    ],
+    [
+      "GO_E_WIFI_NOT_APPROVED",
+      "device_android_wifi_not_approved",
+      "Approve the current Wi-Fi once in Element's Wallbox settings.",
+    ],
+    [
+      "GO_E_WIFI_CHANGED",
+      "device_android_wifi_changed",
+      "Element stopped the read after the Wi-Fi changed. Retry on an approved Wi-Fi network.",
+    ],
     [
       "GO_E_DISCOVERY_NETWORK_MISMATCH",
       "device_android_discovery_network_mismatch",

@@ -1,8 +1,8 @@
 {
   "name": "@infinitecable2/openclaw-goe",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Managed go-e charger status over a paired Matrix Node",
+  "description": "Managed go-e charger data and confirmed stops over a paired node",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

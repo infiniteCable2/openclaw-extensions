@@ -1,10 +1,11 @@
 {
   "id": "goe",
   "name": "go-e Chargers",
-  "description": "Read the status of an assigned go-e charger via its paired Matrix Node.",
-  "version": "0.1.0",
+  "description": "Read data for an assigned go-e charger and request a locally confirmed charging stop.",
+  "version": "0.2.0",
   "uiHints": {
-    "devices[].deviceKey": { "label": "Approved go-e device key", "sensitive": true }
+    "devices[].deviceKey": { "label": "Approved go-e device key", "sensitive": true },
+    "devices[].historyReport": { "label": "Approved charger history export file", "sensitive": true }
   },
   "activation": { "onStartup": false, "onConfigPaths": ["plugins.entries.goe.config"] },
   "configSchema": {
@@ -25,6 +26,7 @@
             "nodeId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "profileId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" },
             "deviceKey": { "type": "string", "pattern": "^[0-9]{6}$" },
+            "historyReport": { "type": "string", "minLength": 1, "maxLength": 512 },
             "commands": {
               "type": "array",
               "minItems": 1,
@@ -37,14 +39,20 @@
             "properties": { "commands": { "type": "array", "items": { "const": "network.device.read.v2" } } }
           },
           "else": {
-            "properties": { "commands": { "type": "array", "items": { "const": "network.device.read" } } }
+            "properties": { "commands": { "type": "array", "items": { "const": "network.device.read" } }, "historyReport": false }
           }
         }
       }
     }
   },
-  "contracts": { "tools": ["goe_status"] },
+  "contracts": { "tools": ["goe_status", "goe_stop"] },
   "toolMetadata": {
+    "goe_stop": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true,
+      "configSignals": [{ "rootPath": "plugins.entries.goe.config", "required": ["devices"] }]
+    },
     "goe_status": {
       "optional": true,
       "replaySafe": false,
