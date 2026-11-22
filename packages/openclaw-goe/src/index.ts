@@ -15,13 +15,14 @@ import {
   type OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/plugin-entry";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
-import { configuredReport, readHistoryReport } from "./history.js";
+import { configuredReport, readHistoryReport, structuredSessions } from "./history.js";
 import { object as record, projectStatus, statusSections } from "./telemetry.js";
 
 const provider = "goe";
 const legacyCommand = "network.device.read";
 const addressedCommand = "network.device.read.v2";
 const stopCommand = "network.device.stop.v1";
+const historyCommand = "network.device.history.v1";
 const idPattern = "^[a-z0-9][a-z0-9_-]{0,63}$";
 const id = new RegExp(idPattern);
 const deviceKeyPattern = /^[0-9]{6}$/;
@@ -331,7 +332,11 @@ export default definePluginEntry({
                 if (!device || !assignments.has(device)) return failure("device_not_assigned");
                 const selected = assignments.get(device);
                 if (!selected) return failure("device_assignment_invalid");
-                const command = stop ? stopCommand : selected.command;
+                const command = stop
+                  ? stopCommand
+                  : section === "history"
+                    ? historyCommand
+                    : selected.command;
 
                 const assignmentIsCurrent = () => {
                   const current = readBindings().get(device);
@@ -351,9 +356,9 @@ export default definePluginEntry({
 
                 let stopDispatched = false;
                 try {
-                  if (section === "history") {
-                    if (!selected.historyReport || !selected.deviceKey)
-                      return failure("device_history_unavailable");
+                  if (section === "history" && !selected.deviceKey)
+                    return failure("device_history_unavailable");
+                  if (section === "history" && selected.historyReport && selected.deviceKey) {
                     const history = await readHistoryReport(
                       selected.historyReport,
                       selected.deviceKey,
@@ -372,7 +377,13 @@ export default definePluginEntry({
                   );
                   if (!node) return failure("device_offline");
                   if (!node.invocableCommands?.includes(command)) {
-                    return failure(stop ? "device_stop_unavailable" : "device_command_unavailable");
+                    return failure(
+                      stop
+                        ? "device_stop_unavailable"
+                        : section === "history"
+                          ? "device_history_unavailable"
+                          : "device_command_unavailable",
+                    );
                   }
 
                   stopDispatched = stop;
@@ -384,7 +395,11 @@ export default definePluginEntry({
                       command,
                       params:
                         selected.command === addressedCommand
-                          ? { plugin: "go-e", deviceKey: selected.deviceKey }
+                          ? {
+                              plugin: "go-e",
+                              deviceKey: selected.deviceKey,
+                              ...(section === "history" && { limit }),
+                            }
                           : {},
                       timeoutMs,
                       sessionKey,
@@ -397,6 +412,7 @@ export default definePluginEntry({
                             selected.nodeId,
                             command,
                             selected.deviceKey,
+                            ...(section === "history" ? [limit] : []),
                           ]),
                         )
                         .digest("hex"),
@@ -424,6 +440,12 @@ export default definePluginEntry({
                       : failure("device_stop_unconfirmed");
                   }
                   if (!payload) return failure("device_reply_invalid");
+                  if (section === "history") {
+                    const sessions = structuredSessions(payload.sessions, limit);
+                    return sessions
+                      ? jsonResult({ ok: true, device, section, source: "go-e", sessions })
+                      : failure("device_history_unavailable");
+                  }
                   const status = projectStatus(payload, section);
                   if (!status)
                     return failure(

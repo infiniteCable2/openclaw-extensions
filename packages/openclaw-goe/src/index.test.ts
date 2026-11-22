@@ -10,6 +10,7 @@ import type {
 } from "openclaw/plugin-sdk/plugin-entry";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
+import { reportSessions } from "./history.js";
 
 const gateway = vi.hoisted(() => ({ call: vi.fn(), routing: vi.fn(() => true) }));
 const inventoryViews = vi.hoisted(
@@ -36,6 +37,7 @@ const nodeId = "a".repeat(64);
 const command = "network.device.read";
 const v2Command = "network.device.read.v2";
 const stopCommand = "network.device.stop.v1";
+const historyCommand = "network.device.history.v1";
 type FixtureBinding = {
   id: string;
   nodeId: string;
@@ -130,6 +132,86 @@ beforeEach(() => {
 });
 
 describe("managed go-e charger", () => {
+  it("returns the latest completed sessions from the addressed node as structured data", async () => {
+    const f = sharedNodeFixture();
+    const firstEnd = Date.UTC(2026, 10, 6, 22);
+    const lastEnd = Date.UTC(2026, 10, 13, 21);
+    f.list.mockResolvedValue({
+      nodes: [{ nodeId, connected: true, invocableCommands: [v2Command, historyCommand] }],
+    });
+    gateway.call.mockResolvedValue({
+      payload: {
+        deviceKey: f.firstKey,
+        sessions: [
+          {
+            startUnix: firstEnd - 7200000,
+            endUnix: firstEnd,
+            energy: 14.1,
+            seconds_charged: "01:35:08",
+            still_running: false,
+          },
+          {
+            startUnix: lastEnd - 7200000,
+            endUnix: lastEnd,
+            energy: 17.75,
+            seconds_charged: "01:35:08",
+            still_running: false,
+            link: "fixture-secret",
+          },
+          {
+            startUnix: lastEnd,
+            endUnix: lastEnd + 7200000,
+            energy: 1,
+            seconds_charged: "00:10:00",
+            still_running: true,
+          },
+        ],
+      },
+    });
+    const tool = f.factory.create(f.context)!;
+    const result = await tool.execute("history", {
+      device: chargerId,
+      section: "history",
+      limit: 1,
+    });
+    expect(result.details).toEqual({
+      ok: true,
+      device: chargerId,
+      section: "history",
+      source: "go-e",
+      sessions: [
+        {
+          startedAt: new Date(lastEnd - 7200000).toISOString(),
+          endedAt: new Date(lastEnd).toISOString(),
+          energyKwh: 17.75,
+          activeChargingSeconds: 5708,
+        },
+      ],
+    });
+    expect(gateway.call.mock.calls[0]?.[2]).toMatchObject({
+      command: historyCommand,
+      params: { plugin: "go-e", deviceKey: f.firstKey, limit: 1 },
+    });
+  });
+
+  it("reads the German go-e export without following its private links", () => {
+    const start = Date.UTC(2026, 9, 25, 0, 50) / 1000;
+    const report = [
+      'Session ID,Charger-SN,Charger Name,Name des Chips,Chip ID,Energie,Start,Ende,Gesamtzeit,Ladezeit,Maximale Leistung,Maximaler Strom,"Zähler\ndifferenz",Zählerstart,Zählerende,WLAN-SSID,Link',
+      `${start},012345,Example charger,Example card,,5.12,25.10.2026 02:50:00,25.10.2026 02:20:00,30min,24min 36S,10.749,15.700,5.12,120,125.12,Example Wi-Fi,https://example.invalid/fixture`,
+    ].join("\r\n");
+    expect(reportSessions(report, "012345", 3)).toEqual([
+      {
+        startedAt: "2026-10-25T00:50:00.000Z",
+        endedAt: "2026-10-25T01:20:00.000Z",
+        energyKwh: 5.12,
+        activeChargingSeconds: 1476,
+      },
+    ]);
+    expect(reportSessions(report, "012346", 3)).toBeUndefined();
+    expect(reportSessions(report.replace("02:50:00", "02:57:00"), "012345", 3)).toEqual([]);
+  });
+
   it("groups a verified telemetry snapshot and keeps only the requested fields", async () => {
     const f = sharedNodeFixture();
     const tool = f.factory.create(f.context)!;

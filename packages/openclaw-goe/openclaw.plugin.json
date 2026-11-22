@@ -2,7 +2,7 @@
   "id": "goe",
   "name": "go-e Chargers",
   "description": "Read data for an assigned go-e charger and request a locally confirmed charging stop.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "uiHints": {
     "devices[].deviceKey": { "label": "Approved go-e device key", "sensitive": true },
     "devices[].historyReport": { "label": "Approved charger history export file", "sensitive": true }

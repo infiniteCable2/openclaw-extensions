@@ -1,9 +1,10 @@
 {
   "version": 1,
   "provider": "goe",
-  "capabilities": ["charging_status", "charging_stop"],
+  "capabilities": ["charging_status", "charging_history", "charging_stop"],
   "capabilityAccess": {
     "charging_status": { "status": ["network.device.read", "network.device.read.v2"] },
+    "charging_history": { "status": ["network.device.history.v1"] },
     "charging_stop": { "control": ["network.device.stop.v1"] }
   },
   "tools": { "status": "goe_status", "control": "goe_stop" }

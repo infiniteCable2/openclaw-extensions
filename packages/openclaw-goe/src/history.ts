@@ -3,6 +3,58 @@ import { open } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 
 const maxReportBytes = 2 * 1024 * 1024;
+type Session = {
+  startMs: number;
+  endMs: number;
+  energyKwh: number;
+  activeChargingSeconds?: number;
+};
+
+function latestSessions(items: Iterable<Session>, limit: number) {
+  return [...items]
+    .sort((a, b) => b.endMs - a.endMs || b.startMs - a.startMs)
+    .slice(0, limit)
+    .map(({ startMs, endMs, energyKwh, activeChargingSeconds }) => ({
+      startedAt: new Date(startMs).toISOString(),
+      endedAt: new Date(endMs).toISOString(),
+      energyKwh,
+      ...(activeChargingSeconds !== undefined && { activeChargingSeconds }),
+    }));
+}
+
+export function structuredSessions(rows: unknown, limit: number) {
+  if (!Array.isArray(rows)) return;
+  const result: Session[] = [];
+  for (const item of rows as unknown[]) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    const { startUnix, endUnix, still_running, energy, seconds_charged } = row;
+    if (
+      still_running !== false ||
+      typeof startUnix !== "number" ||
+      typeof endUnix !== "number" ||
+      !Number.isSafeInteger(startUnix) ||
+      !Number.isSafeInteger(endUnix) ||
+      startUnix < 1e12 ||
+      endUnix > 8.64e15 ||
+      startUnix >= endUnix ||
+      typeof energy !== "number" ||
+      !Number.isFinite(energy) ||
+      energy < 0
+    )
+      continue;
+    const match =
+      typeof seconds_charged === "string" &&
+      /^(\d{1,4}):([0-5]\d):([0-5]\d)$/.exec(seconds_charged);
+    const seconds = match
+      ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])
+      : undefined;
+    const activeChargingSeconds =
+      seconds !== undefined && seconds <= (endUnix - startUnix) / 1000 ? seconds : undefined;
+    result.push({ startMs: startUnix, endMs: endUnix, energyKwh: energy, activeChargingSeconds });
+  }
+  return latestSessions(result, limit);
+}
 
 export function configuredReport(value: unknown): string | undefined {
   return typeof value === "string" &&
@@ -89,6 +141,46 @@ function decimal(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed <= Number.MAX_SAFE_INTEGER ? parsed : undefined;
 }
 
+function durationSeconds(value: string | undefined): number | undefined {
+  const parts = value?.match(/^(?:(\d{1,4})h\s*)?(?:(\d{1,2})min\s*)?(?:(\d{1,2})s)?$/i);
+  if (!value || !parts) return;
+  const [, hours, minutes, seconds] = parts;
+  if (Number(minutes ?? 0) >= 60 || Number(seconds ?? 0) >= 60) return;
+  return Number(hours ?? 0) * 3600 + Number(minutes ?? 0) * 60 + Number(seconds ?? 0);
+}
+
+function localClock(value: string | undefined): number | undefined {
+  const match = value?.match(/^(\d{2})\.(\d{2})\.(\d{4}) (\d{2}:\d{2}:\d{2})$/);
+  if (!match) return;
+  const iso = `${match[3]}-${match[2]}-${match[1]}T${match[4]}.000Z`;
+  const valueMs = Date.parse(iso);
+  return Number.isFinite(valueMs) && new Date(valueMs).toISOString() === iso ? valueMs : undefined;
+}
+
+function goEInterval(id: string, start: string, end: string, duration: string) {
+  // The German charger export uses Unix seconds as the session ID. Validate the
+  // anchor and elapsed time against both displayed local clocks, including DST.
+  if (!/^\d{10}$/.test(id)) return;
+  const localStart = localClock(start);
+  const localEnd = localClock(end);
+  const seconds = durationSeconds(duration);
+  if (localStart === undefined || localEnd === undefined || !seconds) return;
+  const startMs = Number(id) * 1000;
+  const endMs = startMs + seconds * 1000;
+  const startOffset = localStart - startMs;
+  const endOffset = localEnd - endMs;
+  const hour = 3_600_000;
+  const validOffset = (offset: number) =>
+    offset % (hour / 4) === 0 && offset >= -12 * hour && offset <= 14 * hour;
+  if (
+    !validOffset(startOffset) ||
+    !validOffset(endOffset) ||
+    Math.abs(startOffset - endOffset) > 2 * hour
+  )
+    return;
+  return { startMs, endMs };
+}
+
 export function reportSessions(text: string, key: string, limit: number) {
   for (const separator of [";", ",", "\t"]) {
     const report = rows(text.replace(/^\uFEFF/, ""), separator);
@@ -98,25 +190,29 @@ export function reportSessions(text: string, key: string, limit: number) {
       const indices = header.flatMap((name, index) => (aliases.includes(name) ? [index] : []));
       return indices.length === 1 ? indices[0]! : -1;
     };
-    const serialIndex = column(columns.serial);
-    const startIndex = column(columns.start);
-    const endIndex = column(columns.end);
-    const energyIndex = column(columns.kwh);
-    const durationIndex = column(columns.activeSeconds);
+    const sessionIndex = column(["session id"]);
+    const elapsedIndex = column(["gesamtzeit"]);
+    const goEExport = sessionIndex >= 0 && elapsedIndex >= 0 && column(["charger-sn"]) >= 0;
+    const serialIndex = column(goEExport ? ["charger-sn"] : columns.serial);
+    const startIndex = column(goEExport ? ["start"] : columns.start);
+    const endIndex = column(goEExport ? ["ende"] : columns.end);
+    const energyIndex = column(goEExport ? ["energie"] : columns.kwh);
+    const durationIndex = column(goEExport ? ["ladezeit"] : columns.activeSeconds);
     if (Math.min(serialIndex, startIndex, endIndex, energyIndex) < 0) continue;
 
-    const sessions = new Map<
-      string,
-      { startMs: number; endMs: number; energyKwh: number; activeChargingSeconds?: number }
-    >();
+    const sessions = new Map<string, Session>();
     let matchedCharger = false;
     for (const row of report.slice(1)) {
       if (row.length !== header.length) return;
       const serial = row[serialIndex]?.trim();
       if (!serial || !/^\d{1,6}$/.test(serial) || serial.padStart(6, "0") !== key) continue;
       matchedCharger = true;
-      const startMs = timestamp(row[startIndex]?.trim());
-      const endMs = timestamp(row[endIndex]?.trim());
+      const start = row[startIndex]!.trim();
+      const end = row[endIndex]!.trim();
+      const interval = goEExport
+        ? goEInterval(row[sessionIndex]!.trim(), start, end, row[elapsedIndex]!.trim())
+        : { startMs: timestamp(start), endMs: timestamp(end) };
+      const { startMs, endMs } = interval ?? {};
       const energyKwh = decimal(row[energyIndex]?.trim());
       if (
         startMs === undefined ||
@@ -125,7 +221,7 @@ export function reportSessions(text: string, key: string, limit: number) {
         energyKwh === undefined
       )
         continue;
-      const active = decimal(row[durationIndex]?.trim());
+      const active = (goEExport ? durationSeconds : decimal)(row[durationIndex]?.trim());
       const activeChargingSeconds =
         active !== undefined && active <= (endMs - startMs) / 1000 ? active : undefined;
       const id = `${startMs}:${endMs}`;
@@ -140,15 +236,7 @@ export function reportSessions(text: string, key: string, limit: number) {
       sessions.set(id, session);
     }
     if (report.length > 1 && !matchedCharger) return;
-    return [...sessions.values()]
-      .sort((a, b) => b.endMs - a.endMs || b.startMs - a.startMs)
-      .slice(0, limit)
-      .map(({ startMs, endMs, energyKwh, activeChargingSeconds }) => ({
-        startedAt: new Date(startMs).toISOString(),
-        endedAt: new Date(endMs).toISOString(),
-        energyKwh,
-        ...(activeChargingSeconds !== undefined && { activeChargingSeconds }),
-      }));
+    return latestSessions(sessions.values(), limit);
   }
 }
 
