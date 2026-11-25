@@ -3,12 +3,12 @@ import { isAbsolute, join } from "node:path";
 
 /** The single owner of device identity, location, presentation and agent grants. */
 export type DevicePermission = "read" | "control" | "observe" | "guide";
-export type DeviceKind = "light" | "switch" | "media_receiver" | "television" | "computer" | "speaker" | "vehicle" | "ev_charger";
-export type DeviceToolRole = "status" | "history" | "control" | "observe" | "guide" | "stations";
+export type DeviceKind = "light" | "switch" | "media_receiver" | "television" | "computer" | "speaker" | "vehicle" | "ev_charger" | "thermostat";
+export type DeviceToolRole = "status" | "history" | "control" | "observe" | "guide" | "stations" | "maintenance";
 export type DeviceCapabilityAccess = Readonly<Partial<Record<DeviceToolRole, true | readonly string[]>>>;
 
 export const deviceToolPermissions: Readonly<Record<DeviceToolRole, DevicePermission>> = {
-  status: "read", history: "read", stations: "read", control: "control", observe: "observe", guide: "guide",
+  status: "read", history: "read", stations: "read", control: "control", maintenance: "control", observe: "observe", guide: "guide",
 };
 
 export type DeviceBindingScope = { profileId: string; sessionKey?: string; channels?: readonly string[] };
@@ -46,7 +46,7 @@ type ProviderDeclaration = DeviceProviderMetadata & { statusByBrand?: ReadonlyMa
 
 const idPattern = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const toolPattern = /^[a-z][a-z0-9_]*$/;
-const kinds = new Set<DeviceKind>(["light", "switch", "media_receiver", "television", "computer", "speaker", "vehicle", "ev_charger"]);
+const kinds = new Set<DeviceKind>(["light", "switch", "media_receiver", "television", "computer", "speaker", "vehicle", "ev_charger", "thermostat"]);
 const permissions = new Set<DevicePermission>(["read", "control", "observe", "guide"]);
 
 export class DevicePolicyError extends Error {

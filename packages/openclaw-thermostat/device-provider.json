@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "provider": "thermostat",
+  "capabilities": [
+    "temperature",
+    "heating_mode",
+    "weekly_schedule",
+    "temporary_heating",
+    "adaptive_pid",
+    "valve_calibration",
+    "temperature_history",
+    "diagnostics"
+  ],
+  "capabilityAccess": {
+    "temperature": {
+      "status": true,
+      "control": true
+    },
+    "heating_mode": {
+      "status": true,
+      "control": true
+    },
+    "weekly_schedule": {
+      "status": true,
+      "control": true
+    },
+    "temporary_heating": {
+      "status": true,
+      "control": true
+    },
+    "adaptive_pid": {
+      "status": true,
+      "control": true
+    },
+    "valve_calibration": {
+      "status": true,
+      "maintenance": true
+    },
+    "temperature_history": {
+      "status": true
+    },
+    "diagnostics": {
+      "status": true
+    }
+  },
+  "tools": {
+    "status": "thermostat_status",
+    "control": "thermostat_control",
+    "maintenance": "thermostat_calibrate"
+  }
+}

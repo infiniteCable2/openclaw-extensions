@@ -2,7 +2,7 @@
   "id": "device-management",
   "name": "Device Management",
   "description": "Agent-scoped inventory of managed devices, sites and available device tools.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "activation": {
     "onStartup": false,
     "onConfigPaths": [
@@ -81,7 +81,8 @@
                 "computer",
                 "speaker",
                 "vehicle",
-                "ev_charger"
+                "ev_charger",
+                "thermostat"
               ]
             },
             "siteId": {

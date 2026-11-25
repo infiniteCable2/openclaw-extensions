@@ -1,0 +1,86 @@
+{
+  "id": "thermostat",
+  "name": "Zigbee Thermostat",
+  "description": "Managed SONOFF TRV-ZBT radiator thermostats via local Zigbee2MQTT.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": false,
+    "onConfigPaths": [
+      "plugins.entries.thermostat.config",
+      "plugins.entries.device-management.config"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "devices"
+    ],
+    "properties": {
+      "port": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535,
+        "default": 1883
+      },
+      "baseTopic": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9_-]{1,48}$",
+        "default": "zigbee2mqtt"
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 2000,
+        "maximum": 45000,
+        "default": 18000
+      },
+      "devices": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "ieeeAddress"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+            },
+            "ieeeAddress": {
+              "type": "string",
+              "pattern": "^0x[a-f0-9]{16}$"
+            }
+          }
+        }
+      }
+    }
+  },
+  "contracts": {
+    "tools": [
+      "thermostat_status",
+      "thermostat_control",
+      "thermostat_calibrate"
+    ]
+  },
+  "toolMetadata": {
+    "thermostat_status": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "thermostat_control": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    },
+    "thermostat_calibrate": {
+      "optional": true,
+      "replaySafe": false,
+      "sideEffecting": true
+    }
+  }
+}
