@@ -1,0 +1,10 @@
+[Unit]
+Description=Sample host resources every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=5s
+Unit=server-watch-collect@sample.service
+
+[Install]
+WantedBy=timers.target

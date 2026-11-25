@@ -1,0 +1,19 @@
+{
+  "name": "Daily server report",
+  "agentId": "server-watch",
+  "enabled": true,
+  "schedule": {
+    "kind": "cron",
+    "expr": "0 20 * * *",
+    "tz": "Europe/Berlin"
+  },
+  "sessionTarget": "main",
+  "payload": {
+    "kind": "agentTurn",
+    "timeoutSeconds": 120,
+    "message": "Create the structured daily operational report using the monitoring workspace instructions. Send one compact report to the configured personal agent using sessions_send. Keep routine delivery internal."
+  },
+  "delivery": {
+    "mode": "none"
+  }
+}

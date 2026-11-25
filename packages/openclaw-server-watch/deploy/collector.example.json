@@ -1,0 +1,37 @@
+{
+  "database": "/var/lib/server-watch/data.db",
+  "units": [
+    {
+      "id": "gateway",
+      "unit": "openclaw-gateway.service"
+    },
+    {
+      "id": "example-disabled",
+      "unit": "example-disabled.service",
+      "expected": "stopped"
+    }
+  ],
+  "containers": [
+    {
+      "id": "example-web",
+      "container": "example-web"
+    }
+  ],
+  "filesystems": [
+    {
+      "id": "root",
+      "path": "/"
+    }
+  ],
+  "gpus": [],
+  "tls": [
+    {
+      "id": "example-tls",
+      "host": "example.org",
+      "port": 443
+    }
+  ],
+  "jails": [
+    "sshd"
+  ]
+}

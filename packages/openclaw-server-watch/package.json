@@ -1,0 +1,38 @@
+{
+  "name": "@infinitecable2/openclaw-server-watch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only server monitoring for OpenClaw",
+  "files": [
+    "openclaw.plugin.json",
+    "README.md",
+    "advisories.mjs",
+    "collector.mjs",
+    "index.mjs",
+    "metrics.mjs",
+    "observations.mjs",
+    "queries.mjs",
+    "run.mjs",
+    "store.mjs",
+    "deploy"
+  ],
+  "scripts": {
+    "test": "node --test watch.test.mjs"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.11.1"
+  },
+  "devDependencies": {
+    "openclaw": "link:../../../openclaw"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.mjs"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.11.1",
+      "minGatewayVersion": ">=2026.11.1"
+    }
+  }
+}
