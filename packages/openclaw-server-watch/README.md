@@ -1,9 +1,11 @@
 # Server Watch
 
 Server Watch divides collection from OpenClaw tool execution. A local Linux
-collector samples and stores bounded, structured observations in SQLite. The
-plugin opens the database read-only and only registers its tools for the named
-monitoring agent. It rechecks that binding before each call. The model does
+collector samples and stores bounded, structured observations in SQLite. A
+local socket worker opens the database read-only and verifies the caller
+against the systemd Gateway MainPID with Linux peer credentials. The Gateway
+has no database group access. The plugin only registers its tools for the
+named monitoring agent and rechecks that binding before each call. The model does
 not run shell commands or receive raw journal entries, IP addresses,
 credentials or arbitrary filesystem paths.
 
@@ -58,11 +60,13 @@ number of samples. Per-process GPU attribution is outside this version.
 
 ## Install and connect the internal agent
 
-Install the package on Linux with Node 24 or later. Adapt
+Install the package on Linux with Node 24 or later and Python 3. Adapt
 `deploy/collector.example.json` to the trusted service inventory.
 Install the collector and systemd files from `deploy/`. Give the collector a
 root-owned state directory with group `server-watch` and mode `0750`.
-Grant the Gateway read access to the database through that dedicated group.
+Run the socket worker as the dedicated, non-login `server-watch-reader`
+account with group `server-watch`. The Gateway connects through the socket
+and must not be in that group.
 The collector's fixed host probes are the only users of restricted journal
 access and the optional Docker socket. Keep the personal agents' host/file
 access restricted. A single OpenClaw Gateway with host shell access is not a

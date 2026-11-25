@@ -2,7 +2,7 @@
   "id": "server-watch",
   "name": "Server Watch",
   "description": "Read-only server monitoring for OpenClaw",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "activation": {
     "onStartup": false,
     "onConfigPaths": [
@@ -13,14 +13,14 @@
     "type": "object",
     "additionalProperties": false,
     "required": [
-      "database",
+    "socket",
       "agentId"
     ],
     "properties": {
-      "database": {
+      "socket": {
         "type": "string",
         "minLength": 1,
-        "maxLength": 512
+        "maxLength": 104
       },
       "agentId": {
         "type": "string",

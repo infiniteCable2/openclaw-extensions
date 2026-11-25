@@ -1,6 +1,6 @@
 {
   "name": "@infinitecable2/openclaw-server-watch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Read-only server monitoring for OpenClaw",
@@ -13,7 +13,10 @@
     "metrics.mjs",
     "observations.mjs",
     "queries.mjs",
+    "query-peer.py",
+    "query-worker.mjs",
     "run.mjs",
+    "socket.mjs",
     "store.mjs",
     "deploy"
   ],

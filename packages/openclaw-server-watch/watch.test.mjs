@@ -3,12 +3,15 @@ import { test } from "node:test";
 import { mkdtempSync,rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
+import { once } from "node:events";
 import { compareDebian, correlateDebian, projectKev, projectNvd, advisoryQuery, fetchNvd, packageRows } from "./advisories.mjs";
 import { intervals, resourceReport } from "./metrics.mjs";
 import { cpuCounters, settings } from "./collector.mjs";
 import { banCounts, connections, loginCounts } from "./observations.mjs";
 import { openStore, putSample,putSnapshot,snapshot,hour,minute } from "./store.mjs";
 import { query } from "./queries.mjs";
+import { querySocket } from "./socket.mjs";
 
 test("complete Debian version order and source package identity", () => {
   const pairs=[["1:1.0-2","2.0-1",1],["1.2~rc1-1","1.2-1",-1],
@@ -128,4 +131,29 @@ test("collector configuration only accepts fixed host target forms",()=>{
   assert.throws(()=>settings({database,gpus:[{id:"test",pci:"../../sys"}]}),/invalid_settings/);
   assert.throws(()=>settings({database,containers:[{id:"test",container:"--format"}]}),/invalid_settings/);
   assert.equal(settings({database}).filesystems[0].path,"/");
+});
+
+test("query transport sends a bounded request and propagates a peer denial", async ()=>{
+  const root=mkdtempSync(join(tmpdir(),"server-watch-socket-"));
+  const endpoint=process.platform==="win32"
+    ? "\\\\.\\pipe\\server-watch-test-"+process.pid
+    : join(root,"query.sock");
+  let received;
+  const server=createServer(conn=>{
+    conn.once("data",bytes=>{
+      received=JSON.parse(bytes.toString());
+      conn.end(JSON.stringify({ok:false,error:"server_watch_peer_denied"}));
+    });
+  });
+  try{
+    server.listen(endpoint);
+    await once(server,"listening");
+    const result=await querySocket(endpoint,"server_health",{});
+    assert.deepEqual(received,{name:"server_health",params:{}});
+    assert.equal(result.error,"server_watch_peer_denied");
+    assert.throws(()=>querySocket(endpoint,"server_health",{input:"a".repeat(9000)}),/invalid_request/);
+  } finally {
+    await new Promise(resolve=>server.close(resolve));
+    rmSync(root,{recursive:true,force:true});
+  }
 });

@@ -55,7 +55,7 @@
         "enabled": true,
         "config": {
           "agentId": "server-watch",
-          "database": "/var/lib/server-watch/data.db"
+          "socket": "/run/server-watch-query.sock"
         }
       }
     }

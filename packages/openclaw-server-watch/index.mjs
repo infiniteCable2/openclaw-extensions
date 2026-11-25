@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
-import { openStore, MAX_HOURS } from "./store.mjs";
-import { query } from "./queries.mjs";
+import { MAX_HOURS } from "./store.mjs";
+import { querySocket } from "./socket.mjs";
 
 const id="server-watch";
 const manifest=JSON.parse(readFileSync(new URL("./openclaw.plugin.json",import.meta.url),"utf8"));
@@ -30,8 +30,8 @@ const definitions = [
 function permitted(api, agentId) {
   const live=api.runtime.config.current().plugins?.entries?.[id];
   const c=live?.config;
-  if (!agentId||live?.enabled===false||c?.agentId!==agentId||typeof c.database!=="string"||!isAbsolute(c.database)) return;
-  return c.database;
+  if (!agentId||live?.enabled===false||c?.agentId!==agentId||typeof c.socket!=="string"||!isAbsolute(c.socket)||c.socket.length>104) return;
+  return c.socket;
 }
 
 export default defineToolPlugin({
@@ -44,13 +44,9 @@ export default defineToolPlugin({
         try {
           signal?.throwIfAborted();
           toolContext.assertInvocationCurrent?.();
-          const file=permitted(api,toolContext.agentId);
-          if (!file) return jsonResult({ok:false,error:"server_watch_denied"});
-          const db=openStore(file,true);
-          try {
-            const payload=query(db,name,params??{});
-            return jsonResult({ok:true,...payload});
-          } finally {db.close();}
+          const path=permitted(api,toolContext.agentId);
+          if (!path) return jsonResult({ok:false,error:"server_watch_denied"});
+          return jsonResult(await querySocket(path,name,params??{},signal));
         } catch (error) {
           const message=error?.message;
           const code=error?.name==="AbortError"?"request_cancelled":message==="no_samples"?"no_samples":
