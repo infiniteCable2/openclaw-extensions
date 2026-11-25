@@ -180,7 +180,8 @@ export async function downloadJson(url, maxBytes, timeoutMs = 35_000) {
 
 export async function fetchNvd(now, download = downloadJson) {
   // Query the public publication timeline. No package or device inventory leaves the host.
-  const from = now - 7 * days;
+  // Overlap adjacent daily refreshes, without paging through a whole week each run.
+  const from = now - 36 * (days / 24);
   const query = new URL(sourceUrls.nvd);
   query.searchParams.set("pubStartDate", new Date(from).toISOString());
   query.searchParams.set("pubEndDate", new Date(now).toISOString());
@@ -202,6 +203,19 @@ export async function fetchNvd(now, download = downloadJson) {
     if (offset>=total || !feed.vulnerabilities.length) break;
   }
   return { from, to: now, total, complete:!changedDuringRead&&total<=offset, entries:[...entries.values()] };
+}
+
+export function mergeNvd(previous, current) {
+  const oldest = current.to - 7 * days;
+  const from = previous?.complete && current.complete && previous.to >= current.from
+    ? Math.max(oldest, previous.from) : current.from;
+  const entries = new Map();
+  for (const prior of previous?.entries ?? []) {
+    const published = Date.parse(prior.published);
+    if (published >= oldest && (published < current.from || !current.complete)) entries.set(prior.id, prior);
+  }
+  for (const item of current.entries) entries.set(item.id,item);
+  return { ...current, from, entries:[...entries.values()], total:entries.size };
 }
 
 export function advisoryQuery(nvd, kev, { from, to, minimum = "UNKNOWN", component = "", exploitedOnly = false, limit = 20 }) {

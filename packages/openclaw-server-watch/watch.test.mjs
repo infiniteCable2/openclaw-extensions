@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { compareDebian, correlateDebian, projectKev, projectNvd, advisoryQuery, fetchNvd, packageRows } from "./advisories.mjs";
+import { compareDebian, correlateDebian, projectKev, projectNvd, advisoryQuery, fetchNvd, mergeNvd, packageRows } from "./advisories.mjs";
 import { intervals, resourceReport } from "./metrics.mjs";
 import { cpuCounters, settings } from "./collector.mjs";
 import { banCounts, connections, loginCounts } from "./observations.mjs";
@@ -57,13 +57,27 @@ test("public advisory lookups carry no local inventory and retain coverage and d
     return {totalResults:1,vulnerabilities:[fake]};
   });
   const kev=projectKev({vulnerabilities:[{cveID:"CVE-2026-1234",dateAdded:"2026-02-08"}]});
-  const r=advisoryQuery(nvd,kev,{from:now-2*24*hour,to:now,minimum:"HIGH",component:"library",exploitedOnly:true});
+  const r=advisoryQuery(nvd,kev,{from:now-30*hour,to:now,minimum:"HIGH",component:"library",exploitedOnly:true});
   assert.equal(r.coveredPublicationWindow,true);
   assert.equal(r.entries[0].knownExploitedSince,"2026-02-08");
   assert.equal(r.entries[0].cvss,9.8);
   assert.equal(projectNvd({cve:{...fake.cve,published:"2026-02-07T08:00:00.000"}}).published,"2026-02-07T08:00:00.000Z");
   assert.doesNotMatch(JSON.stringify(r),/untrusted instructions/);
   assert.equal(projectNvd({cve:{...fake.cve,vulnStatus:"Rejected"}}),undefined);
+});
+
+test("daily NVD updates extend coverage only when the snapshots overlap",()=>{
+  const now=Date.parse("2026-02-08T12:00:00Z");
+  const prior={from:now-60*hour,to:now-24*hour,complete:true,entries:[
+    {id:"CVE-2026-1234",published:new Date(now-48*hour).toISOString()},
+  ]};
+  const current={from:now-36*hour,to:now,total:1,complete:true,entries:[
+    {id:"CVE-2026-9876",published:new Date(now-12*hour).toISOString()},
+  ]};
+  assert.equal(mergeNvd(prior,current).from,prior.from);
+  assert.equal(mergeNvd(prior,current).entries.length,2);
+  assert.equal(mergeNvd({...prior,to:now-38*hour},current).from,current.from);
+  assert.equal(mergeNvd({...prior,complete:false},current).from,current.from);
 });
 
 test("resource calculations handle multi-core use and discard reboot or service-reset deltas", () => {

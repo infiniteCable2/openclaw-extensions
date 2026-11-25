@@ -30,7 +30,9 @@ configuration offers it. Kernel matching uses the active reported Debian
 build, when the corresponding installed package can be identified.
 
 [NVD](https://nvd.nist.gov/developers/vulnerabilities) supplies the recent
-publication timeline and CVSS. [CISA KEV](https://github.com/cisagov/kev-data)
+publication timeline and CVSS. Each daily pull overlaps the preceding pull,
+so a rolling seven-day history grows from the first 36-hour snapshot.
+[CISA KEV](https://github.com/cisagov/kev-data)
 supplies known exploitation, with its own addition date. The
 [Debian Security Tracker](https://security-tracker.debian.org/tracker/) is the
 authority for Debian package fixes. Public feed requests carry time ranges

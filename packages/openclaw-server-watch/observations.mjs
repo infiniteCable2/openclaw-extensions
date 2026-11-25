@@ -128,7 +128,7 @@ async function renewal(target, command, optional) {
   if (!renewalTimer && !renewalUnit) return;
   async function properties(unit, keys) {
     if (!unit) return;
-    const row = await optional(() => command("systemctl",["show","--no-pager",...keys.map(x=>"-p"+x),"--",unit]));
+    const row = await optional(() => command("env",["TZ=UTC","systemctl","show","--no-pager",...keys.map(x=>"-p"+x),"--",unit]));
     if (!row) return;
     return Object.fromEntries(row.split("\n").filter(l=>l.includes("=")).map(l=>l.split(/=(.*)/s,2)));
   }

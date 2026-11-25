@@ -5,7 +5,7 @@ import { isAbsolute, join } from "node:path";
 import { release, version } from "node:os";
 import { openStore, snapshot, putSnapshot, putSample, minute } from "./store.mjs";
 import { intervals } from "./metrics.mjs";
-import { sourceUrls, downloadJson, projectKev, fetchNvd, packageRows, correlateDebian } from "./advisories.mjs";
+import { sourceUrls, downloadJson, projectKev, fetchNvd, mergeNvd, packageRows, correlateDebian } from "./advisories.mjs";
 import { collectObservations } from "./observations.mjs";
 
 const exec = promisify(execFile);
@@ -214,7 +214,7 @@ export async function refreshFeeds(c, now = Date.now()) {
             ...(host.nvidia ? {runningNvidiaDriverVersion:host.nvidia} : {}) } };
       }),
       remember(db,"kev",now,async () => projectKev(await downloadJson(sourceUrls.kev,8*1024*1024))),
-      remember(db,"nvd",now,() => fetchNvd(now)),
+      remember(db,"nvd",now,async () => mergeNvd(snapshot(db,"nvd")?.data,await fetchNvd(now))),
     ]);
     putSnapshot(db,"feedHealth",now,{debian,kev,nvd});
     if ([debian,kev,nvd].every(x=>x.status!=="ok")) throw new Error("all_feeds_unavailable");
