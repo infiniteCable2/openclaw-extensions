@@ -114,9 +114,9 @@ const failureMessages = {
   device_assignment_invalid:
     "The charger assignment is incomplete or ambiguous. Each charger on a shared node needs its own approved device key.",
   device_private_turn_required: "Read the charger during an active private assistant voice turn.",
-  device_offline: "The paired device for this charger is offline.",
+  device_offline: "The assigned node is offline. The charger could not be contacted.",
   device_command_unavailable:
-    "The paired device currently offers no charger status command. Check the network feature, saved Wi-Fi and location permission in Element.",
+    "The assigned node is online but its charger status command is unavailable. The charger was not contacted. Check the network feature, saved Wi-Fi and location permission in Element.",
   device_dispatch_failed: "The gateway could not hand off or complete the charger read.",
   device_dispatch_unconfirmed:
     "The gateway handed off the read and could not confirm an Android result.",
@@ -164,8 +164,19 @@ const failureMessages = {
 } as const;
 
 type FailureCode = keyof typeof failureMessages;
-const failure = (code: FailureCode) =>
-  jsonResult({ ok: false, error: { code, message: failureMessages[code] } });
+function failure(code: FailureCode) {
+  const nodeReachability = code === "device_offline"
+    ? "offline"
+    : code === "device_command_unavailable" || code === "device_history_command_unavailable" ||
+      code === "device_stop_unavailable" || code.startsWith("device_android_")
+      ? "online"
+      : undefined;
+  return jsonResult({
+    ok: false,
+    error: { code, message: failureMessages[code] },
+    ...(nodeReachability && { nodeReachability, deviceReachability: "unknown" }),
+  });
+}
 
 const androidFailures = new Map<string, FailureCode>([
   ["GO_E_WLAN_APPROVAL_REQUIRED", "device_android_permission_required"],
@@ -517,6 +528,8 @@ export default definePluginEntry({
                   return jsonResult({
                     ok: true,
                     device,
+                    nodeReachability: "online",
+                    deviceReachability: "online",
                     ...(input.section ? { section } : {}),
                     ...status,
                   });

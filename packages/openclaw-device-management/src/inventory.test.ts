@@ -69,7 +69,13 @@ describe("effective device inventory", () => {
       ...params,
       nodes: new Map([["node", { nodeId: "node", connected: true, invocableCommands: [] }]]),
     };
-    expect(projectInventoryDevice(revoked)).toMatchObject({ capabilities: [], tools: {} });
+    expect(projectInventoryDevice(revoked)).toMatchObject({
+      tools: { status: "echo_status", control: "echo_control" },
+      nodeReachability: "online",
+      deviceReachability: "unknown",
+      availability: { reason: "node_command_not_available" },
+    });
+    expect(projectInventoryDevice(revoked)).not.toHaveProperty("commands");
   });
 
   it("distinguishes node reachability, native commands and turn tools without exposing unavailable commands", () => {
@@ -85,11 +91,22 @@ describe("effective device inventory", () => {
     for (const [input, reason] of cases) {
       const view = projectInventoryDevice(input);
       expect(view).toMatchObject({ tools: {}, capabilities: [], availability: { status: "unavailable", reason } });
-      if (reason === "private_session_required") expect(view).not.toHaveProperty("connected");
+      if (reason === "private_session_required") expect(view).not.toHaveProperty("nodeReachability");
       expect(view).not.toHaveProperty("commands");
       expect(view).not.toHaveProperty("capabilityDiagnostics");
     }
     expect(projectInventoryDevice(params)).not.toHaveProperty("availability");
+    const offline = projectInventoryDevice({
+      ...params,
+      nodes: new Map([["node", { nodeId: "node", connected: false }]]),
+    });
+    expect(offline).toMatchObject({
+      tools: { status: "echo_status", control: "echo_control" },
+      deviceReachability: "unknown",
+      nodeReachability: "offline",
+      availability: { reason: "device_offline" },
+    });
+    expect(offline).not.toHaveProperty("connected");
     expect(projectInventoryDevice({ ...noTool, context: { ...context, agentId: "unassigned" } })).not.toHaveProperty("availability");
   });
 

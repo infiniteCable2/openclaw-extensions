@@ -188,12 +188,13 @@ describe("managed go-e charger", () => {
       devices: [
         {
           id: chargerId,
-          capabilities: ["charging_status", "grid_status", "device_status", "charging_history"],
-          permissions: ["read"],
+          capabilities: ["charging_status", "grid_status", "device_status", "charging_history", "charging_stop"],
+          permissions: ["read", "control"],
+          commands: [v2Command, historyCommand],
+          tools: { control: "goe_stop" },
         },
       ],
     });
-    expect(JSON.stringify(revoked)).not.toContain("goe_stop");
     expect(gateway.call).not.toHaveBeenCalled();
   });
 
@@ -425,6 +426,8 @@ describe("managed go-e charger", () => {
       ok: true,
       device: chargerId,
       section: "device",
+      nodeReachability: "online",
+      deviceReachability: "online",
       reachable: true,
       model: "go-eCharger",
       firmwareVersion: "059.4",
@@ -569,6 +572,8 @@ describe("managed go-e charger", () => {
     expect(result.details).toEqual({
       ok: true,
       device: chargerId,
+      nodeReachability: "online",
+      deviceReachability: "online",
       chargingState: "idle",
       chargingAllowed: false,
       allowedCurrentAmps: 0,
@@ -587,7 +592,7 @@ describe("managed go-e charger", () => {
     );
   });
 
-  it("keeps the assigned name visible and hides functions when the Node, turn or tool does not qualify", async () => {
+  it("keeps authorized tools visible through node outages and hides them when the turn lacks authority", async () => {
     const f = fixture();
     const inventory = f.inventoryFactory.create(f.context)!;
     const read = (tool: AnyAgentTool) => tool.execute("inventory", { device: chargerId });
@@ -600,9 +605,15 @@ describe("managed go-e charger", () => {
     f.list.mockResolvedValueOnce({
       nodes: [{ nodeId, connected: false, invocableCommands: [command] }],
     });
-    expect((await read(inventory)).details).toMatchObject(noFunctions);
+    expect((await read(inventory)).details).toMatchObject({
+      ok: true,
+      devices: [{ tools: { status: "goe_status" }, nodeReachability: "offline", deviceReachability: "unknown" }],
+    });
     f.list.mockResolvedValueOnce({ nodes: [{ nodeId, connected: true, invocableCommands: [] }] });
-    expect((await read(inventory)).details).toMatchObject(noFunctions);
+    expect((await read(inventory)).details).toMatchObject({
+      ok: true,
+      devices: [{ tools: { status: "goe_status" }, nodeReachability: "online", deviceReachability: "unknown" }],
+    });
 
     const otherProfile = f.inventoryFactory.create({
       ...f.context,
@@ -632,10 +643,14 @@ describe("managed go-e charger", () => {
     f.list.mockResolvedValueOnce({ nodes: [] });
     expect((await read({ device: chargerId })).details).toMatchObject({
       error: { code: "device_offline" },
+      nodeReachability: "offline",
+      deviceReachability: "unknown",
     });
     f.list.mockResolvedValueOnce({ nodes: [{ nodeId, connected: true, invocableCommands: [] }] });
     expect((await read({ device: chargerId })).details).toMatchObject({
       error: { code: "device_command_unavailable" },
+      nodeReachability: "online",
+      deviceReachability: "unknown",
     });
     expect(gateway.call).not.toHaveBeenCalled();
 
@@ -677,6 +692,8 @@ describe("managed go-e charger", () => {
     expect((await tool.execute("automatic", {})).details).toEqual({
       ok: true,
       device: chargerId,
+      nodeReachability: "online",
+      deviceReachability: "online",
       chargingState: "idle",
     });
     expect(gateway.call.mock.calls[0]?.[2]).toMatchObject({ nodeId, command, params: {} });
@@ -743,11 +760,15 @@ describe("managed go-e charger", () => {
     expect((await status.execute("first", { device: chargerId })).details).toEqual({
       ok: true,
       device: chargerId,
+      nodeReachability: "online",
+      deviceReachability: "online",
       chargingState: "idle",
     });
     expect((await status.execute("second", { device: f.secondId })).details).toEqual({
       ok: true,
       device: f.secondId,
+      nodeReachability: "online",
+      deviceReachability: "online",
       chargingState: "charging",
     });
     expect(
@@ -976,6 +997,8 @@ describe("managed go-e charger", () => {
     const result = await tool.execute("classified_android_diagnostic", {});
     expect(result.details).toEqual({
       ok: false,
+      nodeReachability: "online",
+      deviceReachability: "unknown",
       error: {
         code,
         message,

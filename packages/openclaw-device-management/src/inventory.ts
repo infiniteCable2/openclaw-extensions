@@ -133,13 +133,11 @@ export function projectInventoryDevice(params: {
         visibleRoles.add(role);
         continue;
       }
-      const allowed = rule.filter(
-        (command) => boundCommands.has(command) && nativeCommands.has(command),
-      );
-      if (allowed.length) {
+      const assignedCommands = rule.filter((command) => boundCommands.has(command));
+      if (scopeMatches && assignedCommands.length) {
         available = true;
         visibleRoles.add(role);
-        commands.push(...allowed);
+        commands.push(...assignedCommands.filter((command) => nativeCommands.has(command)));
       }
     }
     return {
@@ -166,9 +164,9 @@ export function projectInventoryDevice(params: {
     };
   });
 
-  // Explain a completely empty tool list without disclosing unavailable tools or widening grants.
+  // A transport outage must not remove authorized tools from the turn's inventory.
   const unavailableReason = () => {
-    if (!grantedRoles.length || visibleRoles.size) return undefined;
+    if (!grantedRoles.length) return undefined;
     const grantedRules = device.capabilities.flatMap((id) =>
       grantedRoles.map(([role]) => device.capabilityAccess?.get(id)?.[role]),
     );
@@ -184,9 +182,10 @@ export function projectInventoryDevice(params: {
         return "node_command_not_available";
       }
     }
-    return "tool_not_callable_in_turn";
+    return visibleRoles.size ? undefined : "tool_not_callable_in_turn";
   };
   const reason = unavailableReason();
+  const nodeReachability = node?.connected === true ? "online" : node?.connected === false ? "offline" : "unknown";
 
   return {
     id: device.id,
@@ -204,7 +203,8 @@ export function projectInventoryDevice(params: {
           .map(([role]) => deviceToolPermissions[role]),
       ),
     ],
-    ...(node && { connected: node.connected === true }),
+    ...(usesNode && { deviceReachability: "unknown" as const }),
+    ...(scopeMatches && { nodeReachability }),
     ...(reason && { availability: { status: "unavailable" as const, reason } }),
     ...(details.some(({ commands }) => commands?.length) && {
       commands: [...new Set(details.flatMap(({ commands }) => commands ?? []))],
