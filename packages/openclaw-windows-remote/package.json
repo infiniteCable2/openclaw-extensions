@@ -1,0 +1,28 @@
+{
+  "name": "@infinitecable2/openclaw-windows-remote",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Attended Windows-MCP access for assigned computers",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["device-provider.json", "dist", "openclaw.plugin.json", "pair.py", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {"openclaw": ">=2026.11.1"},
+  "dependencies": {"@infinitecable2/openclaw-device-management": "workspace:*"},
+  "devDependencies": {
+    "@types/node": "26.3.0",
+    "openclaw": "link:../../../openclaw",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "compat": {"pluginApi": ">=2026.11.1", "minGatewayVersion": ">=2026.11.1"},
+    "build": {"openclawVersion": "2026.11.1", "pluginSdkVersion": "2026.11.1"}
+  }
+}

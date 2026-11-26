@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "provider": "windows-remote",
+  "capabilities": ["attended_status", "desktop_screenshot", "desktop_input"],
+  "capabilityAccess": {
+    "attended_status": {"status": true},
+    "desktop_screenshot": {"observe": true},
+    "desktop_input": {"control": true}
+  },
+  "tools": {
+    "status": "windows_remote_status",
+    "observe": "windows_remote_observe",
+    "control": "windows_remote_control"
+  }
+}
