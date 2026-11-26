@@ -88,6 +88,10 @@ describe("Windows screenshot observations", () => {
 
 it("rechecks an attended frame before issuing input to Windows", async () => {
   const device = "example_computer";
+  const binding = {
+    id: device, host: "192.168.50.20", port: 8000, profileId: "example_owner",
+    channels: undefined as string[] | undefined,
+  };
   const config = {
     plugins: {
       entries: {
@@ -102,7 +106,7 @@ it("rechecks an attended frame before issuing input to Windows", async () => {
         },
         "windows-remote": {
           config: {
-            devices: [{ id: device, host: "192.168.50.20", port: 8000, profileId: "example_owner", channels: ["matrix"] }],
+            devices: [binding],
           },
         },
       },
@@ -114,10 +118,20 @@ it("rechecks an attended frame before issuing input to Windows", async () => {
       throw new Error("Expected a named tool factory");
     }
     const context = {
-      agentId: "example_agent", sessionKey: "example-session", messageChannel: "matrix",
+      agentId: "example_agent", sessionKey: "example-session", messageChannel: "webchat",
       isPrivateRequesterProfile: (profile: string) => profile === "example_owner",
       assertInvocationCurrent: () => {},
     };
+    expect(entry({ ...context, messageChannel: "matrix" })).toBeDefined();
+    expect(entry({ ...context, messageChannel: undefined })).toBeUndefined();
+    expect(entry({ ...context, isPrivateRequesterProfile: () => false })).toBeUndefined();
+    binding.channels = ["matrix"];
+    try {
+      expect(entry(context)).toBeUndefined();
+      expect(entry({ ...context, messageChannel: "matrix" })).toBeDefined();
+    } finally {
+      binding.channels = undefined;
+    }
     const tool = entry(context);
     if (!tool || Array.isArray(tool)) throw new Error("Expected one authorized tool");
     registered.set(options.name, tool);

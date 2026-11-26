@@ -21,7 +21,7 @@
         "items": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["id", "host", "port", "profileId", "channels"],
+          "required": ["id", "host", "port", "profileId"],
           "properties": {
             "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
             "host": {"type": "string", "format": "ipv4"},

@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { isIPv4 } from "node:net";
 import {
-  assertDeviceGrant, authorizedDevices, DevicePolicyError, registryFromOpenClawConfig,
+  assertDeviceGrant, authorizedDevices, DevicePolicyError, matchesDeviceBinding, registryFromOpenClawConfig,
+  type DeviceBindingScope,
 } from "@infinitecable2/openclaw-device-management/policy";
 import type { AnyAgentTool, OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/plugin-entry";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
@@ -103,15 +104,15 @@ function routeFor(config: unknown, assigned: string) {
   if (!Array.isArray(devices) || !devices.length || devices.length > 16) throw bad();
   const seen = new Set<string>();
   const endpoints = new Set<string>();
-  let result: { id: string; host: string; port: number; profileId: string; channels: string[] } | undefined;
+  let result: ({ id: string; host: string; port: number } & DeviceBindingScope) | undefined;
   for (const row of devices) {
     const { id: key, host, port, profileId, channels } = object(row);
     if (typeof key !== "string" || !id.test(key) || seen.has(key) || !privateIpv4(host) ||
         typeof port !== "number" || !Number.isInteger(port) || port < 1024 || port > 65535 ||
         typeof profileId !== "string" || !id.test(profileId) ||
-        !Array.isArray(channels) || !channels.length || channels.length > 8 ||
-        channels.some((channel: unknown) => typeof channel !== "string" || !id.test(channel)) ||
-        new Set(channels).size !== channels.length ||
+        (channels !== undefined && (!Array.isArray(channels) || !channels.length || channels.length > 8 ||
+          channels.some((channel: unknown) => typeof channel !== "string" || !id.test(channel)) ||
+          new Set(channels).size !== channels.length)) ||
         endpoints.has(`${host}:${port}`)) throw bad();
     seen.add(key);
     endpoints.add(`${host}:${port}`);
@@ -146,9 +147,8 @@ function frameHash(png: string): string {
   return createHash("sha256").update(png).digest("hex");
 }
 
-function matchesAssignment(context: VerifiedContext, route: { profileId: string; channels: string[] }): boolean {
-  return typeof context.messageChannel === "string" && route.channels.includes(context.messageChannel) &&
-    context.isPrivateRequesterProfile?.(route.profileId) === true;
+function matchesAssignment(context: VerifiedContext, route: DeviceBindingScope): boolean {
+  return !!context.messageChannel && matchesDeviceBinding(context, route);
 }
 
 function inputTarget(args: Record<string, unknown>) {

@@ -1,6 +1,6 @@
 {
   "name": "@infinitecable2/openclaw-windows-remote",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Attended Windows-MCP access for assigned computers",
   "type": "module",

@@ -4,10 +4,11 @@ The provider exposes one assigned computer through the existing device registry.
 The initial route uses a fixed private IPv4 address. Pairing authenticates the
 computer independently of that address using the Windows-MCP access code.
 
-The device requires a native agent grant and a host-verified private requester
-on an explicitly configured channel. Calls recheck that authority across the
-network boundary. The operator at the computer controls input through the
-Windows-MCP panel. A paused session can still return a screenshot.
+The device requires a native agent grant and a host-verified private requester.
+Any channel that can verify the assigned profile can offer the tool. Set
+`channels` on a route to limit it to a specific list. Calls recheck the
+authority across the network boundary. The operator at the computer controls
+input through the Windows-MCP panel. A paused session can still return a screenshot.
 
 Register provider `windows-remote` in device-management with its actual package
 directory. Register a computer with the same ID as the route. Grant `read`,
