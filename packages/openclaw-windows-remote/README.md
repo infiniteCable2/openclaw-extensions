@@ -55,9 +55,10 @@ the resulting `libcrypto.so` and the BoringSSL license alongside `pair.py`.
   reads the attended session’s state.
 - `windows_remote_observe` returns accessibility elements by default. Request
   a bounded primary-display PNG when Windows does not expose useful elements.
-- `windows_remote_control` sends one explicitly selected mouse action or
-  navigation shortcut, or disconnects the associated session. For clicks
-  prefer a fresh accessibility element number over screenshot coordinates.
+- `windows_remote_control` clicks, scrolls, enters plain text, presses a single
+  key or a named shortcut, or disconnects the associated session. For clicks
+  and text entry, use a fresh accessibility element number when available.
+  To submit a field after typing, send a separate Enter key if requested.
 
 Keep the immutable provider release and its device-management runtime
 dependency together. Run the package check, test and build before activation.

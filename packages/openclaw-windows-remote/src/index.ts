@@ -16,7 +16,18 @@ const shortcuts = {
   start_menu: "win", explorer: "win+e", close_window: "alt+f4", next_tab: "ctrl+tab",
   tab: "tab", back_tab: "shift+tab", enter: "enter", escape: "esc", up: "up",
   down: "down", left: "left", right: "right",
+  next_window: "alt+tab", previous_tab: "ctrl+shift+tab", address_bar: "ctrl+l",
+  find: "ctrl+f", copy: "ctrl+c", cut: "ctrl+x", paste: "ctrl+v", undo: "ctrl+z",
+  redo: "ctrl+y", select_all: "ctrl+a", save: "ctrl+s", close_tab: "ctrl+w",
 };
+const singleKeys = [
+  "enter", "esc", "tab", "space", "backspace", "delete", "insert", "home", "end",
+  "pageup", "pagedown", "up", "down", "left", "right",
+  ..."abcdefghijklmnopqrstuvwxyz0123456789", ...Array.from({ length: 12 }, (_, index) => `f${index + 1}`),
+];
+const keyNames = new Set(singleKeys);
+const caretPositions = ["start", "idle", "end"] as const;
+const textLimit = 1024;
 const point = { type: "integer", minimum: -32768, maximum: 32767 };
 const tools = [
   {
@@ -37,13 +48,17 @@ const tools = [
   },
   {
     name: "windows_remote_control", label: "Windows desktop input", permission: "control",
-    description: "Perform one requested attended input or disconnect. The operator at the PC must allow input. For clicks, inspect Windows accessibility elements first and pass the current element number. Use screenshot coordinates only when Windows exposes no suitable element. Reinspect after each action.",
+    description: "Perform one requested attended input or disconnect. The PC operator must allow input. For click and type, inspect the Windows accessibility elements first and pass the current element number. Use screenshot coordinates only when no suitable element is exposed. Use key for a single key and shortcut for a named combination. Text entry never submits the field. Reinspect after each action.",
     parameters: {
       type: "object", additionalProperties: false, required: ["device", "action"],
       properties: {
         device: deviceProperty,
-        action: { type: "string", enum: ["click", "shortcut", "scroll", "disconnect"] },
+        action: { type: "string", enum: ["click", "type", "key", "shortcut", "scroll", "disconnect"] },
         x: point, y: point, element: { type: "integer", minimum: 0, maximum: 65535 },
+        text: { type: "string", maxLength: textLimit, description: "Plain text to enter in the selected field." },
+        clear: { type: "boolean", description: "Clear the selected field before entering text." },
+        caret: { type: "string", enum: caretPositions },
+        key: { type: "string", enum: singleKeys },
         button: { type: "string", enum: ["left", "right"] },
         clicks: { type: "integer", minimum: 1, maximum: 2 },
         shortcut: { type: "string", enum: Object.keys(shortcuts) },
@@ -109,8 +124,20 @@ function matchesAssignment(context: VerifiedContext, route: { profileId: string;
     context.isPrivateRequesterProfile?.(route.profileId) === true;
 }
 
+function inputTarget(args: Record<string, unknown>) {
+  if (args.element === undefined) {
+    return { loc: [integer(args.x, -32768, 32767), integer(args.y, -32768, 32767)] };
+  }
+  if (args.x !== undefined || args.y !== undefined) throw invalid();
+  return { label: integer(args.element, 0, 65535) };
+}
+
 export function inputPlan(args: Record<string, unknown>) {
   switch (args.action) {
+    case "key": {
+      if (typeof args.key !== "string" || !keyNames.has(args.key)) throw invalid();
+      return { name: "Shortcut", arguments: { shortcut: args.key } };
+    }
     case "shortcut": {
       if (typeof args.shortcut !== "string" || !Object.hasOwn(shortcuts, args.shortcut)) throw invalid();
       return { name: "Shortcut", arguments: { shortcut: shortcuts[args.shortcut as keyof typeof shortcuts] } };
@@ -118,13 +145,19 @@ export function inputPlan(args: Record<string, unknown>) {
     case "click": {
       const button = args.button ?? "left";
       if (button !== "left" && button !== "right") throw invalid();
-      const target = args.element === undefined
-        ? { loc: [integer(args.x, -32768, 32767), integer(args.y, -32768, 32767)] }
-        : { label: integer(args.element, 0, 65535) };
-      if ("label" in target && (args.x !== undefined || args.y !== undefined)) throw invalid();
       return {
         name: "Click",
-        arguments: { ...target, button, clicks: integer(args.clicks ?? 1, 1, 2) },
+        arguments: { ...inputTarget(args), button, clicks: integer(args.clicks ?? 1, 1, 2) },
+      };
+    }
+    case "type": {
+      const { text, clear = false, caret = "idle" } = args;
+      if (typeof text !== "string" || text.length > textLimit || /[\x00-\x1f\x7f]/u.test(text) ||
+          typeof clear !== "boolean" || (!text && !clear) ||
+          (caret !== "start" && caret !== "idle" && caret !== "end")) throw invalid();
+      return {
+        name: "Type",
+        arguments: { ...inputTarget(args), text, clear, caret_position: caret, press_enter: false },
       };
     }
     case "scroll":
@@ -153,10 +186,10 @@ const blocked = new Map([
   ["USER_CONTROL", "The local user is using the desktop. Do not retry without a new request."],
 ]);
 
-function requireResult(value: Record<string, unknown>): Record<string, unknown>[] {
+function requireResult(value: Record<string, unknown>, inputText?: string): Record<string, unknown>[] {
   const content = Array.isArray(value.content) ? value.content.map(object) : [];
   const reason = content.find((entry) => entry.type === "text" && typeof entry.text === "string")?.text;
-  if (typeof reason === "string") {
+  if (typeof reason === "string" && !(inputText !== undefined && reason.startsWith(`Typed ${inputText} at (`))) {
     for (const [code, message] of blocked) {
       if (reason.includes(code)) throw new RemoteError(code.toLowerCase(), message);
     }
@@ -201,7 +234,10 @@ function factory(api: OpenClawPluginApi, context: VerifiedContext, tool: Tool): 
         if (busy.has(device)) throw new RemoteError("device_busy", "An assistance request is already in progress for this computer.");
         busy.add(device);
         locked = true;
-        const signal = externalSignal ? AbortSignal.any([externalSignal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000);
+        const typed = input?.name === "Type" && typeof args.text === "string" ? args.text : undefined;
+        // Windows-MCP types braces character by character. Allow time for that path.
+        const deadline = AbortSignal.timeout(15_000 + (typed?.match(/[{}]/u) ? typed.length * 100 : 0));
+        const signal = externalSignal ? AbortSignal.any([externalSignal, deadline]) : deadline;
         const owner = JSON.stringify([agentId, sessionKey, route.profileId, context.messageChannel]);
         let entry = sessions.get(device);
         if (entry && entry.owner !== owner) throw new RemoteError("device_session_in_use", "This computer already has an assistance session in its private conversation.");
@@ -238,7 +274,7 @@ function factory(api: OpenClawPluginApi, context: VerifiedContext, tool: Tool): 
         const params = input?.arguments ?? (observeMode === "elements" ?
           { use_vision: false, use_ui_tree: true, display: [0] } :
           observeMode === "screenshot" ? { display: [0] } : {});
-        if (input?.name === "Click" && typeof args.element === "number" &&
+        if (input && "label" in input.arguments && typeof args.element === "number" &&
             (!entry.elements?.ids.has(args.element) || entry.elements.until <= Date.now())) {
           throw new RemoteError("device_elements_stale", "Read the current Windows accessibility elements before using an element number.");
         }
@@ -252,7 +288,7 @@ function factory(api: OpenClawPluginApi, context: VerifiedContext, tool: Tool): 
           throw error;
         }
         authorize();
-        const content = requireResult(result);
+        const content = requireResult(result, typed);
         if (observeMode === "elements") {
           const snippets = content.filter((item) => item.type === "text" && typeof item.text === "string")
             .map((item) => item.text as string);
@@ -294,6 +330,16 @@ function factory(api: OpenClawPluginApi, context: VerifiedContext, tool: Tool): 
             ...(typeof state.state === "string" && recognized.includes(state.state) && { state: state.state }),
             enabled: state.enabled === true,
           });
+        }
+        if (typed !== undefined) {
+          const resultText = content.find((item) => item.type === "text")?.text;
+          const prefix = `Typed ${typed} at (`;
+          if (typeof resultText === "string" && resultText.startsWith(prefix) &&
+              /\bWarning:/.test(resultText.slice(prefix.length))) {
+            return jsonResult({ ok: false, device, error: {
+              code: "device_text_unverified", message: "Windows reported a problem with the field. Inspect the desktop before trying again.",
+            } });
+          }
         }
         return jsonResult({ ok: true, device, action: args.action });
       } catch (error) {

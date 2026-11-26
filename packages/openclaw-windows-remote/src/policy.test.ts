@@ -34,4 +34,23 @@ describe("assigned Windows access", () => {
     expect(() => pairingCode("01234567")).toThrow();
     expect(() => pairingCode(123456789)).toThrow();
   });
+
+  it("types through the selected field without submitting and sends explicit keystrokes separately", () => {
+    expect(inputPlan({ action: "type", element: 37, text: "Grüße (A+B)", clear: true })).toEqual({
+      name: "Type",
+      arguments: { label: 37, text: "Grüße (A+B)", clear: true, caret_position: "idle", press_enter: false },
+    });
+    expect(inputPlan({ action: "type", x: 120, y: 50, text: "", clear: true }).arguments).toMatchObject({
+      loc: [120, 50], clear: true, press_enter: false,
+    });
+    expect(inputPlan({ action: "key", key: "enter" })).toEqual({ name: "Shortcut", arguments: { shortcut: "enter" } });
+    expect(inputPlan({ action: "shortcut", shortcut: "address_bar" })).toEqual({ name: "Shortcut", arguments: { shortcut: "ctrl+l" } });
+    for (const request of [
+      { action: "type", text: "text" },
+      { action: "type", element: 37, x: 120, y: 50, text: "text" },
+      { action: "type", element: 37, text: "text\n" },
+      { action: "type", element: 37, text: "a".repeat(1025) },
+      { action: "key", key: "ctrl+shift+escape" },
+    ]) expect(() => inputPlan(request)).toThrow();
+  });
 });
