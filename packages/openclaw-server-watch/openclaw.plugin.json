@@ -1,0 +1,79 @@
+{
+  "id": "server-watch",
+  "name": "Server Watch",
+  "description": "Read-only server monitoring for OpenClaw",
+  "version": "0.1.2",
+  "activation": {
+    "onStartup": false,
+    "onConfigPaths": [
+      "plugins.entries.server-watch.config"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+    "socket",
+      "agentId"
+    ],
+    "properties": {
+      "socket": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 104
+      },
+      "agentId": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+      }
+    }
+  },
+  "contracts": {
+    "tools": [
+      "server_health",
+      "server_connections",
+      "server_security_events",
+      "server_tls",
+      "server_resources",
+      "server_vulnerabilities",
+      "server_advisories"
+    ]
+  },
+  "toolMetadata": {
+    "server_health": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "server_connections": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "server_security_events": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "server_tls": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "server_resources": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "server_vulnerabilities": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    },
+    "server_advisories": {
+      "optional": true,
+      "replaySafe": true,
+      "sideEffecting": false
+    }
+  }
+}

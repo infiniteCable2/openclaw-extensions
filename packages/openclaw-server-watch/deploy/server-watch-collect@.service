@@ -1,0 +1,20 @@
+[Unit]
+Description=Collect read-only server observations (%i)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=server-watch
+UMask=0027
+ExecStart=/usr/bin/node /opt/openclaw-server-watch/run.mjs %i /etc/server-watch/collector.json
+TimeoutStartSec=145
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/server-watch

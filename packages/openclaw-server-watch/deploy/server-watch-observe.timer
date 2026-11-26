@@ -1,0 +1,10 @@
+[Unit]
+Description=Summarize host access and TLS state every ten minutes
+
+[Timer]
+OnCalendar=*-*-* *:0/10:20
+AccuracySec=10s
+Unit=server-watch-collect@observe.service
+
+[Install]
+WantedBy=timers.target

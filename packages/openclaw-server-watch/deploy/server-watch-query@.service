@@ -1,0 +1,20 @@
+[Unit]
+Description=Read-only Server Watch response for the local Gateway
+
+[Service]
+Type=oneshot
+User=server-watch-reader
+Group=server-watch
+ExecStart=/usr/bin/python3 -I /opt/openclaw-server-watch/query-peer.py /var/lib/server-watch/data.db
+StandardInput=socket
+StandardOutput=null
+StandardError=journal
+TimeoutStartSec=8
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX

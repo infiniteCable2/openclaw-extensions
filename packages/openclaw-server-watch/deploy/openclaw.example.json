@@ -1,0 +1,63 @@
+{
+  "tools": {
+    "sessions": {
+      "visibility": "agent"
+    },
+    "agentToAgent": {
+      "enabled": true,
+      "allow": [
+        "server-watch",
+        "example-personal"
+      ]
+    }
+  },
+  "agents": {
+    "entries": {
+      "server-watch": {
+        "workspace": "/srv/example/workspaces/server-watch",
+        "tools": {
+          "allow": [
+            "server_health",
+            "server_connections",
+            "server_security_events",
+            "server_tls",
+            "server_resources",
+            "server_vulnerabilities",
+            "server_advisories",
+            "sessions_send"
+          ],
+          "agentToAgent": {
+            "send": [
+              "example-personal"
+            ]
+          }
+        }
+      },
+      "example-personal": {
+        "tools": {
+          "agentToAgent": {
+            "send": [
+              "server-watch"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "plugins": {
+    "load": {
+      "paths": [
+        "/opt/openclaw-server-watch"
+      ]
+    },
+    "entries": {
+      "server-watch": {
+        "enabled": true,
+        "config": {
+          "agentId": "server-watch",
+          "socket": "/run/server-watch-query.sock"
+        }
+      }
+    }
+  }
+}

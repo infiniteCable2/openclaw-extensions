@@ -1,0 +1,39 @@
+{
+  "id": "windows-remote",
+  "name": "Windows Remote Assistance",
+  "description": "Attended Windows-MCP access for assigned computers in verified private conversations.",
+  "activation": {
+    "onStartup": false,
+    "onConfigPaths": ["plugins.entries.windows-remote.config", "plugins.entries.device-management.config"]
+  },
+  "contracts": {
+    "tools": ["windows_remote_status", "windows_remote_observe", "windows_remote_control"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["devices"],
+    "properties": {
+      "devices": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "host", "port", "profileId", "channels"],
+          "properties": {
+            "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
+            "host": {"type": "string", "format": "ipv4"},
+            "port": {"type": "integer", "minimum": 1024, "maximum": 65535},
+            "profileId": {"type": "string", "minLength": 1, "maxLength": 64},
+            "channels": {
+              "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
+              "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

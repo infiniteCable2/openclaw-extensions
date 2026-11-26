@@ -1,0 +1,14 @@
+[Unit]
+Description=Local read-only Server Watch query socket
+
+[Socket]
+ListenStream=/run/server-watch-query.sock
+Accept=yes
+SocketUser=root
+SocketGroup=openclaw
+SocketMode=0660
+MaxConnections=8
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

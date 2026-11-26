@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh public vulnerability sources and match local Debian packages
+
+[Timer]
+OnCalendar=*-*-* 19:35:00 Europe/Berlin
+Persistent=true
+AccuracySec=30s
+Unit=server-watch-collect@feeds.service
+
+[Install]
+WantedBy=timers.target
