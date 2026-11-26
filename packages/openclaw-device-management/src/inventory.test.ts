@@ -72,6 +72,27 @@ describe("effective device inventory", () => {
     expect(projectInventoryDevice(revoked)).toMatchObject({ capabilities: [], tools: {} });
   });
 
+  it("distinguishes node reachability, native commands and turn tools without exposing unavailable commands", () => {
+    const noTool = { ...params, isToolCallable: () => false };
+    const cases = [
+      [noTool, "tool_not_callable_in_turn"],
+      [{ ...noTool, nodes: new Map() }, "node_status_unavailable"],
+      [{ ...noTool, nodes: new Map([["node", { nodeId: "node", connected: false }]]) }, "device_offline"],
+      [{ ...noTool, nodes: new Map([["node", { nodeId: "node", connected: true, invocableCommands: [] }]]) }, "node_command_not_available"],
+      [{ ...noTool, context: { ...context, isPrivateRequesterProfile: () => false } }, "private_session_required"],
+      [{ ...noTool, providerConfig: {} }, "device_binding_unavailable"],
+    ] as const;
+    for (const [input, reason] of cases) {
+      const view = projectInventoryDevice(input);
+      expect(view).toMatchObject({ tools: {}, capabilities: [], availability: { status: "unavailable", reason } });
+      if (reason === "private_session_required") expect(view).not.toHaveProperty("connected");
+      expect(view).not.toHaveProperty("commands");
+      expect(view).not.toHaveProperty("capabilityDiagnostics");
+    }
+    expect(projectInventoryDevice(params)).not.toHaveProperty("availability");
+    expect(projectInventoryDevice({ ...noTool, context: { ...context, agentId: "unassigned" } })).not.toHaveProperty("availability");
+  });
+
   it("requires both a diagnostic grant and the private persona, without exposing forbidden commands as usable", () => {
     const config = { diagnosticViewers: [{ agentId, profileId }] };
     expect(canInspectDevicePermissions(config, context)).toBe(true);

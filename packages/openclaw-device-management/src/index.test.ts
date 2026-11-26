@@ -21,7 +21,7 @@ describe("device inventory plugin entry", () => {
     const authority = { agentId: "example_owner", assertInvocationCurrent: () => {} };
     const inventory = registrations[0]!.create(authority) as { execute: (id: string, params: unknown) => Promise<{ details: unknown }> };
     expect((await inventory.execute("call", {})).details).toMatchObject({
-      ok: true, devices: [{ id: "lamp", siteId: "home_site", kind: "light", capabilities: [], tools: {} }],
+      ok: true, devices: [{ id: "lamp", siteId: "home_site", kind: "light", capabilities: [], tools: {}, availability: { status: "unavailable", reason: "tool_not_callable_in_turn" } }],
     });
     expect(registrations[1]!.create(authority)).toBeUndefined();
     current = { plugins: { entries: { "device-management": { config: { ...registryConfig, devices: [{ ...registryConfig.devices[0], grants: { example_member: ["read", "control"] } }] } }, fritz: { config: { devices: [{ id: "lamp" }] } } } } };

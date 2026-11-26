@@ -93,10 +93,8 @@ export function projectInventoryDevice(params: {
   const { device, providerConfig, context, isToolCallable, nodes, diagnostic } = params;
   const grants = device.grants.get(context.agentId ?? "");
   const allRoles = Object.entries(device.tools) as Array<[DeviceToolRole, string]>;
-  const roles = allRoles.filter(
-    ([role, name]) =>
-      grants?.has(deviceToolPermissions[role]) && isToolCallable(device.provider, name),
-  );
+  const grantedRoles = allRoles.filter(([role]) => grants?.has(deviceToolPermissions[role]));
+  const roles = grantedRoles.filter(([, name]) => isToolCallable(device.provider, name));
   const callableRoles = new Set(roles.map(([role]) => role));
   const configured = record(providerConfig).devices;
   const row =
@@ -168,6 +166,28 @@ export function projectInventoryDevice(params: {
     };
   });
 
+  // Explain a completely empty tool list without disclosing unavailable tools or widening grants.
+  const unavailableReason = () => {
+    if (!grantedRoles.length || visibleRoles.size) return undefined;
+    const grantedRules = device.capabilities.flatMap((id) =>
+      grantedRoles.map(([role]) => device.capabilityAccess?.get(id)?.[role]),
+    );
+    const requiredCommands = grantedRules.flatMap((rule) => (rule === true ? [] : rule ?? []));
+    if (requiredCommands.length > 0 && !grantedRules.includes(true)) {
+      if (!binding) return "device_binding_unavailable";
+      if (!scopeMatches) return "private_session_required";
+      if (node?.connected === undefined) return "node_status_unavailable";
+      if (!node.connected) return "device_offline";
+      if (
+        !requiredCommands.some((command) => boundCommands.has(command) && nativeCommands.has(command))
+      ) {
+        return "node_command_not_available";
+      }
+    }
+    return "tool_not_callable_in_turn";
+  };
+  const reason = unavailableReason();
+
   return {
     id: device.id,
     name: device.name,
@@ -185,6 +205,7 @@ export function projectInventoryDevice(params: {
       ),
     ],
     ...(node && { connected: node.connected === true }),
+    ...(reason && { availability: { status: "unavailable" as const, reason } }),
     ...(details.some(({ commands }) => commands?.length) && {
       commands: [...new Set(details.flatMap(({ commands }) => commands ?? []))],
     }),
