@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Operator-only Windows-MCP access-code pairing. Never run through an agent tool."""
+"""Private Windows-MCP pairing subprocess, with a bounded stdin/stdout protocol."""
 
 import argparse
 import ctypes
@@ -8,14 +8,9 @@ import hmac
 import http.client
 import ipaddress
 import json
-import os
 import re
 import ssl
-import stat
 import sys
-import tempfile
-import time
-from getpass import getpass
 from pathlib import Path
 
 
@@ -104,50 +99,25 @@ def pair(host, port, code, crypto):
     return pem, derive(b"mcp-token").hex()
 
 
-def save_lease(path, lease):
-    if not path.is_absolute():
-        raise ValueError("The lease path must be absolute")
-    parent = path.parent.stat()
-    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid() or parent.st_mode & 0o077:
-        raise ValueError("Use a private pairing directory owned by the Gateway user")
-    handle, name = tempfile.mkstemp(prefix=".windows-remote-", dir=path.parent)
-    try:
-        with os.fdopen(handle, "w", encoding="ascii") as output:
-            json.dump(lease, output)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(name, path)
-    finally:
-        Path(name).unlink(missing_ok=True)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Pair an assigned Windows-MCP computer locally")
     parser.add_argument("--host", required=True, type=ipaddress.IPv4Address)
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--crypto-library", required=True, type=Path)
-    parser.add_argument("--lease-file", required=True, type=Path)
     args = parser.parse_args()
     if not any(args.host in network for network in PRIVATE) or not 1024 <= args.port <= 65535:
         parser.error("Use the assigned private LAN IPv4 address and port.")
-    if not sys.stdin.isatty():
-        parser.error("Run this command interactively so the access code is hidden.")
+    if sys.stdin.isatty() or sys.stdout.isatty():
+        parser.error("The pairing helper requires private pipes.")
     try:
         crypto = load_crypto(args.crypto_library)
-        code = getpass("Windows-MCP access code: ").replace(" ", "").replace("-", "")
+        code = sys.stdin.read(16).strip()
         if not re.fullmatch(r"[0-9]{9}", code):
             raise ValueError("Invalid access code")
         pem, token = pair(str(args.host), args.port, code, crypto)
-        save_lease(args.lease_file, {
-            "host": str(args.host),
-            "port": args.port,
-            "certificate": pem,
-            "token": token,
-            "expiresAt": int(time.time() * 1000) + 15 * 60_000,
-        })
     except (ValueError, OSError, http.client.HTTPException, AttributeError):
         parser.exit(1, "Pairing failed. Check the assigned endpoint, access code and local setup.\n")
-    print("Pairing ready. OpenClaw can connect from the assigned private conversation.")
+    json.dump({"certificate": pem, "token": token}, sys.stdout)
 
 
 if __name__ == "__main__":

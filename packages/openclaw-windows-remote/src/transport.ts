@@ -1,9 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { X509Certificate, createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { X509Certificate } from "node:crypto";
 import { request } from "node:https";
 import { checkServerIdentity } from "node:tls";
+import { fileURLToPath } from "node:url";
 
 const maxResponse = 12 * 1024 * 1024;
 const maxLeaseMs = 15 * 60_000;
@@ -18,46 +18,64 @@ export class RemoteError extends Error {
 export type Endpoint = { host: string; port: number };
 export type Lease = Endpoint & { certificate: string; token: string; expiresAt: number };
 type Json = Record<string, unknown>;
-const leaseRequired = () => new RemoteError("pairing_required", "Start Windows-MCP on the assigned computer and pair a fresh local-access code through the operator helper.");
+export const leaseRequired = () => new RemoteError("pairing_required", "Ask the user for the fresh nine-digit access code displayed by Windows-MCP on this computer. Enter it in windows_remote_status in this private conversation.");
 const unavailable = () => new RemoteError("device_unavailable", "The assigned Windows-MCP connection could not be reached or verified.");
 
 export function object(value: unknown): Json {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 }
 
-export async function readLease(path: string, endpoint: Endpoint): Promise<Lease> {
-  try {
-    const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
-    try {
-      const stat = await file.stat();
-      if (!stat.isFile() || stat.size < 64 || stat.size > 8192 ||
-          (process.platform !== "win32" && ((stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.()))) {
-        throw leaseRequired();
-      }
-      const bytes = Buffer.alloc(8193);
-      const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
-      if (bytesRead !== stat.size) throw leaseRequired();
-      const input = object(JSON.parse(bytes.subarray(0, bytesRead).toString("utf8")));
-      const { certificate, token, expiresAt } = input;
-      const now = Date.now();
-      if (input.host !== endpoint.host || input.port !== endpoint.port ||
-          typeof certificate !== "string" || certificate.length > 4096 ||
-          typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token) ||
-          typeof expiresAt !== "number" || !Number.isSafeInteger(expiresAt) ||
-          expiresAt <= now || expiresAt > now + maxLeaseMs) throw leaseRequired();
-      const cert = new X509Certificate(certificate);
-      if (cert.checkIP(endpoint.host) !== endpoint.host) throw leaseRequired();
-      return { ...endpoint, certificate: cert.toString(), token, expiresAt };
-    } finally {
-      await file.close();
-    }
-  } catch {
-    throw leaseRequired();
-  }
+export function pairingCode(value: unknown): string {
+  const code = typeof value === "string" && value.length <= 20 ? value.replace(/[ -]/g, "") : "";
+  if (!/^[0-9]{9}$/.test(code)) throw new RemoteError("invalid_pairing_code", "A Windows-MCP access code has nine digits.");
+  return code;
 }
 
-export function leaseIdentity(lease: Lease): string {
-  return createHash("sha256").update(JSON.stringify(lease)).digest("hex");
+export async function pair(
+  endpoint: Endpoint, code: string, signal: AbortSignal, authorize: () => void,
+): Promise<Lease> {
+  signal.throwIfAborted();
+  authorize();
+  const helper = fileURLToPath(new URL("../pair.py", import.meta.url));
+  const crypto = fileURLToPath(new URL("../libcrypto.so", import.meta.url));
+  return new Promise((resolve, reject) => {
+    const failed = () => new RemoteError("pairing_failed", "The code was expired, incorrect, or the assigned PC was unavailable. Ask for a fresh code when it is ready.");
+    const child = spawn("/usr/bin/python3", [
+      "-I", "-B", helper, "--host", endpoint.host, "--port", String(endpoint.port), "--crypto-library", crypto,
+    ], { signal, env: { PATH: "/usr/bin:/bin" }, stdio: ["pipe", "pipe", "ignore"] });
+    const chunks: Buffer[] = [];
+    let length = 0;
+    child.stdout.on("data", (chunk: Buffer) => {
+      length += chunk.length;
+      if (length > 8192) {
+        child.kill();
+        reject(failed());
+      } else {
+        chunks.push(chunk);
+      }
+    });
+    child.stdin.on("error", () => reject(failed()));
+    child.on("error", () => reject(failed()));
+    child.on("close", (status) => {
+      if (status !== 0) {
+        reject(failed());
+        return;
+      }
+      try {
+        authorize();
+        signal.throwIfAborted();
+        const { certificate, token } = object(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        if (typeof certificate !== "string" || certificate.length > 4096 ||
+            typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw failed();
+        const cert = new X509Certificate(certificate);
+        if (cert.checkIP(endpoint.host) !== endpoint.host) throw failed();
+        resolve({ ...endpoint, certificate: cert.toString(), token, expiresAt: Date.now() + maxLeaseMs });
+      } catch (error) {
+        reject(error);
+      }
+    });
+    child.stdin.end(code + "\n");
+  });
 }
 
 type Reply = { session?: string; result?: Json };

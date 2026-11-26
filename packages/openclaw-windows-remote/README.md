@@ -23,8 +23,7 @@ identities.
       "host": "192.168.50.20",
       "port": 8000,
       "profileId": "example_owner",
-      "channels": ["matrix"],
-      "credentialFile": "/var/lib/openclaw/windows-remote/example_computer.json"
+      "channels": ["matrix"]
     }
   ]
 }
@@ -32,36 +31,33 @@ identities.
 
 ## Pairing
 
-On the computer, start Windows-MCP in **Heimnetz mit Zugangscode**. An operator
-runs `pair.py` in an interactive terminal as the Gateway’s runtime Unix user
-with that computer’s configured host, port and lease-file path. The operator
-enters the short-lived code at the hidden prompt. The code belongs in that
-prompt. The operator can then ask the agent to read the computer’s status in
-the assigned private conversation. Approve input on the Windows computer if
-the conversation needs to use it.
+Start Windows-MCP in **Heimnetz mit Zugangscode**. Ask the agent to connect
+in the assigned private conversation and give it the nine-digit code when
+asked. Approve input on the Windows computer when needed. The extension
+passes the code to its pairing subprocess through stdin. The resulting
+session credential is kept in memory and stays out of tool responses.
 
-Use a private directory owned by the Gateway account for the pairing files.
-The helper writes a mode-0600 lease atomically. The certificate is authenticated
-by the SPAKE2 transcript and pinned through TLS during MCP. The lease permits
-up to 15 minutes of use. Session state is scoped to one device, agent and
-private conversation. Local Stop, a Gateway disconnection, or expiry require
-a fresh pairing. The tool never retries a desktop input automatically.
+The SPAKE2 transcript authenticates the certificate, which is pinned through
+TLS during MCP. The lease permits up to 15 minutes of use and is scoped to one
+device, agent and private conversation. Local Stop, a Gateway disconnection or
+expiry require a fresh pairing. The tool never retries an input automatically.
 
-The operator helper needs Python 3 and a trusted shared BoringSSL crypto
+The pairing helper needs Python 3 and a trusted shared BoringSSL crypto
 library with the native SPAKE2 interface. Use the same source release as the
 Windows package, BoringSSL `0.20261105.0` at
 `3dc4b63808921e914a3fb1fa61869abc3938781b`. Build the `crypto` target with
-`BUILD_SHARED_LIBS=ON`, `OPENSSL_NO_ASM=ON` and `BUILD_TESTING=OFF`. Pass
-the resulting absolute library path using `--crypto-library`. Use
-`--lease-file` for the matching operator-configured path. Retain the
-BoringSSL license.
+`BUILD_SHARED_LIBS=ON`, `OPENSSL_NO_ASM=ON` and `BUILD_TESTING=OFF`. Install
+the resulting `libcrypto.so` and the BoringSSL license alongside `pair.py`.
 
 ## Tool roles
 
-- `windows_remote_status` opens the attended session and reads its state.
-- `windows_remote_observe` returns a bounded primary-display PNG.
+- `windows_remote_status` accepts the access code when pairing is needed and
+  reads the attended session’s state.
+- `windows_remote_observe` returns accessibility elements by default. Request
+  a bounded primary-display PNG when Windows does not expose useful elements.
 - `windows_remote_control` sends one explicitly selected mouse action or
-  navigation shortcut, or disconnects the associated session.
+  navigation shortcut, or disconnects the associated session. For clicks
+  prefer a fresh accessibility element number over screenshot coordinates.
 
 Keep the immutable provider release and its device-management runtime
 dependency together. Run the package check, test and build before activation.

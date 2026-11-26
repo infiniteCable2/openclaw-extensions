@@ -6,7 +6,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["device-provider.json", "dist", "openclaw.plugin.json", "pair.py", "README.md"],
+  "files": ["device-provider.json", "dist", "openclaw.plugin.json", "pair.py", "libcrypto.so", "BoringSSL-LICENSE", "README.md"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json --noEmit",

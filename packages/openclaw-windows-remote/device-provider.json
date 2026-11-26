@@ -1,9 +1,10 @@
 {
   "version": 1,
   "provider": "windows-remote",
-  "capabilities": ["attended_status", "desktop_screenshot", "desktop_input"],
+  "capabilities": ["attended_status", "desktop_accessibility", "desktop_screenshot", "desktop_input"],
   "capabilityAccess": {
     "attended_status": {"status": true},
+    "desktop_accessibility": {"observe": true},
     "desktop_screenshot": {"observe": true},
     "desktop_input": {"control": true}
   },

@@ -21,7 +21,7 @@
         "items": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["id", "host", "port", "profileId", "channels", "credentialFile"],
+          "required": ["id", "host", "port", "profileId", "channels"],
           "properties": {
             "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"},
             "host": {"type": "string", "format": "ipv4"},
@@ -30,8 +30,7 @@
             "channels": {
               "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true,
               "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"}
-            },
-            "credentialFile": {"type": "string", "minLength": 1, "maxLength": 4096}
+            }
           }
         }
       }
