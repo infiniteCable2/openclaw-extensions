@@ -54,10 +54,18 @@ the resulting `libcrypto.so` and the BoringSSL license alongside `pair.py`.
 - `windows_remote_status` accepts the access code when pairing is needed and
   reads the attended session’s state.
 - `windows_remote_observe` returns accessibility elements by default. Request
-  a bounded primary-display PNG when Windows does not expose useful elements.
+  `frame` for image pixels and accessibility element locations from the same
+  capture, or `screenshot` when an image alone is enough. The response lists
+  the active displays. Pass a `display` index to select a monitor, or omit it
+  to capture display 0.
 - `windows_remote_control` clicks, scrolls, enters plain text, presses a single
   key or a named shortcut, or disconnects the associated session. For clicks
-  and text entry, use a fresh accessibility element number when available.
+  and text entry, use a fresh accessibility element number and its observation
+  ID when available. For an image fallback, use its observation ID and the
+  coordinates in the displayed image. The provider verifies the selected
+  monitor against the native capture region and sends the verified window
+  element's desktop point to Windows.
+  Reobserve if the window, element or image changed before input was sent.
   To submit a field after typing, send a separate Enter key if requested.
 
 Keep the immutable provider release and its device-management runtime
