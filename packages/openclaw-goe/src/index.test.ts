@@ -198,6 +198,20 @@ describe("managed go-e charger", () => {
     expect(gateway.call).not.toHaveBeenCalled();
   });
 
+  it("reports a legacy history assignment without guessing node reachability", async () => {
+    const f = fixture();
+    const status = f.factory.create(f.context)!;
+    const result = await status.execute("legacy_history", { device: chargerId, section: "history" });
+    expect(result.details).toMatchObject({
+      ok: false,
+      error: { code: "device_history_assignment_unsupported" },
+    });
+    expect(result.details).not.toHaveProperty("nodeReachability");
+    expect(result.details).not.toHaveProperty("deviceReachability");
+    expect(f.list).not.toHaveBeenCalled();
+    expect(gateway.call).not.toHaveBeenCalled();
+  });
+
   it("offers the dedicated history tool to readers and identifies missing history at the node", async () => {
     const f = sharedNodeFixture();
     const history = f.historyFactory.create(f.context)!;
@@ -205,6 +219,8 @@ describe("managed go-e charger", () => {
     expect(f.stopFactory.create(f.context)).toBeUndefined();
     expect((await history.execute("history", { device: chargerId })).details).toMatchObject({
       error: { code: "device_history_command_unavailable" },
+      nodeReachability: "online",
+      deviceReachability: "unknown",
     });
     expect(
       (await history.execute("history", { device: chargerId, from: "2026-11-01" })).details,
@@ -943,6 +959,12 @@ describe("managed go-e charger", () => {
     );
     const result = await tool.execute("classified_android_failure", {});
     expect(result.details).toMatchObject({ ok: false, error: { code } });
+    if (nodeCode === "GO_E_HTTP_TIMEOUT" || nodeCode === "GO_E_HTTP_UNREACHABLE") {
+      expect(result.details).toMatchObject({
+        nodeReachability: "online",
+        deviceReachability: "unreachable",
+      });
+    }
     expect(JSON.stringify(result)).not.toContain(sensitive);
   });
 

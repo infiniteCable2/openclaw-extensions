@@ -152,6 +152,8 @@ const failureMessages = {
   device_android_read_failed: "The Android device reported that it could not read the charger.",
   device_reply_invalid: "The paired device did not return a valid charging status.",
   device_metrics_unavailable: "The paired node did not report measurements for this section.",
+  device_history_assignment_unsupported:
+    "This charger assignment uses the legacy status route and does not support history.",
   device_history_command_unavailable:
     "The assigned node does not currently offer go-e charging history.",
   device_history_report_unavailable: "The configured charging-session report could not be read.",
@@ -171,10 +173,14 @@ function failure(code: FailureCode) {
       code === "device_stop_unavailable" || code.startsWith("device_android_")
       ? "online"
       : undefined;
+  const deviceReachability =
+    code === "device_android_http_timeout" || code === "device_android_http_unreachable"
+      ? "unreachable"
+      : "unknown";
   return jsonResult({
     ok: false,
     error: { code, message: failureMessages[code] },
-    ...(nodeReachability && { nodeReachability, deviceReachability: "unknown" }),
+    ...(nodeReachability && { nodeReachability, deviceReachability }),
   });
 }
 
@@ -424,7 +430,7 @@ export default definePluginEntry({
                 let stopDispatched = false;
                 try {
                   if (section === "history" && !selected.deviceKey)
-                    return failure("device_history_command_unavailable");
+                    return failure("device_history_assignment_unsupported");
                   if (section === "history" && selected.historyReport && selected.deviceKey) {
                     const history = await readHistoryReport(
                       selected.historyReport,
